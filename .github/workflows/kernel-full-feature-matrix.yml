@@ -155,10 +155,11 @@ permissions:
 jobs:
   prepare-matrix:
     name: 选择内核版本与补丁月份
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
+      max_parallel: ${{ steps.matrix.outputs.max_parallel }}
     steps:
     - name: 检出 gki
       uses: actions/checkout@v6
@@ -177,14 +178,16 @@ jobs:
         value = float(os.environ['MAX_PARALLEL'])
         if not value.is_integer() or not 1 <= value <= 20:
             raise SystemExit('同时构建数量必须是 1–20 的整数')
+        with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+            output.write(f'max_parallel={int(value)}\n')
         PY
         python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \
           --include-lts "$INCLUDE_LTS" --github-output --summary
   build-kernel:
     name: ${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}-${{
       inputs.kernelsu_variant }}
-    runs-on: ${{ vars.KERNEL_SELF_HOSTED == 'false' && 'ubuntu-latest' || (startsWith(vars.KERNEL_RUNNER, '[') && fromJSON(vars.KERNEL_RUNNER)
-      || vars.KERNEL_RUNNER || 'ubuntu-latest') }}
+    runs-on: ${{ vars.KERNEL_SELF_HOSTED == 'false' && 'ubuntu-24.04' || (startsWith(vars.KERNEL_RUNNER, '[') && fromJSON(vars.KERNEL_RUNNER)
+      || vars.KERNEL_RUNNER || 'ubuntu-24.04') }}
     timeout-minutes: 120
     env:
       CCACHE_COMPILERCHECK: '%compiler% -dumpmachine; %compiler% -dumpversion'
@@ -6362,5 +6365,5 @@ jobs:
     needs: prepare-matrix
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.max_parallel }}
+      max-parallel: ${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}

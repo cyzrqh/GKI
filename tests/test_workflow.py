@@ -72,6 +72,16 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--os_patch_level "$BOOT_OS_PATCH_LEVEL"', step['run'])
         self.assertNotIn('--os_patch_level "${{ matrix.os_patch_level }}"', step['run'])
 
+    def test_parallel_limit_uses_normalized_integer_job_output(self):
+        job = self.workflow['jobs']['build-kernel']
+        self.assertEqual(job['strategy']['max-parallel'], '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}')
+        prepare = self.workflow['jobs']['prepare-matrix']
+        self.assertEqual(prepare['outputs']['max_parallel'], '${{ steps.matrix.outputs.max_parallel }}')
+        self.assertIn('max_parallel={int(value)}', prepare['steps'][1]['run'])
+
+    def test_build_runner_is_pinned_before_ubuntu_latest_migration(self):
+        self.assertNotIn('ubuntu-latest', self.workflow['jobs']['build-kernel']['runs-on'])
+
     def test_serialization_roundtrips_boolean_and_on(self):
         text = generator.yaml.dump(self.workflow, Dumper=generator.Dumper, allow_unicode=True, sort_keys=False)
         parsed = generator.yaml.load(text, Loader=generator.Loader)

@@ -260,12 +260,14 @@ def create_workflow(root):
         filtered_steps.append(step)
     job['steps'] = filtered_steps
     job['needs'] = 'prepare-matrix'
-    job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ inputs.max_parallel }}',
+    job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
                        'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'}
+    job['runs-on'] = job['runs-on'].replace("'ubuntu-latest'", "'ubuntu-24.04'")
     job['timeout-minutes'] = 120
     prepare = {
-        'name': '选择内核版本与补丁月份', 'runs-on': 'ubuntu-latest',
-        'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}'},
+        'name': '选择内核版本与补丁月份', 'runs-on': 'ubuntu-24.04',
+        'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}',
+                    'max_parallel': '${{ steps.matrix.outputs.max_parallel }}'},
         'steps': [
             {'name': '检出 gki', 'uses': 'actions/checkout@v6'},
             {'name': '检查并生成矩阵', 'id': 'matrix', 'shell': 'bash',
@@ -277,6 +279,8 @@ import os
 value = float(os.environ['MAX_PARALLEL'])
 if not value.is_integer() or not 1 <= value <= 20:
     raise SystemExit('同时构建数量必须是 1–20 的整数')
+with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
+    output.write(f'max_parallel={int(value)}\\n')
 PY
 python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \\
   --include-lts "$INCLUDE_LTS" --github-output --summary

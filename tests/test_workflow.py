@@ -35,7 +35,7 @@ class WorkflowTests(unittest.TestCase):
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.workflow['jobs']['check-upstream']
         self.assertIn('github.ref_name == github.event.repository.default_branch', job['if'])
-        self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'read'})
+        self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'write'})
         checkout = job['steps'][0]
         self.assertIs(checkout['with']['persist-credentials'], False)
         self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
@@ -59,6 +59,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(update['env']['CANDIDATES'], '${{ steps.probe.outputs.latest_json }}')
         self.assertIn('--abk-commit "$abk_commit"', update['run'])
         self.assertIn('--catalog-commit "$catalog_commit"', update['run'])
+
+    def test_notification_comes_from_bot_only_when_pr_changed(self):
+        step = next(step for step in self.workflow['jobs']['check-upstream']['steps']
+                    if step['name'] == '提醒仓库所有者审核更新')
+        self.assertEqual(step['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertIn("pull-request-operation == 'created'", step['if'])
+        self.assertIn("pull-request-operation == 'updated'", step['if'])
+        self.assertIn('issues/$PR_NUMBER/comments', step['run'])
 
     def test_custom_ksu_ref_remains_available_through_repository_variable(self):
         step = self.find('确定 KernelSU 分支')

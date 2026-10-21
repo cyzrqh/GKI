@@ -152,7 +152,7 @@ def updater_job():
         'name': '检查上游并准备更新 PR',
         'if': "(github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
-        'permissions': {'contents': 'read', 'pull-requests': 'read'},
+        'permissions': {'contents': 'read', 'pull-requests': 'write'},
         'concurrency': {'group': '${{ github.repository }}-upstream-sync', 'cancel-in-progress': False},
         'steps': [
             {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
@@ -196,6 +196,13 @@ fi
                       'commit-message': 'Update upstream build logic and kernel catalog',
                       'assignees': '${{ github.repository_owner }}',
                       'add-paths': '.upstream/\n.github/scripts/\n.github/workflows/kernel-full-feature-matrix.yml\nconfig/\nddk/\nmodules/\nzram/\nhmbird_patch.c\nLICENSE\nTHIRD_PARTY_NOTICES.md\ndata/\nupstream.lock.json\n'}},
+            {'name': '提醒仓库所有者审核更新',
+             'if': "steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'",
+             'env': {'GH_TOKEN': '${{ github.token }}', 'PR_NUMBER': '${{ steps.pr.outputs.pull-request-number }}',
+                     'REPOSITORY_OWNER': '${{ github.repository_owner }}'},
+             'run': '''gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \\
+  --raw-field body="@$REPOSITORY_OWNER 有一批相关上游更新已导入并通过检查，请查看本 PR 的差异后决定是否合并。此次检查没有编译内核。"
+'''},
             {'name': '记录检查结果',
              'env': {'PR_URL': '${{ steps.pr.outputs.pull-request-url }}',
                      'ALREADY_PENDING': '${{ steps.guard.outputs.already_pending }}',

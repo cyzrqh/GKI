@@ -6382,7 +6382,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
-      pull-requests: read
+      pull-requests: write
     concurrency:
       group: ${{ github.repository }}-upstream-sync
       cancel-in-progress: false
@@ -6458,6 +6458,15 @@ jobs:
           THIRD_PARTY_NOTICES.md
           data/
           upstream.lock.json
+    - name: 提醒仓库所有者审核更新
+      if: steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
+        REPOSITORY_OWNER: ${{ github.repository_owner }}
+      run: |
+        gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+          --raw-field body="@$REPOSITORY_OWNER 有一批相关上游更新已导入并通过检查，请查看本 PR 的差异后决定是否合并。此次检查没有编译内核。"
     - name: 记录检查结果
       env:
         PR_URL: ${{ steps.pr.outputs.pull-request-url }}

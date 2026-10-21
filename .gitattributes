@@ -1,0 +1,2 @@
+# Preserve exact imported bytes so upstream checksums work on Windows and Linux.
+* -text

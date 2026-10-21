@@ -1,0 +1,83 @@
+import copy
+import sys
+import unittest
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / 'tools'))
+import generate_workflow as generator
+
+
+class WorkflowTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.workflow = generator.create_workflow(ROOT)
+        cls.steps = cls.workflow['jobs']['build-kernel']['steps']
+
+    def find(self, name):
+        return next(step for step in self.steps if step.get('name') == name)
+
+    def test_one_dispatch_and_no_remote_workflow_calls(self):
+        self.assertEqual(list(self.workflow['on']), ['workflow_dispatch'])
+        self.assertEqual(len(self.workflow['on']['workflow_dispatch']['inputs']), 25)
+        self.assertTrue(all('uses' not in job for job in self.workflow['jobs'].values()))
+
+    def test_ak3_is_default_and_boot_steps_are_gated(self):
+        self.assertEqual(self.workflow['on']['workflow_dispatch']['inputs']['artifact_mode']['default'], '仅 AK3')
+        for name in ('构建 Boot 镜像 (Android 12)', '构建 Boot 镜像 (Android 13+)'):
+            self.assertIn("inputs.artifact_mode != '仅 AK3'", self.find(name)['if'])
+        upload = self.find('上传可直接刷入的 AK3 包')
+        self.assertEqual(upload['with']['path'], 'AnyKernel3/*')
+        self.assertEqual(upload['if'], "inputs.artifact_mode == '仅 AK3'")
+        self.assertNotIn('打包签名内核 Bundle', [step['name'] for step in self.steps])
+
+    def test_ak3_preparation_does_not_require_compressed_image(self):
+        run = self.find('准备 AK3 内核文件')['run']
+        self.assertLess(run.index("if [ \"$ARTIFACT_MODE\" != '仅 AK3' ]"), run.index('Image.lz4'))
+
+    def test_month_is_part_of_workspace_and_artifact_identity(self):
+        run = self.find('初始化构建环境')['run']
+        self.assertIn('${{ matrix.sub_level }}-${{ matrix.os_patch_level }}', run)
+
+    def test_catalog_refs_are_applied_before_repo_sync(self):
+        step = self.find('初始化并同步内核源码')
+        self.assertEqual(step['env']['GKI_KERNEL_REF'], '${{ matrix.kernel_ref }}')
+        self.assertLess(step['run'].index('tools/set_kernel_ref.py'), step['run'].index('"$REPO" sync'))
+
+    def test_whitelist_contains_new_months_and_latest_versions(self):
+        run = self.find('校验自定义内核版本组合')['run']
+        for pair in ('android14 6.1 145 2025-08', 'android15 6.6 143 2026-10', 'android16 6.12 92 2026-09'):
+            self.assertIn(pair, run)
+
+    def test_no_undeclared_inputs_remain(self):
+        declared = set(self.workflow['on']['workflow_dispatch']['inputs'])
+        import re
+        used = set(re.findall(r'\binputs\.(\w+)', str(self.workflow)))
+        self.assertFalse(used - declared, used - declared)
+
+    def test_upstream_shape_changes_fail(self):
+        with self.assertRaises(ValueError):
+            generator.step_named(self.steps, 'renamed upstream step')
+        with self.assertRaises(ValueError):
+            generator.transform('${{ inputs.future_required }}', {})
+
+    def test_virtualization_modes_are_normalized_for_each_kernel(self):
+        text = str(self.steps)
+        self.assertIn("matrix.kernel_version == '6.12' && 'on'", text)
+        self.assertIn("inputs.virtualization_support == 'on' && '678'", text)
+
+    def test_android12_lts_boot_header_uses_a_date(self):
+        step = self.find('构建 Boot 镜像 (Android 12)')
+        self.assertIn("matrix.os_patch_level == 'lts'", step['env']['BOOT_OS_PATCH_LEVEL'])
+        self.assertIn('--os_patch_level "$BOOT_OS_PATCH_LEVEL"', step['run'])
+        self.assertNotIn('--os_patch_level "${{ matrix.os_patch_level }}"', step['run'])
+
+    def test_serialization_roundtrips_boolean_and_on(self):
+        text = generator.yaml.dump(self.workflow, Dumper=generator.Dumper, allow_unicode=True, sort_keys=False)
+        parsed = generator.yaml.load(text, Loader=generator.Loader)
+        self.assertEqual(parsed, self.workflow)
+        self.assertIs(parsed['on']['workflow_dispatch']['inputs']['include_lts']['default'], False)
+
+
+if __name__ == '__main__':
+    unittest.main()

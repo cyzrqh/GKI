@@ -7,6 +7,7 @@ import copy
 import importlib.util
 import io
 import json
+import os
 from pathlib import Path
 import shutil
 import unittest
@@ -227,6 +228,34 @@ class SyncTests(unittest.TestCase):
                 sync._commit_changes(self.root, {"config/aaa.txt": b"new", "config/zzz.txt": b"new"}, set())
         self.assertEqual((self.root / "config/aaa.txt").read_bytes(), b"original")
         self.assertEqual((self.root / "config/zzz.txt").read_bytes(), b"original")
+
+    def test_api_auth_is_scoped_to_https_api_host_without_logging(self):
+        fake_token = "offline-test-token"
+        with mock.patch.dict(os.environ, {"GH_TOKEN": fake_token, "GITHUB_TOKEN": ""}):
+            with mock.patch.object(sync.urllib.request, "build_opener") as builder:
+                builder.return_value.open.return_value.__enter__.return_value.read.return_value = b"response"
+                with contextlib.redirect_stdout(io.StringIO()) as output:
+                    with contextlib.redirect_stderr(io.StringIO()) as errors:
+                        sync._request("https://api.github.com/repos/example/repo/commits/dev", accept="application/json")
+                        api_request = builder.return_value.open.call_args.args[0]
+                        self.assertEqual(api_request.get_header("Authorization"), "Bearer " + fake_token)
+                        for url in (
+                            "https://codeload.github.com/example/repo/zip/commit",
+                            "https://api.github.com.example.com/path", "http://api.github.com/path",
+                        ):
+                            sync._request(url, accept="application/zip")
+                            self.assertIsNone(builder.return_value.open.call_args.args[0].get_header("Authorization"))
+        self.assertNotIn(fake_token, output.getvalue() + errors.getvalue())
+
+    def test_api_authorization_is_removed_from_all_redirects(self):
+        request = sync.urllib.request.Request(
+            "https://api.github.com/example", headers={"Authorization": "Bearer offline-test-token", "Accept": "application/json"},
+        )
+        handler = sync._NoAuthRedirectHandler()
+        for destination in ("https://codeload.github.com/archive", "https://api.github.com/redirected", "https://example.com/path"):
+            redirected = handler.redirect_request(request, None, 302, "Found", {}, destination)
+            self.assertIsNone(redirected.get_header("Authorization"))
+            self.assertEqual(redirected.get_header("Accept"), "application/json")
 
 
 if __name__ == "__main__":

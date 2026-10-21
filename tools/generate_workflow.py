@@ -84,11 +84,9 @@ def feature_inputs(source):
         fields.pop(key)
     fields['build_time']['default'] = ''
     fields['build_time']['description'] = '构建时间（留空使用当前 UTC）'
-    fields['custom_ref'] = {
-        'description': 'KSU 自定义 ref（仅 Custom 分支使用；留空读 config/config）',
-        'required': False, 'type': 'string', 'default': '',
-    }
     selection = {
+        'operation': {'description': '操作', 'required': True, 'type': 'choice',
+                      'options': ['编译内核', '检查上游更新'], 'default': '编译内核'},
         'kernel_versions': {'description': '内核系列（all 或逗号分隔：5.10,5.15,6.1,6.6,6.12）',
                             'required': True, 'type': 'string', 'default': 'all'},
         'targets': {'description': '指定版本（留空全矩阵；例 6.1.145 或 6.1.145@2025-08，逗号分隔）',
@@ -146,6 +144,74 @@ fi
 '''
 
 
+BUILD_IF = "github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'"
+
+
+def updater_job():
+    return {
+        'name': '检查上游并准备更新 PR',
+        'if': "(github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch",
+        'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
+        'permissions': {'contents': 'read', 'pull-requests': 'read'},
+        'concurrency': {'group': '${{ github.repository }}-upstream-sync', 'cancel-in-progress': False},
+        'steps': [
+            {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
+             'with': {'ref': '${{ github.event.repository.default_branch }}', 'fetch-depth': 0,
+                      'persist-credentials': False}},
+            {'name': '准备 Python', 'uses': 'actions/setup-python@v6', 'with': {'python-version': '3.12'}},
+            {'name': '安装同步工具依赖', 'run': 'python -m pip install -r requirements.txt'},
+            {'name': '读取上游版本', 'id': 'probe',
+             'env': {'GH_TOKEN': '${{ github.token }}'},
+             'run': 'python tools/check_upstream_updates.py --check-only'},
+            {'name': '检查更新分支归属和已有 PR', 'id': 'guard',
+             'if': "steps.probe.outputs.has_updates == 'true'",
+             'env': {'GH_TOKEN': '${{ github.token }}', 'HEADS_MARKER': '${{ steps.probe.outputs.heads_marker }}',
+                     'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
+             'run': 'python tools/upstream_pr_guard.py --heads-marker "$HEADS_MARKER" --base "$DEFAULT_BRANCH" --github-output "$GITHUB_OUTPUT"'},
+            {'name': '导入并验证相关更新', 'id': 'update',
+             'if': "steps.probe.outputs.has_updates == 'true' && steps.guard.outputs.already_pending != 'true'",
+             'env': {'GH_TOKEN': '${{ github.token }}', 'CANDIDATES': '${{ steps.probe.outputs.latest_json }}'},
+             'run': '''set -euo pipefail
+abk_commit=$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATES"])["abk"])')
+catalog_commit=$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATES"])["catalog"])')
+python tools/check_upstream_updates.py --prepare --abk-commit "$abk_commit" \\
+  --catalog-commit "$catalog_commit" --report-dir "$RUNNER_TEMP"
+'''},
+            {'name': '检查更新令牌是否已配置',
+             'if': "steps.update.outputs.has_updates == 'true'",
+             'env': {'SYNC_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN }}'},
+             'run': '''if [ -z "$SYNC_TOKEN" ]; then
+  echo '::error::发现可用更新，但尚未配置 UPSTREAM_SYNC_TOKEN。请按 README 的自动更新设置添加仓库 Secret。'
+  exit 1
+fi
+'''},
+            {'name': '创建或更新上游 PR', 'id': 'pr',
+             'if': "steps.update.outputs.has_updates == 'true'",
+             'uses': 'peter-evans/create-pull-request@v8',
+             'with': {'token': '${{ secrets.UPSTREAM_SYNC_TOKEN }}',
+                      'branch': 'automation/upstream-sync',
+                      'base': '${{ github.event.repository.default_branch }}',
+                      'title': '${{ steps.update.outputs.title }}',
+                      'body-path': '${{ steps.update.outputs.body_path }}',
+                      'commit-message': 'Update upstream build logic and kernel catalog',
+                      'assignees': '${{ github.repository_owner }}',
+                      'add-paths': '.upstream/\n.github/scripts/\n.github/workflows/kernel-full-feature-matrix.yml\nconfig/\nddk/\nmodules/\nzram/\nhmbird_patch.c\nLICENSE\nTHIRD_PARTY_NOTICES.md\ndata/\nupstream.lock.json\n'}},
+            {'name': '记录检查结果',
+             'env': {'PR_URL': '${{ steps.pr.outputs.pull-request-url }}',
+                     'ALREADY_PENDING': '${{ steps.guard.outputs.already_pending }}',
+                     'EXISTING_PR': '${{ steps.guard.outputs.pull_request_url }}'},
+             'run': '''if [ -n "$PR_URL" ]; then
+  printf '上游更新已准备：[查看更新 PR](%s)。审核后可手动合并。\\n' "$PR_URL" >> "$GITHUB_STEP_SUMMARY"
+elif [ "$ALREADY_PENDING" = true ]; then
+  printf '相同上游版本已有待审核 PR：%s；无需重复更新。\\n' "$EXISTING_PR" >> "$GITHUB_STEP_SUMMARY"
+else
+  echo '没有需要导入的相关上游更新。' >> "$GITHUB_STEP_SUMMARY"
+fi
+'''},
+        ],
+    }
+
+
 def create_workflow(root):
     from matrix import build_matrix
     source = load_yaml(root / '.upstream/abk-build.yml')
@@ -171,6 +237,7 @@ def create_workflow(root):
     mapping.update({
         'source_mode': "'aosp'", 'ksu_variant': 'inputs.kernelsu_variant',
         'ksu_branch': 'inputs.kernelsu_branch', 'upload_aux_artifacts': 'false',
+        'custom_ref': 'vars.KSU_CUSTOM_REF',
         'virtualization_support': "(inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version == '6.12' && 'on' || (inputs.virtualization_support == 'on' && '678' || inputs.virtualization_support)))",
         'use_kpm': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))))",
         'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '')",
@@ -259,6 +326,7 @@ def create_workflow(root):
             step.pop('if')
         filtered_steps.append(step)
     job['steps'] = filtered_steps
+    job['if'] = BUILD_IF
     job['needs'] = 'prepare-matrix'
     job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
                        'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'}
@@ -266,6 +334,7 @@ def create_workflow(root):
     job['timeout-minutes'] = 120
     prepare = {
         'name': '选择内核版本与补丁月份', 'runs-on': 'ubuntu-24.04',
+        'if': BUILD_IF,
         'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}',
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}'},
         'steps': [
@@ -289,10 +358,10 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
     }
     workflow = {
         'name': 'GKI 全属性内核构建矩阵',
-        'run-name': '${{ inputs.kernelsu_variant }} · ${{ inputs.kernel_versions }} · ${{ inputs.artifact_mode }}',
-        'on': {'workflow_dispatch': {'inputs': dispatch}},
+        'run-name': "${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '检查上游更新' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode) }}",
+        'on': {'workflow_dispatch': {'inputs': dispatch}, 'schedule': [{'cron': '17 0 * * *'}]},
         'permissions': {'contents': 'read'},
-        'jobs': {'prepare-matrix': prepare, 'build-kernel': job},
+        'jobs': {'prepare-matrix': prepare, 'build-kernel': job, 'check-upstream': updater_job()},
     }
     return workflow
 

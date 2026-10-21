@@ -2,11 +2,11 @@
 
 以 [ABK](https://github.com/xingguangcuican6666/ABK) 为主要构建上游的独立 GKI 构建仓库，参考 [zzh20188/GKI_KernelSU_SUSFS](https://github.com/zzh20188/GKI_KernelSU_SUSFS) 的版本目录补全可选组合。
 
-Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**。
+Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**，同时提供编译和检查上游更新两种操作。
 
 ## 构建
 
-进入 **Actions → GKI 全属性内核构建矩阵 → Run workflow**，选择参数：
+进入 **Actions → GKI 全属性内核构建矩阵 → Run workflow**，将“操作”保持为默认的 **编译内核**，再选择参数：
 
 | 参数 | 用法 |
 | --- | --- |
@@ -26,6 +26,15 @@ Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**。
 
 选择“AK3 + boot 镜像”时，Artifact 中包含独立 AnyKernel3 ZIP 和 boot 镜像。Android 12 LTS 的 boot 头补丁日期使用版本目录中最新的 Android 12 稳定补丁月份；文件名称仍标明 LTS。
 
+### 指定 KernelSU 自定义提交
+
+需要固定 KernelSU 的分支、标签或提交时，进入 **Settings → Secrets and variables → Actions → Variables → New repository variable**：
+
+- Name：**`KSU_CUSTOM_REF`**
+- Value：所需的分支、标签或提交；也支持上游的 `branch:N` 格式，按上游规则从成功的 CI 记录解析提交。
+
+保存后，在构建参数的“KSU 分支”中选择 **Custom(自定义)**。自定义 ref 从这个仓库变量读取，运行表单不另设输入项。SUSFS 提交固定继续通过 `config/config` 中的 `custom` 和对应 `gki-*` 配置项控制。
+
 ### 版本覆盖
 
 初始快照有 **128 个版本与安全补丁月份组合**，开启全部 LTS 后为 **133 个**。同一小版本的不同补丁月份分别保留。后续 ABK 新增的已知组合也会并入矩阵。
@@ -42,7 +51,37 @@ Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**。
 
 ## 更新上游
 
-同步工具在 `tools/` 中，不会增加 Actions 入口。需要本地 Python 3.10 或更新版本：
+### 自动检查并准备更新 PR
+
+同一个工作流每天北京时间 **08:17** 检查 ABK 和版本目录上游；GitHub 定时运行可能延迟。也可以在默认分支 `main` 上手动运行，将“操作”改为 **检查上游更新**。两种检查都不会启动内核编译，也不会增加另一个 Actions 入口。
+
+只有本仓库实际导入的文件、内核版本目录或生成的构建行为发生变化，工具才会导入更新、重新生成工作流并运行检查和单元测试，随后创建或更新一个待审核 PR。上游 App、网页等未导入部分的变化，以及仅提交记录变化而构建内容未变的情况，不会创建更新 PR。
+
+更新 PR **不会自动合并，也不会自动编译内核**。相同上游候选已有待审核 PR 时，检查会跳过，不重复创建 PR 或发送提醒。PR 会分配给仓库所有者；是否收到 GitHub 站内或邮箱通知，取决于你的 [GitHub 通知设置](https://github.com/settings/notifications)。合并前请查看文件差异，合并后可手动选择需要的版本验证构建。
+
+更新检查与单元测试不等于所有内核版本或功能组合已编译通过。
+
+### 一次性配置自动更新令牌
+
+只读检查使用工作流自带的 `GITHUB_TOKEN`。更新可能改动 `.github/workflows/` 下的构建文件，需要额外的 **Workflows 写入权限**，因此创建更新 PR 使用单独的 fine-grained personal access token。
+
+1. 打开 [创建 gki 上游更新专用令牌](https://github.com/settings/personal-access-tokens/new?name=gki-upstream-sync&description=Prepare%20upstream%20update%20pull%20requests%20for%20gki&target_name=cyzrqh&expires_in=90&contents=write&pull_requests=write&workflows=write)。链接已预填所有者、90 天有效期和所需权限；在 **Repository access → Only select repositories** 中只选择 **gki**。
+2. 确认以下三项仓库权限，不需要其他仓库或账号级权限：
+
+   | 仓库权限 | 级别 |
+   | --- | --- |
+   | Contents | Read and write |
+   | Pull requests | Read and write |
+   | Workflows | Write-only 或 Read and write（写入） |
+
+3. 生成后，直接打开 [新增 gki Actions Secret](https://github.com/cyzrqh/gki/settings/secrets/actions/new)，名称填写 **`UPSTREAM_SYNC_TOKEN`**，将令牌粘贴到 Secret 内容并保存。**不要把令牌发到聊天、Issue、PR 或提交到仓库文件。**
+4. 回到唯一的构建工作流，手动选择“检查上游更新”运行一次，查看该次运行的摘要。发现可导入的更新但令牌未配置时，检查会停止并提示配置，不会发布更新。
+
+预填令牌 **90 天后过期**，到期前需要续期或重新生成，并将 Actions Secret 更新为有效令牌。预填字段也应在保存前确认；GitHub 的入口说明见 [fine-grained token 官方文档](https://docs.github.com/en/authentication/keeping-your-account-and-data-secure/managing-your-personal-access-tokens#pre-filling-fine-grained-personal-access-token-details-using-url-parameters)。
+
+### 手动在本地同步
+
+仍可使用 `tools/` 中的同步工具。需要本地 Python 3.10 或更新版本：
 
 ```sh
 python -m pip install -r requirements.txt

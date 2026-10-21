@@ -282,14 +282,28 @@ def build_imports_from_zips(abk_zip: Path | bytes, catalog_zip: Path | bytes) ->
     return {**abk, **catalog}
 
 
+class _NoAuthRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Never forward the API credential to a redirect destination."""
+
+    def redirect_request(self, request, response, code, message, headers, new_url):
+        redirected = super().redirect_request(request, response, code, message, headers, new_url)
+        if redirected is not None:
+            for key, _value in redirected.header_items():
+                if key.lower() == "authorization":
+                    redirected.remove_header(key)
+        return redirected
+
+
 def _request(url: str, *, accept: str) -> bytes:
     headers = {"User-Agent": "independent-gki-upstream-sync/1", "Accept": accept}
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
-    if token and urllib.parse.urlparse(url).hostname == "api.github.com":
+    parsed = urllib.parse.urlparse(url)
+    if token and parsed.scheme == "https" and parsed.netloc == "api.github.com":
         headers["Authorization"] = f"Bearer {token}"
     request = urllib.request.Request(url, headers=headers)
+    opener = urllib.request.build_opener(_NoAuthRedirectHandler())
     try:
-        with urllib.request.urlopen(request, timeout=45) as response:
+        with opener.open(request, timeout=45) as response:
             content = response.read(MAX_DOWNLOAD_BYTES + 1)
     except urllib.error.HTTPError as exc:
         raise SyncError(f"GitHub request failed (HTTP {exc.code}) for {url}; check the ref, access, or API rate limit") from exc

@@ -18,9 +18,51 @@ class WorkflowTests(unittest.TestCase):
         return next(step for step in self.steps if step.get('name') == name)
 
     def test_one_dispatch_and_no_remote_workflow_calls(self):
-        self.assertEqual(list(self.workflow['on']), ['workflow_dispatch'])
+        self.assertEqual(list(self.workflow['on']), ['workflow_dispatch', 'schedule'])
         self.assertEqual(len(self.workflow['on']['workflow_dispatch']['inputs']), 25)
         self.assertTrue(all('uses' not in job for job in self.workflow['jobs'].values()))
+
+    def test_update_events_cannot_start_kernel_compilation(self):
+        for name in ('prepare-matrix', 'build-kernel'):
+            self.assertEqual(self.workflow['jobs'][name]['if'], generator.BUILD_IF)
+        self.assertIn("github.event_name == 'workflow_dispatch'", generator.BUILD_IF)
+        self.assertIn("inputs.operation == '编译内核'", generator.BUILD_IF)
+        self.assertEqual(self.workflow['on']['schedule'], [{'cron': '17 0 * * *'}])
+        operation = self.workflow['on']['workflow_dispatch']['inputs']['operation']
+        self.assertEqual(operation['default'], '编译内核')
+        self.assertEqual(operation['options'], ['编译内核', '检查上游更新'])
+
+    def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
+        job = self.workflow['jobs']['check-upstream']
+        self.assertIn('github.ref_name == github.event.repository.default_branch', job['if'])
+        self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'read'})
+        checkout = job['steps'][0]
+        self.assertIs(checkout['with']['persist-credentials'], False)
+        self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
+        self.assertIs(job['concurrency']['cancel-in-progress'], False)
+
+    def test_updater_validates_before_publishing_and_skips_existing_candidate(self):
+        steps = self.workflow['jobs']['check-upstream']['steps']
+        indexed = {step['id']: (i, step) for i, step in enumerate(steps) if 'id' in step}
+        self.assertLess(indexed['guard'][0], indexed['update'][0])
+        self.assertLess(indexed['update'][0], indexed['pr'][0])
+        self.assertIn("steps.guard.outputs.already_pending != 'true'", indexed['update'][1]['if'])
+        pr = indexed['pr'][1]
+        self.assertEqual(pr['if'], "steps.update.outputs.has_updates == 'true'")
+        self.assertEqual(pr['with']['branch'], 'automation/upstream-sync')
+        self.assertEqual(pr['with']['token'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
+        self.assertNotIn('tools/', pr['with']['add-paths'])
+        self.assertNotIn('tests/', pr['with']['add-paths'])
+        self.assertIn('.github/workflows/kernel-full-feature-matrix.yml', pr['with']['add-paths'])
+        self.assertNotIn('auto-merge', str(steps))
+        update = indexed['update'][1]
+        self.assertEqual(update['env']['CANDIDATES'], '${{ steps.probe.outputs.latest_json }}')
+        self.assertIn('--abk-commit "$abk_commit"', update['run'])
+        self.assertIn('--catalog-commit "$catalog_commit"', update['run'])
+
+    def test_custom_ksu_ref_remains_available_through_repository_variable(self):
+        step = self.find('确定 KernelSU 分支')
+        self.assertEqual(step['env']['CUSTOM_REF'], '${{ vars.KSU_CUSTOM_REF }}')
 
     def test_ak3_is_default_and_boot_steps_are_gated(self):
         self.assertEqual(self.workflow['on']['workflow_dispatch']['inputs']['artifact_mode']['default'], '仅 AK3')

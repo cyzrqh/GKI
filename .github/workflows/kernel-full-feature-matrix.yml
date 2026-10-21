@@ -2,10 +2,19 @@
 # ABK d43ead425e175356abb66fa273c401ad2af13216
 # Version catalog 90b76411e8d8ca0417a02bd619996bbd9986fd5f
 name: GKI 全属性内核构建矩阵
-run-name: ${{ inputs.kernelsu_variant }} · ${{ inputs.kernel_versions }} · ${{ inputs.artifact_mode }}
+run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '检查上游更新' || format('{0} · {1} · {2}', inputs.kernelsu_variant,
+  inputs.kernel_versions, inputs.artifact_mode) }}
 'on':
   workflow_dispatch:
     inputs:
+      operation:
+        description: 操作
+        required: true
+        type: choice
+        options:
+        - 编译内核
+        - 检查上游更新
+        default: 编译内核
       kernel_versions:
         description: 内核系列（all 或逗号分隔：5.10,5.15,6.1,6.6,6.12）
         required: true
@@ -145,17 +154,15 @@ run-name: ${{ inputs.kernelsu_variant }} · ${{ inputs.kernel_versions }} · ${{
         required: false
         type: string
         default: ''
-      custom_ref:
-        description: KSU 自定义 ref（仅 Custom 分支使用；留空读 config/config）
-        required: false
-        type: string
-        default: ''
+  schedule:
+  - cron: 17 0 * * *
 permissions:
   contents: read
 jobs:
   prepare-matrix:
     name: 选择内核版本与补丁月份
     runs-on: ubuntu-24.04
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
@@ -486,7 +493,7 @@ jobs:
       env:
         KSU_VARIANT: ${{ inputs.kernelsu_variant }}
         KSU_BRANCH: ${{ inputs.kernelsu_branch }}
-        CUSTOM_REF: ${{ inputs.custom_ref }}
+        CUSTOM_REF: ${{ vars.KSU_CUSTOM_REF }}
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         GITHUB_REPOSITORY: ${{ github.repository }}
       run: bash .github/scripts/resolve-ksu-ref.sh
@@ -6362,8 +6369,105 @@ jobs:
         path: patch-rejects/
         if-no-files-found: ignore
         compression-level: 9
+    if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
     needs: prepare-matrix
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
+  check-upstream:
+    name: 检查上游并准备更新 PR
+    if: (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+    concurrency:
+      group: ${{ github.repository }}-upstream-sync
+      cancel-in-progress: false
+    steps:
+    - name: 检出默认分支
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.repository.default_branch }}
+        fetch-depth: 0
+        persist-credentials: false
+    - name: 准备 Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: '3.12'
+    - name: 安装同步工具依赖
+      run: python -m pip install -r requirements.txt
+    - name: 读取上游版本
+      id: probe
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python tools/check_upstream_updates.py --check-only
+    - name: 检查更新分支归属和已有 PR
+      id: guard
+      if: steps.probe.outputs.has_updates == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        HEADS_MARKER: ${{ steps.probe.outputs.heads_marker }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: python tools/upstream_pr_guard.py --heads-marker "$HEADS_MARKER" --base "$DEFAULT_BRANCH" --github-output "$GITHUB_OUTPUT"
+    - name: 导入并验证相关更新
+      id: update
+      if: steps.probe.outputs.has_updates == 'true' && steps.guard.outputs.already_pending != 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        CANDIDATES: ${{ steps.probe.outputs.latest_json }}
+      run: |
+        set -euo pipefail
+        abk_commit=$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATES"])["abk"])')
+        catalog_commit=$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATES"])["catalog"])')
+        python tools/check_upstream_updates.py --prepare --abk-commit "$abk_commit" \
+          --catalog-commit "$catalog_commit" --report-dir "$RUNNER_TEMP"
+    - name: 检查更新令牌是否已配置
+      if: steps.update.outputs.has_updates == 'true'
+      env:
+        SYNC_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+      run: |
+        if [ -z "$SYNC_TOKEN" ]; then
+          echo '::error::发现可用更新，但尚未配置 UPSTREAM_SYNC_TOKEN。请按 README 的自动更新设置添加仓库 Secret。'
+          exit 1
+        fi
+    - name: 创建或更新上游 PR
+      id: pr
+      if: steps.update.outputs.has_updates == 'true'
+      uses: peter-evans/create-pull-request@v8
+      with:
+        token: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        branch: automation/upstream-sync
+        base: ${{ github.event.repository.default_branch }}
+        title: ${{ steps.update.outputs.title }}
+        body-path: ${{ steps.update.outputs.body_path }}
+        commit-message: Update upstream build logic and kernel catalog
+        assignees: ${{ github.repository_owner }}
+        add-paths: |
+          .upstream/
+          .github/scripts/
+          .github/workflows/kernel-full-feature-matrix.yml
+          config/
+          ddk/
+          modules/
+          zram/
+          hmbird_patch.c
+          LICENSE
+          THIRD_PARTY_NOTICES.md
+          data/
+          upstream.lock.json
+    - name: 记录检查结果
+      env:
+        PR_URL: ${{ steps.pr.outputs.pull-request-url }}
+        ALREADY_PENDING: ${{ steps.guard.outputs.already_pending }}
+        EXISTING_PR: ${{ steps.guard.outputs.pull_request_url }}
+      run: |
+        if [ -n "$PR_URL" ]; then
+          printf '上游更新已准备：[查看更新 PR](%s)。审核后可手动合并。\n' "$PR_URL" >> "$GITHUB_STEP_SUMMARY"
+        elif [ "$ALREADY_PENDING" = true ]; then
+          printf '相同上游版本已有待审核 PR：%s；无需重复更新。\n' "$EXISTING_PR" >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo '没有需要导入的相关上游更新。' >> "$GITHUB_STEP_SUMMARY"
+        fi

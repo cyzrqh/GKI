@@ -24,7 +24,7 @@ FULL_VERSION = re.compile(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\Z")
 TARGET = re.compile(r"((?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*))(?:@(\d{4}-\d{2}))?\Z")
 MONTH = re.compile(r"\d{4}-\d{2}\Z")
 
-# Certified Android 12 boot-image revisions from the reference's fixed matrix.
+# Preserved Android 12 boot-image revisions for historical release months.
 # Revision only affects optional boot.img packaging; AK3 uses the compiled Image.
 ANDROID12_REVISIONS = {
     "2022-01": "r11",
@@ -62,6 +62,8 @@ def _kernel_ref(value: object, context: str) -> str:
     # An empty ref lets the source resolver query the upstream manifest.
     if value == "":
         return ""
+    if isinstance(value, str) and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", value):
+        return value.lower()
     if (
         not isinstance(value, str)
         or not re.fullmatch(r"refs/(heads|tags)/[A-Za-z0-9._/-]+", value)
@@ -112,33 +114,40 @@ def _row(android: str, family: str, full: str, month: str, ref: str = "") -> dic
     }
 
 
-def _abk_rows(root: Path) -> list[tuple[dict[str, str], str]]:
-    """Include new ABK combinations even if the secondary catalog lags behind."""
-    source = root / ".upstream" / "abk-build.yml"
-    if not source.exists():
-        return []
-    text = source.read_text(encoding="utf-8-sig")
-    match = re.search(r"KNOWN_KERNEL_PAIRS=\$\(cat <<'EOF'\r?\n(.*?)\r?\n\s*EOF\r?\n\s*\)", text, re.S)
-    if not match:
-        raise ValueError("ABK source no longer contains KNOWN_KERNEL_PAIRS; review the upstream schema before updating")
-    rows = []
-    for number, line in enumerate(match.group(1).splitlines(), 1):
-        if not line.strip():
-            continue
-        parts = line.split()
-        context = f"ABK KNOWN_KERNEL_PAIRS line {number}"
-        if len(parts) != 4:
-            raise ValueError(f"{context}: expected android, kernel, sublevel and patch month")
-        android, family, sublevel, date = parts
-        if family not in KERNELS or KERNELS[family] != android:
-            raise ValueError(f"{context}: unsupported Android/kernel pair {android}/{family}")
-        if sublevel == "X" and date == "lts":
-            continue
-        full = _full_version(f"{family}.{sublevel}", family, context)
-        rows.append((_row(android, family, full, _month(date, context)), full))
-    if not rows:
-        raise ValueError("ABK KNOWN_KERNEL_PAIRS is empty")
-    return rows
+def load_catalog(root: Path) -> dict:
+    """Load the self-contained catalog, independently of workflow templates."""
+    source = Path(root) / "data/kernels.json"
+    try:
+        document = json.loads(source.read_text(encoding="utf-8-sig"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"cannot read kernel catalog {source}") from exc
+    return validate_catalog(document, str(source))
+
+
+def validate_catalog(document: object, source: str = "kernel catalog") -> dict:
+    """Validate local and offline-probed rows with the same schema rules."""
+    if (not isinstance(document, dict) or document.get("schema_version") != 1
+            or isinstance(document.get("schema_version"), bool)):
+        raise ValueError(f"{source}: unsupported kernel catalog schema")
+    entries = document.get("entries")
+    if not isinstance(entries, list):
+        raise ValueError(f"{source}: entries must be an array")
+    for index, entry in enumerate(entries):
+        context = f"{source}: entries[{index}]"
+        if not isinstance(entry, dict):
+            raise ValueError(f"{context}: entry must be an object")
+        family, android = entry.get("kernel_version"), entry.get("android_version")
+        if (not isinstance(family, str) or not isinstance(android, str)
+                or family not in KERNELS or KERNELS[family] != android):
+            raise ValueError(f"{context}: unsupported Android/kernel pair")
+        _full_version(entry.get("kernel"), family, context)
+        if entry.get("date") != "lts":
+            _month(entry.get("date"), context)
+        _kernel_ref(entry.get("ref", ""), context)
+        if "revision" in entry and (not isinstance(entry["revision"], str)
+                                    or not re.fullmatch(r"r[0-9]+", entry["revision"])):
+            raise ValueError(f"{context}: invalid boot revision")
+    return document
 
 
 def build_matrix(
@@ -147,9 +156,7 @@ def build_matrix(
     targets: str = "",
     include_lts: bool = False,
 ) -> list[dict[str, str]]:
-    """Return exact version/month combinations from both pinned upstreams.
-
-    Catalog refs take precedence over ABK rows with the same exact identity.
+    """Return exact version/month combinations from the local kernel catalog.
     A full-version target selects every available month for that version; add
     ``@YYYY-MM`` to request one exact combination.
     """
@@ -158,31 +165,16 @@ def build_matrix(
     root = Path(root)
     selected, requested = _selectors(kernel_versions, targets)
     candidates: list[tuple[dict[str, str], str]] = []
-    for family, android in KERNELS.items():
-        source = root / "data" / android / f"{family}.json"
-        try:
-            document = json.loads(source.read_text(encoding="utf-8-sig"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"cannot read catalog {source}: {exc}") from exc
-        if not isinstance(document, dict) or document.get("android_version") != android or document.get("kernel_version") != family:
-            raise ValueError(f"{source}: catalog Android/kernel identity does not match its path")
-        entries = document.get("entries")
-        if not isinstance(entries, list):
-            raise ValueError(f"{source}: entries must be an array")
-        for index, entry in enumerate(entries):
-            context = f"{source}: entries[{index}]"
-            if not isinstance(entry, dict):
-                raise ValueError(f"{context}: entry must be an object")
-            full = _full_version(entry.get("kernel"), family, context)
-            date = _month(entry.get("date"), context)
-            ref = _kernel_ref(entry.get("ref", ""), context)
-            candidates.append((_row(android, family, full, date, ref), full))
-        if include_lts:
-            full = _full_version(document.get("lts"), family, f"{source}: lts")
-            row = _row(android, family, full, "lts", f"refs/heads/{android}-{family}-lts")
+    for entry in load_catalog(root)["entries"]:
+        date = entry["date"]
+        if date == "lts" and not include_lts:
+            continue
+        full, family, android = entry["kernel"], entry["kernel_version"], entry["android_version"]
+        row = _row(android, family, full, date, _kernel_ref(entry.get("ref", ""), "kernel catalog"))
+        row["revision"] = entry.get("revision", row["revision"])
+        if date == "lts":
             row["sub_level"] = "X"
-            candidates.append((row, full))
-    candidates.extend(_abk_rows(root))
+        candidates.append((row, full))
 
     output: dict[tuple[str, str, str, str], dict[str, str]] = {}
     matched: set[tuple[str, str | None]] = set()

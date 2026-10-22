@@ -75,6 +75,18 @@ class KernelRefTests(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(ValueError):
                 validate_ref(ref)
 
+    def test_full_commit_refs_are_accepted_without_a_network_lookup(self):
+        self.write("default.xml", '<manifest><project name="common" path="common" revision="old"/></manifest>')
+        for commit in ("A" * 40, "b" * 64):
+            with self.subTest(commit=commit):
+                resolver = unittest.mock.Mock()
+                self.assertEqual(set_kernel_ref(self.root, commit, BRANCH, resolver), (commit.lower(), 1))
+                resolver.assert_not_called()
+                self.assertEqual(ET.parse(self.root / "default.xml").find("project").get("revision"), commit.lower())
+        for bad in ("a" * 39, "a" * 41, "a" * 63, "a" * 65, "a" * 40 + "\n"):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                validate_ref(bad)
+
     def test_empty_ref_uses_resolver(self):
         self.write("default.xml", '<manifest><project path="common" revision="old"/></manifest>')
         resolver = unittest.mock.Mock(return_value=f"refs/heads/deprecated/{BRANCH}")

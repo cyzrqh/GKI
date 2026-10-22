@@ -2,7 +2,6 @@ import contextlib
 import io
 import json
 from pathlib import Path
-import re
 import shutil
 import sys
 import unittest
@@ -18,19 +17,9 @@ IDENTITY_FIELDS = ("android_version", "kernel_version", "sub_level", "os_patch_l
 
 def expected_identities(root):
     """Read the declared version/month identities independently of matrix.py."""
-    identities = set()
-    for path in (root / "data").glob("android*/*.json"):
-        document = json.loads(path.read_text(encoding="utf-8"))
-        for entry in document["entries"]:
-            identities.add((document["android_version"], document["kernel_version"],
-                            entry["kernel"].rsplit(".", 1)[1], entry["date"]))
-    primary = root / ".upstream" / "abk-build.yml"
-    if primary.exists():
-        source = primary.read_text(encoding="utf-8")
-        block = source.split("KNOWN_KERNEL_PAIRS=$(cat <<'EOF'", 1)[1].split("EOF", 1)[0]
-        identities.update(re.findall(
-            r"^\s*(android\d+)\s+(\d+\.\d+)\s+(\d+)\s+(\d{4}-\d{2})\s*$", block, re.M))
-    return identities
+    document = json.loads((root / "data/kernels.json").read_text(encoding="utf-8"))
+    return {(entry["android_version"], entry["kernel_version"], entry["kernel"].rsplit(".", 1)[1], entry["date"])
+            for entry in document["entries"] if entry["date"] != "lts"}
 
 
 def row_identities(rows):
@@ -42,21 +31,31 @@ class MatrixTests(unittest.TestCase):
         self.root = ROOT / "tests" / f".matrix-{uuid.uuid4().hex}"
         self.root.mkdir()
         self.addCleanup(shutil.rmtree, self.root)
-        shutil.copytree(ROOT / "data", self.root / "data")
+        (self.root / "data").mkdir()
+        shutil.copyfile(ROOT / "data/kernels.json", self.root / "data/kernels.json")
 
     def edit(self, family, transform):
-        path = self.root / "data" / matrix.KERNELS[family] / f"{family}.json"
+        path = self.root / "data/kernels.json"
         document = json.loads(path.read_text(encoding="utf-8"))
-        transform(document)
+        selected = {"entries": [entry for entry in document["entries"]
+                                 if entry["kernel_version"] == family and entry["date"] != "lts"]}
+        transform(selected)
+        preserved = [entry for entry in document["entries"]
+                     if entry["kernel_version"] != family or entry["date"] == "lts"]
+        for entry in selected["entries"]:
+            entry.setdefault("kernel_version", family)
+            entry.setdefault("android_version", matrix.KERNELS[family])
+        document["entries"] = preserved + selected["entries"]
         path.write_text(json.dumps(document), encoding="utf-8")
 
-    def test_catalog_and_abk_union_preserves_every_identity(self):
+    def test_self_contained_catalog_preserves_every_declared_monthly_identity(self):
         for root in (ROOT, self.root):
             with self.subTest(root=root):
                 rows = matrix.build_matrix(root)
                 declared = expected_identities(root)
                 self.assertEqual(declared, row_identities(rows))
                 self.assertEqual(len(declared), len(rows))
+                self.assertGreaterEqual(len(rows), 128)
                 self.assertEqual(rows, matrix.build_matrix(root))
 
     def test_same_sublevel_preserves_different_months(self):
@@ -118,6 +117,11 @@ class MatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "invalid kernel ref"):
             matrix.build_matrix(self.root)
 
+    def test_immutable_full_commit_refs_are_accepted_and_normalized(self):
+        self.edit("6.1", lambda data: data["entries"][0].update(ref="A" * 40))
+        rows = matrix.build_matrix(self.root, "6.1")
+        self.assertTrue(any(row["kernel_ref"] == "a" * 40 for row in rows))
+
     def test_exact_duplicate_is_removed(self):
         before = len(expected_identities(self.root))
         self.edit("6.1", lambda data: data["entries"].append(dict(data["entries"][0])))
@@ -146,28 +150,38 @@ class MatrixTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "empty build matrix"):
             matrix.build_matrix(self.root, "6.1")
 
-    def test_abk_new_rows_are_added_and_catalog_refs_win(self):
+    def test_legacy_workflows_and_snapshot_catalogs_are_not_read(self):
         before = expected_identities(self.root)
-        added_sublevel = max(int(identity[2]) for identity in before if identity[1] == "6.1") + 1
         upstream = self.root / ".upstream"
         upstream.mkdir()
-        (upstream / "abk-build.yml").write_text(
-            "KNOWN_KERNEL_PAIRS=$(cat <<'EOF'\nandroid14 6.1 145 2025-08\n"
-            f"android14 6.1 {added_sublevel} 2026-12\nEOF\n)\n", encoding="utf-8")
+        (upstream / "abk-build.yml").write_text("malformed old workflow", encoding="utf-8")
+        legacy = self.root / "data/android14"
+        legacy.mkdir()
+        (legacy / "6.1.json").write_text("malformed old snapshot", encoding="utf-8")
         rows = matrix.build_matrix(self.root)
-        self.assertEqual(len(before) + 1, len(rows))
+        self.assertEqual(len(before), len(rows))
         self.assertEqual(expected_identities(self.root), row_identities(rows))
         existing = next(row for row in rows if row["kernel_version"] == "6.1" and row["os_patch_level"] == "2025-08")
         self.assertTrue(existing["kernel_ref"].startswith("refs/tags/"))
-        added = next(row for row in rows if row["kernel_version"] == "6.1" and row["sub_level"] == str(added_sublevel))
-        self.assertEqual("", added["kernel_ref"])
 
-    def test_changed_primary_schema_is_not_silently_ignored(self):
-        upstream = self.root / ".upstream"
-        upstream.mkdir()
-        (upstream / "abk-build.yml").write_text("changed schema", encoding="utf-8")
-        with self.assertRaisesRegex(ValueError, "review the upstream schema"):
+    def test_changed_local_schema_and_bad_android_pair_fail(self):
+        path = self.root / "data/kernels.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["schema_version"] = 2
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unsupported kernel catalog schema"):
             matrix.build_matrix(self.root)
+        document["schema_version"] = 1
+        document["entries"][0]["android_version"] = "android14"
+        path.write_text(json.dumps(document), encoding="utf-8")
+        with self.assertRaisesRegex(ValueError, "unsupported Android/kernel pair"):
+            matrix.build_matrix(self.root)
+
+    def test_lts_full_version_target_preserves_original_filtering(self):
+        document = json.loads((self.root / "data/kernels.json").read_text(encoding="utf-8"))
+        lts = next(entry for entry in document["entries"] if entry["date"] == "lts")
+        rows = matrix.build_matrix(self.root, targets=lts["kernel"], include_lts=True)
+        self.assertTrue(any(row["sub_level"] == "X" and row["os_patch_level"] == "lts" for row in rows))
 
     def test_matrix_limit_fails_with_actionable_error(self):
         def expand(data):

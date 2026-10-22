@@ -1,103 +1,47 @@
-# Third-Party and Open Source Notices
+# 第三方来源与许可
 
-This document records the open source projects, embedded code, generated binaries, download sources, and package dependencies referenced by ABK. License texts and extra obligations from upstream projects remain authoritative.
+本文记录本仓库的历史开源来源、保留代码及构建时使用的源码。具体许可文本以对应仓库的 `LICENSE`、`COPYING` 和文件内声明为准。
 
-## ABK Repository
+## 历史来源
 
-| Component | Source | License |
+| 来源 | 历史提交 | 本仓库中的用途与记录 |
 | --- | --- | --- |
-| AnyBase Kernel repository | `LICENSE` | GPL-3.0 |
-| ABK Control native bridge | `app/src/main/cpp/uapi/abk_control.h` | GPL-2.0 |
-| xingguang DDK module | `ddk/xingguang-ddk/xingguang_ddk.c` | GPL |
-| DDK kernel API patch | `ddk/patches/xingguang-ddk/0001-xingguang-ddk-api.patch` | GPL-2.0 |
-| ZRAM LZ4 kernel glue | `zram/lz4/Makefile` | GPL-2.0-only |
-| LZ4 sources and headers | `zram/lz4`, `zram/include/linux/lz4.h` | BSD-2-Clause |
+| [xingguangcuican6666/ABK](https://github.com/xingguangcuican6666/ABK) | `d43ead425e175356abb66fa273c401ad2af13216` | 菜单参考及历史构建代码、脚本和补丁的适配来源；原 GPL v3 文本保留于 `LICENSE` |
+| [zzh20188/GKI_KernelSU_SUSFS](https://github.com/zzh20188/GKI_KernelSU_SUSFS) | `90b76411e8d8ca0417a02bd619996bbd9986fd5f` | 初始内核版本与补丁月份目录的历史参考；原 GPL v2 文本保留于 `licenses/zzh-LICENSE` |
 
-## Upstream Repositories and Workflow References
+本仓库当前独立维护 `templates/`、`tools/`、`config/` 与 `data/kernels.json`，不再从 ABK 或 zzh 仓库同步、导入构建更新或合并版本目录。历史出处和署名保留；ABK Android App、网页及其依赖清单不属于本仓库构建内容。
 
-| Project | Reference | License |
+## 当前官方源码
+
+| 项目 | 官方来源 | 可核实的许可记录 |
 | --- | --- | --- |
-| zzh20188/GKI_KernelSU_SUSFS | <https://github.com/zzh20188/GKI_KernelSU_SUSFS> | Upstream repository license |
-| WildKernels/GKI_KernelSU_SUSFS | <https://github.com/WildKernels/GKI_KernelSU_SUSFS> | Upstream repository license |
-| CodeLinaro CLO LA | <https://git.codelinaro.org/clo/la> | Top-level upstream project licenses |
-| OnePlusOSS/kernel_manifest | <https://github.com/OnePlusOSS/kernel_manifest> | Upstream repository license / no SPDX detected |
-| Xiaomichael/kernel_manifest | <https://github.com/Xiaomichael/kernel_manifest> | Upstream repository license / no SPDX detected |
-| Xiaomichael/kernel_patches | <https://github.com/Xiaomichael/kernel_patches> | Upstream repository license / no SPDX detected |
-| KernelSU | <https://github.com/tiann/KernelSU> | GPL-3.0 |
-| KernelSU Next | <https://github.com/KernelSU-Next/KernelSU-Next> | GPL-3.0 |
-| SukiSU Ultra | <https://github.com/SukiSU-Ultra/SukiSU-Ultra> | GPL-3.0 |
-| BakaSU | <https://github.com/Baka-SU/BakaSU> | GPL-3.0 |
-| SUSFS | <https://gitlab.com/simonpunk/susfs4ksu> | GPL-2.0 |
-| ShirkNeko/susfs4ksu | <https://github.com/ShirkNeko/susfs4ksu> | GPL-2.0 |
-| SukiSU_patch | <https://github.com/ShirkNeko/SukiSU_patch> | GPL-2.0 |
-| AnyKernel3 | <https://github.com/WildKernels/AnyKernel3> | GPL-2.0 |
-| Xiaomichael/AnyKernel3 | <https://github.com/Xiaomichael/AnyKernel3> | Upstream repository license / NOASSERTION |
-| WildKernels/kernel_patches | <https://github.com/WildKernels/kernel_patches> | GPL-2.0 |
-| cctv18/susfs4oki | <https://github.com/cctv18/susfs4oki> | GPL-3.0 |
-| SukiSU_KernelPatch_patch | <https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch> | Upstream repository license |
-| Action-Build | <https://github.com/Numbersf/Action-Build> | Upstream repository license |
-| sidex15/susfs4ksu-module | <https://github.com/sidex15/susfs4ksu-module> | Upstream repository license |
-| LineageOS GCC prebuilts | <https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1> | GPL-family toolchain notices |
-| Baseband Guard | <https://github.com/vc-teahouse/Baseband-guard> | Upstream repository license |
-| Re-Kernel | <https://github.com/Sakion-Team/Re-Kernel> | Upstream repository license |
-| Droidspaces-OSS | <https://github.com/ravindu644/Droidspaces-OSS> | Upstream repository license |
-| ABK_repo module catalog | <https://github.com/xingguangcuican6666/ABK_repo> | Upstream repository license |
-| AOSP kernel/common | <https://android.googlesource.com/kernel/common> | GPL-2.0 WITH Linux-syscall-note and AOSP notices |
-| AOSP kernel manifest | <https://android.googlesource.com/kernel/manifest> | AOSP project notices |
-| AOSP mkbootimg | <https://android.googlesource.com/platform/system/tools/mkbootimg> | Apache-2.0 |
-| AOSP kernel build-tools | <https://android.googlesource.com/kernel/prebuilts/build-tools> | AOSP project notices |
-| Android GKI certified boot images | <https://dl.google.com/android/gki/> | Android image distribution terms |
-| Android command line tools | `Dockerfile.test` | Android SDK License |
+| Android GKI 内核及 manifest | [kernel/common](https://android.googlesource.com/kernel/common)、[kernel/manifest](https://android.googlesource.com/kernel/manifest) | 按各官方仓库及文件中的 `COPYING`、`LICENSE`、SPDX 声明 |
+| SukiSU | [SukiSU-Ultra/SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | 当前适配提交的根目录 `LICENSE` 为 GNU GPL v3，`kernel/LICENSE` 为 GNU GPL v2；其他文件按其自身声明 |
+| SUSFS | [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) | 当前采用源码的 `LICENSE` 为 GNU GPL v3；保留具体文件的原有声明 |
 
-## APK-Bundled SukiSU Components
+GKI 目录更新直接核对 Android 官方 Gitiles refs 与 Makefile，新增条目固定完整源码提交。SukiSU/SUSFS 官方更新检查只记录候选；实际构建采用的兼容配对记录在 `build-compatibility.json`。
 
-The APK build workflows compile `userspace/ksud` from `SukiSU-Ultra/SukiSU-Ultra` for supported ABIs. Upstream ksud patches boot images with the in-process `android_bootimg` crate and no longer ships or requires `libmagiskboot.so`. Prebuilt `ksud` binaries are not committed to this repository. The upstream ref is declared in `.github/workflows/build-abk-app.yml` and `.github/workflows/build-abk-app-dev.yml`.
+## 保留的本地代码声明
 
-## Android / Gradle Dependencies
-
-The Android dependency list is derived from `gradle/libs.versions.toml` and `app/build.gradle.kts`. Gradle dependency resolution could not be executed in this local environment because Gradle failed to initialize its native platform library, so this section records direct declared dependencies.
-
-| Dependency | License |
+| 文件或组件 | 原有声明 |
 | --- | --- |
-| Android Gradle Plugin 9.1.1 | Apache-2.0 |
-| Kotlin Gradle / Compose plugin 2.3.21 | Apache-2.0 |
-| AndroidX Core KTX 1.15.0 | Apache-2.0 |
-| AndroidX Lifecycle Runtime KTX 2.8.7 | Apache-2.0 |
-| AndroidX Lifecycle ViewModel Compose 2.8.7 | Apache-2.0 |
-| AndroidX Activity Compose 1.9.3 | Apache-2.0 |
-| AndroidX Compose BOM 2026.05.00 | Apache-2.0 |
-| AndroidX Compose UI / Graphics / Tooling Preview | Apache-2.0 |
-| AndroidX Material3 1.5.0-alpha19 | Apache-2.0 |
-| AndroidX Material Icons Extended | Apache-2.0 |
-| Google Material Components 1.12.0 | Apache-2.0 |
-| AndroidX Navigation Compose 2.8.5 | Apache-2.0 |
-| Retrofit 2.11.0 and Gson converter | Apache-2.0 |
-| OkHttp 4.12.0 and logging-interceptor | Apache-2.0 |
-| Gson 2.11.0 | Apache-2.0 |
-| kotlinx-serialization-json 1.7.3 | Apache-2.0 |
-| libsu core / io 5.2.2 | Apache-2.0 |
-| Coil Compose 2.7.0 | Apache-2.0 |
-| WorkManager Runtime KTX 2.10.0 | Apache-2.0 |
-| DataStore Preferences 1.1.2 | Apache-2.0 |
-| JUnit 4.13.2 | EPL-1.0 |
-| AndroidX Test JUnit 1.2.1 | Apache-2.0 |
-| Espresso Core 3.6.1 | Apache-2.0 |
+| `ddk/xingguang-ddk/xingguang_ddk.c` | `MODULE_LICENSE("GPL")` |
+| `ddk/patches/xingguang-ddk/0001-xingguang-ddk-api.patch` 中新增头文件 | `SPDX-License-Identifier: GPL-2.0` |
+| `zram/lz4/Makefile` | `SPDX-License-Identifier: GPL-2.0-only` |
+| `zram/include/linux/lz4.h` | `SPDX-License-Identifier: BSD-2-Clause` |
 
-## Web npm Dependencies
+其他本地模块、补丁和源码文件保留各自的版权及许可声明。
 
-The web dependency list is derived from `web/package-lock.json`.
+## 构建依赖与 APK 内容
 
-| License | Packages |
-| --- | --- |
-| Apache-2.0 | `@webassemblyjs/leb128`, `@xtuc/long`, `baseline-browser-mapping`, `detect-libc` |
-| BSD-2-Clause | `eslint-scope`, `esrecurse`, `estraverse`, `glob-to-regexp`, `terser` |
-| BSD-3-Clause | `@xtuc/ieee754`, `fast-uri`, `flat`, `source-map`, `source-map-js` |
-| CC-BY-4.0 | `caniuse-lite` |
-| ISC | `electron-to-chromium`, `graceful-fs`, `icss-utils`, `isexe`, `picocolors`, `postcss-modules-extract-imports`, `postcss-modules-scope`, `postcss-modules-values`, `semver`, `which` |
-| MIT | `@discoveryjs/json-ext`, `@jridgewell/gen-mapping`, `@jridgewell/resolve-uri`, `@jridgewell/source-map`, `@jridgewell/sourcemap-codec`, `@jridgewell/trace-mapping`, `@parcel/watcher`, `@parcel/watcher-*`, `@types/eslint`, `@types/eslint-scope`, `@types/estree`, `@types/json-schema`, `@types/node`, `@webassemblyjs/ast`, `@webassemblyjs/floating-point-hex-parser`, `@webassemblyjs/helper-api-error`, `@webassemblyjs/helper-buffer`, `@webassemblyjs/helper-numbers`, `@webassemblyjs/helper-wasm-bytecode`, `@webassemblyjs/helper-wasm-section`, `@webassemblyjs/ieee754`, `@webassemblyjs/utf8`, `@webassemblyjs/wasm-edit`, `@webassemblyjs/wasm-gen`, `@webassemblyjs/wasm-opt`, `@webassemblyjs/wasm-parser`, `@webassemblyjs/wast-printer`, `@webpack-cli/configtest`, `@webpack-cli/info`, `@webpack-cli/serve`, `acorn`, `acorn-import-phases`, `ajv`, `ajv-formats`, `ajv-keywords`, `browserslist`, `buffer-from`, `chokidar`, `chrome-trace-event`, `clone-deep`, `colorette`, `commander`, `cross-spawn`, `css-loader`, `cssesc`, `enhanced-resolve`, `envinfo`, `es-module-lexer`, `escalade`, `events`, `fast-deep-equal`, `fastest-levenshtein`, `find-up`, `function-bind`, `has-flag`, `hasown`, `immutable`, `import-local`, `interpret`, `is-core-module`, `is-extglob`, `is-glob`, `is-plain-object`, `isobject`, `jest-worker`, `json-parse-even-better-errors`, `json-schema-traverse`, `kind-of`, `loader-runner`, `locate-path`, `merge-stream`, `mime-db`, `mime-types`, `mini-css-extract-plugin`, `nanoid`, `neo-async`, `node-addon-api`, `node-releases`, `p-limit`, `p-locate`, `p-try`, `path-exists`, `path-key`, `path-parse`, `picomatch`, `pkg-dir`, `postcss`, `postcss-modules-local-by-default`, `postcss-selector-parser`, `postcss-value-parser`, `readdirp`, `rechoir`, `require-from-string`, `resolve`, `resolve-cwd`, `resolve-from`, `sass`, `sass-loader`, `schema-utils`, `shallow-clone`, `shebang-command`, `shebang-regex`, `source-map-support`, `supports-color`, `supports-preserve-symlinks-flag`, `tapable`, `terser-webpack-plugin`, `undici-types`, `update-browserslist-db`, `util-deprecate`, `watchpack`, `webpack`, `webpack-cli`, `webpack-merge`, `webpack-sources`, `wildcard` |
+构建还会按所选功能读取 [AnyKernel3](https://github.com/WildKernels/AnyKernel3)、[WildKernels/kernel_patches](https://github.com/WildKernels/kernel_patches)、[ShirkNeko/SukiSU_patch](https://github.com/ShirkNeko/SukiSU_patch)、[Numbersf/Action-Build](https://github.com/Numbersf/Action-Build)、[Baseband Guard](https://github.com/vc-teahouse/Baseband-guard)、[Re-Kernel](https://github.com/Sakion-Team/Re-Kernel) 和 [Droidspaces-OSS](https://github.com/ravindu644/Droidspaces-OSS) 等项目，以及 Android/LineageOS 构建工具链。这些依赖的许可说明应查阅实际检出版本中的许可文件与版权声明。
 
-## Contributors
+配套 ARM64 SukiSU APK 从选定的 SukiSU 提交编译管理器、JNI 与 `ksud`，该版本需要时同时编译 `ksuinit`。其 Rust、Android 和 Gradle 依赖由同一源码提交中的 `Cargo.lock`、`Cargo.toml`、`manager/gradle/libs.versions.toml` 等声明；本仓库未提交预编译的 `ksud`。
 
-Contributor data is normalized from local git history to identifiable GitHub usernames/links and sorted by username. Automation accounts and identities without a reliable mapping are filtered out.
+APK 显示名为 SukiSU，包名为 `com.cyzrqh.gki.sukisu`，由本仓库固定密钥签名。源码提交与实际包信息随构建元数据记录，公开 Release 不包含签名私钥或密码。
+
+## 历史署名
+
+以下署名沿用历史引入说明，具体贡献范围以原项目历史为准：
 
 [@Akuma-Noko](https://github.com/Akuma-Noko), [@DebugBoard](https://github.com/DebugBoard), [@DreamFerry](https://github.com/DreamFerry), [@elysias123](https://github.com/elysias123), [@fanziyun](https://github.com/fanziyun), [@Fede2782](https://github.com/Fede2782), [@FixeQyt](https://github.com/FixeQyt), [@FunLay123](https://github.com/FunLay123), [@gsf114](https://github.com/gsf114), [@guruji-byte](https://github.com/guruji-byte), [@huime180](https://github.com/huime180), [@liqideqq](https://github.com/liqideqq), [@LX200944](https://github.com/LX200944), [@Mazha0309](https://github.com/Mazha0309), [@MiRinChan](https://github.com/MiRinChan), [@prpjzz](https://github.com/prpjzz), [@ReeViiS69](https://github.com/ReeViiS69), [@ShirkNeko](https://github.com/ShirkNeko), [@Starsun](https://github.com/Starsun), [@TheSillyOk](https://github.com/TheSillyOk), [@TheWildJames](https://github.com/TheWildJames), [@Tools-cx-app](https://github.com/Tools-cx-app), [@ukriu](https://github.com/ukriu), [@wrnxr233](https://github.com/wrnxr233), [@Xiaomichael](https://github.com/Xiaomichael), [@xingguangcuican6666](https://github.com/xingguangcuican6666), [@yx1234587](https://github.com/yx1234587), [@zzh20188](https://github.com/zzh20188).

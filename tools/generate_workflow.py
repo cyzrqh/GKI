@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate the only Actions workflow from a pinned ABK source and local overlays."""
+"""Regenerate the single Actions entry from locally maintained build templates."""
 from __future__ import annotations
 
 import argparse
@@ -9,6 +9,7 @@ import re
 from pathlib import Path
 
 import yaml
+from workflow_jobs import updater_job, release_job
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
@@ -77,7 +78,7 @@ def step_named(steps, name):
 
 
 def feature_inputs(source):
-    fields = copy.deepcopy(source['on']['workflow_dispatch']['inputs'])
+    fields = copy.deepcopy(source['inputs'])
     for key in ('revision', 'trigger_release', 'upload_aux_artifacts'):
         if key not in fields:
             raise ValueError(f'Upstream matrix input changed: {key}')
@@ -131,16 +132,16 @@ cp "$src/Image" ./Image
 if [ "$ARTIFACT_MODE" != '仅 AK3' ]; then
   mkdir -p bootimgs
   cp "$src/Image" bootimgs/Image
-  cp "$src/Image.lz4" bootimgs/Image.lz4
+  # KPM patches the final Image after compilation; compress that same image.
+  lz4 -l -12 -f ./Image bootimgs/Image.lz4
+  lz4 -dc bootimgs/Image.lz4 | cmp - ./Image
 fi
 '''
 
 PREPARE_AK3 = '''set -euo pipefail
 cp ./Image "$ANYKERNEL3/Image"
-if [ "$ARTIFACT_MODE" != '仅 AK3' ]; then
-  zip_name="${GKI_ANDROID}-${GKI_KERNEL}.${GKI_SUBLEVEL}-${GKI_PATCH}-AnyKernel3.zip"
-  (cd "$ANYKERNEL3" && zip -r "$GITHUB_WORKSPACE/$zip_name" ./*)
-fi
+zip_name="${GKI_ANDROID}-${GKI_KERNEL}.${GKI_SUBLEVEL}-${GKI_PATCH}-AnyKernel3.zip"
+(cd "$ANYKERNEL3" && zip -r "$GITHUB_WORKSPACE/$zip_name" ./*)
 '''
 
 
@@ -155,7 +156,8 @@ def manager_job():
         'name': '编译配套 SukiSU 管理器 APK', 'if': MANAGER_IF,
         'needs': 'prepare-matrix', 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 60,
         'outputs': {key: '${{ steps.sign.outputs.' + key + ' }}'
-                    for key in ('manager_package', 'manager_cert_size', 'manager_cert_sha256', 'apk_sha256')},
+                    for key in ('manager_package', 'manager_cert_size', 'manager_cert_sha256', 'apk_sha256',
+                                'manager_version_name', 'manager_version_code', 'apk_filename')},
         'steps': [
             {'name': '检出构建工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
             {'name': '检查固定 APK 签名配置',
@@ -185,7 +187,7 @@ rustup target add aarch64-linux-android --toolchain stable
             {'name': '编译管理器与同版本 ksud',
              'env': {'KSU_PACKAGE_NAME': 'com.cyzrqh.gki.sukisu',
                      'ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME': 'com.cyzrqh.gki.sukisu',
-                     'ORG_GRADLE_PROJECT_KSU_NAME': 'SukiSU GKI'},
+                     'ORG_GRADLE_PROJECT_KSU_NAME': 'SukiSU'},
              'run': '''bash -n tools/build_sukisu_manager.sh
 bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
 '''},
@@ -194,95 +196,32 @@ bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" -
                      'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}',
                      'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}'},
              'run': '''python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \\
-  --output "$GITHUB_WORKSPACE/manager-artifact/SukiSU-Manager-$KSU_SHORT-arm64.apk"
+  --output-dir "$GITHUB_WORKSPACE/manager-artifact"
 '''},
+            {'name': '记录管理器真实版本',
+             'env': {'META_FILE': '${{ steps.sign.outputs.apk_filename }}',
+                     'META_PACKAGE': '${{ steps.sign.outputs.manager_package }}',
+                     'META_KSU_VERSION_CODE': '${{ steps.sign.outputs.manager_version_code }}',
+                     'META_KSU_VERSION_NAME': '${{ steps.sign.outputs.manager_version_name }}',
+                     'META_KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
+                     'META_KSU_BRANCH': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
+                     'META_ENABLE_SUSFS': '${{ inputs.enable_susfs }}'},
+             'run': 'python3 tools/capture_manager_metadata.py --output manager-artifact/manager.json'},
             {'name': '上传 SukiSU 安装包', 'uses': 'actions/upload-artifact@v6',
-             'with': {'name': 'SukiSU-Manager-${{ needs.prepare-matrix.outputs.ksu_short }}-arm64',
-                      'path': 'manager-artifact/*.apk', 'if-no-files-found': 'error', 'compression-level': 0}},
-        ],
-    }
-
-
-def updater_job():
-    return {
-        'name': '检查上游并准备更新 PR',
-        'if': "(github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch",
-        'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
-        'permissions': {'contents': 'read', 'pull-requests': 'write'},
-        'concurrency': {'group': '${{ github.repository }}-upstream-sync', 'cancel-in-progress': False},
-        'steps': [
-            {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
-             'with': {'ref': '${{ github.event.repository.default_branch }}', 'fetch-depth': 0,
-                      'persist-credentials': False}},
-            {'name': '准备 Python', 'uses': 'actions/setup-python@v6', 'with': {'python-version': '3.12'}},
-            {'name': '安装同步工具依赖', 'run': 'python -m pip install -r requirements.txt'},
-            {'name': '读取上游版本', 'id': 'probe',
-             'env': {'GH_TOKEN': '${{ github.token }}'},
-             'run': 'python tools/check_upstream_updates.py --check-only'},
-            {'name': '检查更新分支归属和已有 PR', 'id': 'guard',
-             'if': "steps.probe.outputs.has_updates == 'true'",
-             'env': {'GH_TOKEN': '${{ github.token }}', 'HEADS_MARKER': '${{ steps.probe.outputs.heads_marker }}',
-                     'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
-             'run': 'python tools/upstream_pr_guard.py --heads-marker "$HEADS_MARKER" --base "$DEFAULT_BRANCH" --github-output "$GITHUB_OUTPUT"'},
-            {'name': '导入并验证相关更新', 'id': 'update',
-             'if': "steps.probe.outputs.has_updates == 'true' && steps.guard.outputs.already_pending != 'true'",
-             'env': {'GH_TOKEN': '${{ github.token }}', 'CANDIDATES': '${{ steps.probe.outputs.latest_json }}'},
-             'run': '''set -euo pipefail
-abk_commit=$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATES"])["abk"])')
-catalog_commit=$(python -c 'import json,os; print(json.loads(os.environ["CANDIDATES"])["catalog"])')
-python tools/check_upstream_updates.py --prepare --abk-commit "$abk_commit" \\
-  --catalog-commit "$catalog_commit" --report-dir "$RUNNER_TEMP"
-'''},
-            {'name': '检查更新令牌是否已配置',
-             'if': "steps.update.outputs.has_updates == 'true'",
-             'env': {'SYNC_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN }}'},
-             'run': '''if [ -z "$SYNC_TOKEN" ]; then
-  echo '::error::发现可用更新，但尚未配置 UPSTREAM_SYNC_TOKEN。请按 README 的自动更新设置添加仓库 Secret。'
-  exit 1
-fi
-'''},
-            {'name': '创建或更新上游 PR', 'id': 'pr',
-             'if': "steps.update.outputs.has_updates == 'true'",
-             'uses': 'peter-evans/create-pull-request@v8',
-             'with': {'token': '${{ secrets.UPSTREAM_SYNC_TOKEN }}',
-                      'branch': 'automation/upstream-sync',
-                      'base': '${{ github.event.repository.default_branch }}',
-                      'title': '${{ steps.update.outputs.title }}',
-                      'body-path': '${{ steps.update.outputs.body_path }}',
-                      'commit-message': 'Update upstream build logic and kernel catalog',
-                      'assignees': '${{ github.repository_owner }}',
-                      'add-paths': '.upstream/\n.github/scripts/\n.github/workflows/kernel-full-feature-matrix.yml\nconfig/\nddk/\nmodules/\nzram/\nhmbird_patch.c\nLICENSE\nTHIRD_PARTY_NOTICES.md\ndata/\nupstream.lock.json\n'}},
-            {'name': '提醒仓库所有者审核更新',
-             'if': "steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'",
-             'env': {'GH_TOKEN': '${{ github.token }}', 'PR_NUMBER': '${{ steps.pr.outputs.pull-request-number }}',
-                     'REPOSITORY_OWNER': '${{ github.repository_owner }}'},
-             'run': '''gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \\
-  --raw-field body="@$REPOSITORY_OWNER 有一批相关上游更新已导入并通过检查，请查看本 PR 的差异后决定是否合并。此次检查没有编译内核。"
-'''},
-            {'name': '记录检查结果',
-             'env': {'PR_URL': '${{ steps.pr.outputs.pull-request-url }}',
-                     'ALREADY_PENDING': '${{ steps.guard.outputs.already_pending }}',
-                     'EXISTING_PR': '${{ steps.guard.outputs.pull_request_url }}'},
-             'run': '''if [ -n "$PR_URL" ]; then
-  printf '上游更新已准备：[查看更新 PR](%s)。审核后可手动合并。\\n' "$PR_URL" >> "$GITHUB_STEP_SUMMARY"
-elif [ "$ALREADY_PENDING" = true ]; then
-  printf '相同上游版本已有待审核 PR：%s；无需重复更新。\\n' "$EXISTING_PR" >> "$GITHUB_STEP_SUMMARY"
-else
-  echo '没有需要导入的相关上游更新。' >> "$GITHUB_STEP_SUMMARY"
-fi
-'''},
+             'with': {'name': 'Release-Manager-${{ needs.prepare-matrix.outputs.ksu_short }}',
+                      'path': 'manager-artifact/*', 'if-no-files-found': 'error', 'compression-level': 0}},
         ],
     }
 
 
 def create_workflow(root):
     from matrix import build_matrix
-    source = load_yaml(root / '.upstream/abk-build.yml')
-    matrix_source = load_yaml(root / '.upstream/abk-matrix.yml')
-    if set(source['jobs']) != {'build-kernel'}:
-        raise ValueError('Upstream build jobs changed; review the overlay before updating')
+    source = load_yaml(root / 'templates/kernel-job.yml')
+    matrix_source = load_yaml(root / 'templates/menu.yml')
+    if set(source) != {'inputs', 'job'}:
+        raise ValueError('Local kernel build template has an unsupported schema')
     dispatch = feature_inputs(matrix_source)
-    declarations = source['on']['workflow_call']['inputs']
+    declarations = source['inputs']
     mapping = {key: f'inputs.{key}' for key in dispatch}
     mapping.update({key: f'matrix.{key}' for key in ('android_version', 'kernel_version', 'sub_level', 'os_patch_level', 'revision')})
     mapping.update({'ksu_variant': 'inputs.kernelsu_variant', 'ksu_branch': 'inputs.kernelsu_branch'})
@@ -306,7 +245,7 @@ def create_workflow(root):
         'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '')",
     })
     # Required values are supplied by the matrix / renamed inputs above.
-    job = copy.deepcopy(source['jobs']['build-kernel'])
+    job = copy.deepcopy(source['job'])
     steps = job['steps']
     guard = step_named(steps, '校验自定义内核版本组合')
     if 'KNOWN_KERNEL_PAIRS=' not in guard.get('run', ''):
@@ -331,10 +270,8 @@ def create_workflow(root):
                    'GKI_PATCH': '${{ matrix.os_patch_level }}', 'GKI_KERNEL_REF': '${{ matrix.kernel_ref }}'}
     step['run'] = SOURCE_SYNC
     step = step_named(steps, '添加一加 8E 处理器支持')
-    old_url = 'curl -LSs "https://github.com/xingguangcuican6666/ABK/raw/refs/heads/dev/hmbird_patch.c" -o hmbird_patch.c'
-    if old_url not in step['run']:
-        raise ValueError('Upstream hmbird patch fetch changed')
-    step['run'] = step['run'].replace(old_url, 'cp "$GITHUB_WORKSPACE/hmbird_patch.c" ./hmbird_patch.c')
+    if 'cp "$GITHUB_WORKSPACE/hmbird_patch.c" ./hmbird_patch.c' not in step['run']:
+        raise ValueError('OnePlus support must use the locally maintained source file')
 
     # Resolve mutable refs once, so all kernels and the APK share one commit.
     branch = step_named(steps, '确定 KernelSU 分支')
@@ -405,13 +342,22 @@ fi
         'ksu_dir / "kpm/super_access.c") if path.is_file()), ksu_dir / "kpm/super_access.c")')
     compile_step = step_named(steps, '编译内核')
     steps.insert(steps.index(compile_step), {
+        'name': '在内核中记录实际构建配置',
+        'run': '''set -euo pipefail
+sed -i '/^CONFIG_IKCONFIG=/d; /^# CONFIG_IKCONFIG is not set$/d' "$DEFCONFIG"
+echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
+''',
+    })
+    steps.insert(steps.index(compile_step), {
         'name': '配对管理器包名与签名', 'if': "inputs.ksu_variant == 'SukiSU'",
         'env': {'MANAGER_PACKAGE': '${{ needs.build-sukisu-manager.outputs.manager_package }}',
                 'MANAGER_CERT_SIZE': '${{ needs.build-sukisu-manager.outputs.manager_cert_size }}',
-                'MANAGER_CERT_SHA256': '${{ needs.build-sukisu-manager.outputs.manager_cert_sha256 }}'},
+                'MANAGER_CERT_SHA256': '${{ needs.build-sukisu-manager.outputs.manager_cert_sha256 }}',
+                'MANAGER_VERSION_CODE': '${{ needs.build-sukisu-manager.outputs.manager_version_code }}'},
         'run': '''python3 "$GITHUB_WORKSPACE/tools/set_manager_signature.py" \\
   --kernel-root "$KERNEL_ROOT" --package "$MANAGER_PACKAGE" \\
-  --cert-size "$MANAGER_CERT_SIZE" --cert-sha256 "$MANAGER_CERT_SHA256"
+  --cert-size "$MANAGER_CERT_SIZE" --cert-sha256 "$MANAGER_CERT_SHA256" \\
+  --version-code "$MANAGER_VERSION_CODE"
 ''',
     })
     steps.insert(steps.index(compile_step), {
@@ -444,6 +390,26 @@ fi
     steps.remove(bundle)
     upload_index = steps.index(upload)
     steps[upload_index:upload_index+1] = [
+        {'name': '记录内核实际配置',
+         'env': {'META_FILE': '${{ matrix.android_version }}-${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-AnyKernel3.zip',
+                 'META_ANDROID_VERSION': '${{ matrix.android_version }}', 'META_KERNEL_VERSION': '${{ matrix.kernel_version }}',
+                 'META_SUB_LEVEL': '${{ matrix.sub_level }}', 'META_OS_PATCH_LEVEL': '${{ matrix.os_patch_level }}',
+                 'META_KSU_VARIANT': '${{ inputs.ksu_variant }}',
+                 'META_KSU_BRANCH': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
+                 'META_KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
+                 'META_KSU_VERSION_CODE': "${{ inputs.ksu_variant == 'SukiSU' && needs.build-sukisu-manager.outputs.manager_version_code || env.KSU_VERSION }}",
+                 'META_KSU_VERSION_NAME': "${{ inputs.ksu_variant == 'SukiSU' && needs.build-sukisu-manager.outputs.manager_version_name || '' }}",
+                 'META_ENABLE_SUSFS': '${{ inputs.enable_susfs }}',
+                 'META_EXPECTED_SUSFS_VERSION': '${{ env.SUSFS_COMPAT_VERSION }}',
+                 'ARTIFACT_MODE': '${{ inputs.artifact_mode }}'},
+         'run': '''python3 tools/capture_build_metadata.py --kernel-root "$KERNEL_ROOT" \\
+  --image "$GITHUB_WORKSPACE/Image" --output release-ready/kernel.json
+python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
+  --workspace "$GITHUB_WORKSPACE" --output release-ready --mode "$ARTIFACT_MODE"
+'''},
+        {'name': '上传 Release 内核文件', 'uses': 'actions/upload-artifact@v6',
+         'with': {'name': 'Release-${{ inputs.ksu_variant }}-${{ env.CONFIG }}', 'path': 'release-ready/*',
+                  'if-no-files-found': 'error', 'compression-level': 0}},
         {'name': '上传可直接刷入的 AK3 包', 'if': "inputs.artifact_mode == '仅 AK3'", 'uses': 'actions/upload-artifact@v6',
          'with': {'name': 'AnyKernel3-${{ inputs.ksu_variant }}-${{ env.CONFIG }}', 'path': 'AnyKernel3/*',
                   'if-no-files-found': 'error', 'compression-level': 9}},
@@ -473,6 +439,11 @@ fi
             step.pop('if')
         filtered_steps.append(step)
     job['steps'] = filtered_steps
+    summary = step_named(job['steps'], '构建信息摘要')
+    summary['run'] = re.sub(r'^echo "管理器包名[^\n]+$',
+                            'echo "管理器包名    : ${GKI_MANAGER_PACKAGE:-由所选 KernelSU 决定}"',
+                            summary['run'], count=1, flags=re.M)
+    job['env']['GKI_MANAGER_PACKAGE'] = '${{ needs.build-sukisu-manager.outputs.manager_package }}'
     job['if'] = KERNEL_JOB_IF
     job['needs'] = ['prepare-matrix', 'build-sukisu-manager']
     job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
@@ -519,16 +490,15 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
         'on': {'workflow_dispatch': {'inputs': dispatch}, 'schedule': [{'cron': '17 0 * * *'}]},
         'permissions': {'contents': 'read'},
         'jobs': {'prepare-matrix': prepare, 'build-sukisu-manager': manager_job(),
-                 'build-kernel': job, 'check-upstream': updater_job()},
+                 'build-kernel': job, 'publish-release': release_job(), 'check-upstream': updater_job()},
     }
     return workflow
 
 
 def generate(root):
     workflow = create_workflow(root)
-    lock = json.loads((root / 'upstream.lock.json').read_text(encoding='utf-8'))
     header = ('# Generated by tools/generate_workflow.py; edit the generator to keep changes across updates.\n'
-              f"# ABK {lock['abk']['commit']}\n# Version catalog {lock['catalog']['commit']}\n")
+              '# Locally maintained templates and official-source version catalog.\n')
     content = header + yaml.dump(workflow, Dumper=Dumper, allow_unicode=True, sort_keys=False, width=120)
     # Reparse generated output before replacing the existing file.
     yaml.load(content, Loader=Loader)

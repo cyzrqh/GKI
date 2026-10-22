@@ -117,14 +117,18 @@ class ManagerSigningTests(unittest.TestCase):
             metadata = self.run_signing()
         self.assertEqual([Path(args[0]).name + (":" + args[1] if Path(args[0]).name == "apksigner" else "")
                           for args, _ in self.calls],
-                         ["zipalign", "apksigner:sign", "keytool", "apksigner:verify", "aapt2"])
-        self.assertEqual(self.calls[0][0][1:5], ["-P", "16", "-f", "4"])
-        sign_args = self.calls[1][0]
+                         ["aapt2", "zipalign", "apksigner:sign", "keytool", "apksigner:verify", "aapt2"])
+        self.assertEqual(self.calls[0][0][-1], str(self.unsigned.resolve()))
+        self.assertEqual(self.calls[1][0][1:5], ["-P", "16", "-f", "4"])
+        sign_args = self.calls[2][0]
         self.assertEqual(sign_args[sign_args.index("--ks-type") + 1], "PKCS12")
         self.assertEqual(sign_args[sign_args.index("--ks-key-alias") + 1], "gki-sukisu")
         self.assertIn(f"env:{signing.PASSWORD_ENV}", sign_args)
-        self.assertIn("-storepass:env", self.calls[2][0])
+        self.assertIn("-storepass:env", self.calls[3][0])
         self.assertEqual(metadata["manager_package"], "com.sukisu.ultra")
+        self.assertEqual(metadata["manager_version_name"], "v4.2.1")
+        self.assertEqual(metadata["manager_version_code"], 41030)
+        self.assertEqual(metadata["apk_filename"], "SukiSU.apk")
         self.assertEqual(metadata["manager_cert_size"], len(CERTIFICATE))
         self.assertEqual(metadata["manager_cert_sha256"], CERTIFICATE_SHA)
         self.assertEqual(metadata["apk_sha256"], hashlib.sha256(self.output.read_bytes()).hexdigest())
@@ -235,7 +239,7 @@ class ManagerSigningTests(unittest.TestCase):
     def test_signed_apk_is_checked_again_after_sdk_commands(self):
         def corrupt(args, **kwargs):
             result = self.fake_sdk(args, **kwargs)
-            if Path(args[0]).name == "aapt2":
+            if Path(args[0]).name == "aapt2" and Path(args[-1]) != self.unsigned.resolve():
                 self.make_apk(Path(args[-1]), include_daemon=False)
             return result
         with patch.object(signing.subprocess, "run", side_effect=corrupt):
@@ -265,9 +269,81 @@ class ManagerSigningTests(unittest.TestCase):
                 code = signing.main(["--unsigned", str(self.unsigned), "--output", str(self.output)])
         self.assertEqual(code, 0)
         metadata = json.loads(stdout.getvalue())
-        self.assertEqual(set(metadata), {"manager_package", "manager_cert_size", "manager_cert_sha256", "apk_sha256"})
+        self.assertEqual(set(metadata), {"manager_package", "manager_cert_size", "manager_cert_sha256", "apk_sha256",
+                                         "manager_version_name", "manager_version_code", "apk_filename"})
         self.assertNotIn(PASSWORD, stdout.getvalue())
         self.assertNotIn(ENCODED_KEY, stdout.getvalue())
+
+    def test_output_directory_uses_actual_version_without_duplicating_v(self):
+        directory = self.root / 'versioned-artifacts'
+        with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+            metadata = signing.sign_manager(self.unsigned, output_dir=directory)
+        filename = 'SukiSU_v4.2.1_41030-release.apk'
+        self.assertEqual(metadata['apk_filename'], filename)
+        self.assertTrue((directory / filename).is_file())
+        self.assertEqual(list(directory.iterdir()), [directory / filename])
+        outputs = self.workflow_output.read_text(encoding='utf-8')
+        self.assertIn('manager_version_name=v4.2.1\n', outputs)
+        self.assertIn('manager_version_code=41030\n', outputs)
+        self.assertIn('apk_filename=' + filename + '\n', outputs)
+
+    def test_version_path_is_cleaned_while_public_metadata_keeps_actual_version(self):
+        def unsafe_version(args, **kwargs):
+            result = self.fake_sdk(args, **kwargs)
+            if Path(args[0]).name == 'aapt2':
+                result.stdout = result.stdout.replace('v4.2.1', 'vv4.2.1/../branch @name')
+            return result
+        directory = self.root / 'versioned-artifacts'
+        with patch.object(signing.subprocess, 'run', side_effect=unsafe_version):
+            metadata = signing.sign_manager(self.unsigned, output_dir=directory)
+        self.assertEqual(metadata['manager_version_name'], 'vv4.2.1/../branch @name')
+        self.assertEqual(metadata['apk_filename'], 'SukiSU_v4.2.1_.._branch_name_41030-release.apk')
+        self.assertEqual((directory / metadata['apk_filename']).parent, directory)
+
+    def test_invalid_version_metadata_fails_before_creating_signing_key(self):
+        for fragment in ["versionCode='0'", "versionCode='2147483648'", "versionCode='01'",
+                         "versionCode='not-a-number'", "versionName=''", "versionName='bad\nversion'",
+                         "versionName='v4.2.1' versionName='duplicate'"]:
+            def invalid(args, **kwargs):
+                result = self.fake_sdk(args, **kwargs)
+                if Path(args[0]).name == 'aapt2':
+                    field = 'versionCode' if fragment.startswith('versionCode') else 'versionName'
+                    result.stdout = result.stdout.replace(
+                        "versionCode='41030'" if field == 'versionCode' else "versionName='v4.2.1'", fragment)
+                return result
+            with self.subTest(fragment=fragment), patch.object(signing.subprocess, 'run', side_effect=invalid):
+                with self.assertRaises(signing.SigningError):
+                    signing.sign_manager(self.unsigned, output_dir=self.output.parent)
+                self.assertFalse(self.private_paths)
+                self.assertFalse(self.workflow_output.exists())
+
+    def test_signed_version_and_package_must_match_source_actual_metadata(self):
+        for before, after in [("versionName='v4.2.1'", "versionName='v9.0'"),
+                              ("versionCode='41030'", "versionCode='99999'"),
+                              ("com.sukisu.ultra", "com.example.changed")]:
+            def different(args, **kwargs):
+                result = self.fake_sdk(args, **kwargs)
+                if Path(args[0]).name == 'aapt2' and Path(args[-1]) != self.unsigned.resolve():
+                    result.stdout = result.stdout.replace(before, after)
+                return result
+            with self.subTest(after=after), patch.object(signing.subprocess, 'run', side_effect=different):
+                with self.assertRaisesRegex(signing.SigningError, 'does not match the source APK'):
+                    self.run_signing()
+                self.assertFalse(self.output.exists())
+                self.assertFalse(self.workflow_output.exists())
+                self.assertFalse(list(self.private_root.iterdir()))
+
+    def test_output_directory_cli_is_supported_and_output_flags_are_exclusive(self):
+        stdout = io.StringIO()
+        directory = self.root / 'versioned-artifacts'
+        with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+            with contextlib.redirect_stdout(stdout):
+                code = signing.main(['--unsigned', str(self.unsigned), '--output-dir', str(directory)])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(stdout.getvalue())['apk_filename'], 'SukiSU_v4.2.1_41030-release.apk')
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            signing.main(['--unsigned', str(self.unsigned), '--output', str(self.output),
+                          '--output-dir', str(directory)])
 
 
 if __name__ == "__main__":

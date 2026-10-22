@@ -60,16 +60,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(pr['with']['token'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
         self.assertNotIn('tools/', pr['with']['add-paths'])
         self.assertNotIn('tests/', pr['with']['add-paths'])
-        self.assertIn('.github/workflows/kernel-full-feature-matrix.yml', pr['with']['add-paths'])
+        self.assertEqual(pr['with']['add-paths'], 'data/kernels.json\ndata/upstream-candidates.json\n')
         self.assertNotIn('auto-merge', str(steps))
         update = indexed['update'][1]
-        self.assertEqual(update['env']['CANDIDATES'], '${{ steps.probe.outputs.latest_json }}')
-        self.assertIn('--abk-commit "$abk_commit"', update['run'])
-        self.assertIn('--catalog-commit "$catalog_commit"', update['run'])
+        self.assertEqual(update['env']['OFFICIAL_CANDIDATES'], '${{ steps.official.outputs.candidates_json }}')
+        self.assertEqual(update['env']['CATALOG_CANDIDATES'], '${{ steps.catalog.outputs.candidates_json }}')
+        self.assertIn('--candidates-json "$OFFICIAL_CANDIDATES"', update['run'])
+        self.assertIn('--apply-candidates-json "$CATALOG_CANDIDATES"', update['run'])
+        self.assertNotIn('sync_upstream.py', str(steps))
+        self.assertNotIn('xingguangcuican6666', str(steps))
 
     def test_notification_comes_from_bot_only_when_pr_changed(self):
         step = next(step for step in self.workflow['jobs']['check-upstream']['steps']
-                    if step['name'] == '提醒仓库所有者审核更新')
+                    if step['name'] == '提醒所有者审核官方更新')
         self.assertEqual(step['env']['GH_TOKEN'], '${{ github.token }}')
         self.assertIn("pull-request-operation == 'created'", step['if'])
         self.assertIn("pull-request-operation == 'updated'", step['if'])
@@ -95,6 +98,7 @@ class WorkflowTests(unittest.TestCase):
         build = next(step for step in manager['steps'] if step['name'] == '编译管理器与同版本 ksud')
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], build['env']['ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME'])
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], 'com.cyzrqh.gki.sukisu')
+        self.assertEqual(build['env']['ORG_GRADLE_PROJECT_KSU_NAME'], 'SukiSU')
         self.assertNotIn('secrets.', str(build))
         sign = next(step for step in manager['steps'] if step.get('id') == 'sign')
         self.assertIn('secrets.SUKISU_APK_KEYSTORE', sign['env']['SUKISU_APK_KEYSTORE'])
@@ -106,6 +110,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--package "$MANAGER_PACKAGE"', signature['run'])
         names = [step.get('name') for step in self.steps]
         self.assertLess(names.index(signature['name']), names.index('编译内核'))
+
+    def test_release_contains_direct_files_and_only_runs_after_success(self):
+        release = self.workflow['jobs']['publish-release']
+        self.assertEqual(release['permissions'], {'contents': 'write'})
+        self.assertIn("needs.build-kernel.result == 'success'", release['if'])
+        self.assertIn("inputs.operation == '仅编译 SukiSU 安装包'", release['if'])
+        self.assertNotIn('schedule', release['if'])
+        self.assertIn("github.event_name == 'workflow_dispatch'", release['if'])
+        publish = next(step for step in release['steps'] if step.get('id') == 'release')
+        self.assertIn('--notes-file release-publish/release.md', publish['run'])
+        self.assertLess(publish['run'].index('--draft --title'), publish['run'].index('gh release upload'))
+        self.assertLess(publish['run'].index('gh release upload'), publish['run'].index('--draft=false'))
+        self.assertIn('CONFIG_IKCONFIG=y', self.find('在内核中记录实际构建配置')['run'])
+        self.assertIn('capture_build_metadata.py', self.find('记录内核实际配置')['run'])
+
+    def test_runtime_has_no_abk_network_or_app_dependency(self):
+        text = str(self.workflow)
+        self.assertNotIn('xingguangcuican6666/ABK', text)
+        names = [step.get('name') for step in self.steps]
+        self.assertNotIn('准备 ABK 管理器证书元数据', names)
+        self.assertNotIn('校验 ABK 管理器桥接', names)
 
     def test_susfs23_port_precedes_legacy_patches_and_uses_real_preinit(self):
         names = [step.get('name') for step in self.steps]
@@ -146,6 +171,9 @@ class WorkflowTests(unittest.TestCase):
     def test_ak3_preparation_does_not_require_compressed_image(self):
         run = self.find('准备 AK3 内核文件')['run']
         self.assertLess(run.index("if [ \"$ARTIFACT_MODE\" != '仅 AK3' ]"), run.index('Image.lz4'))
+        self.assertIn('lz4 -l -12 -f ./Image bootimgs/Image.lz4', run)
+        self.assertIn('lz4 -dc bootimgs/Image.lz4 | cmp - ./Image', run)
+        self.assertNotIn('$src/Image.lz4', run)
 
     def test_month_is_part_of_workspace_and_artifact_identity(self):
         run = self.find('初始化构建环境')['run']

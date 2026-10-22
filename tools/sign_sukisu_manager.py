@@ -116,6 +116,37 @@ def parse_package(badging: str) -> str:
     return matches[0]
 
 
+def parse_apk_metadata(badging: str) -> dict[str, str | int]:
+    package = parse_package(badging)
+    rows = re.findall(r"^package:[^\r\n]*", badging, re.M)
+    if len(rows) != 1:
+        raise SigningError("aapt2 did not return one package metadata row.")
+    fields = {}
+    for field in ("versionName", "versionCode"):
+        values = re.findall(r"(?:^|\s)" + field + r"='([^'\r\n]*)'(?=\s|$)", rows[0])
+        if len(values) != 1:
+            raise SigningError(f"aapt2 did not return one valid {field}.")
+        fields[field] = values[0]
+    version = fields["versionName"]
+    if not version or len(version) > 128 or any(ord(char) < 32 or ord(char) > 126 for char in version):
+        raise SigningError("aapt2 did not return a nonempty printable ASCII versionName.")
+    code = fields["versionCode"]
+    if not re.fullmatch(r"[1-9][0-9]{0,9}", code) or int(code) > 2147483647:
+        raise SigningError("aapt2 did not return a positive Android versionCode.")
+    return {"manager_package": package, "manager_version_name": version,
+            "manager_version_code": int(code)}
+
+
+def apk_filename(metadata: dict[str, str | int]) -> str:
+    # The version itself remains unchanged in metadata. Only the public path
+    # component is sanitized, and an upstream v prefix is emitted once.
+    version = re.sub(r"[^A-Za-z0-9._+-]+", "_", str(metadata["manager_version_name"]))
+    version = version.lstrip("vV").strip("._-")
+    if not version:
+        raise SigningError("The manager versionName cannot form a safe APK filename.")
+    return f"SukiSU_v{version}_{metadata['manager_version_code']}-release.apk"
+
+
 def verify_certificate(report: str, certificate: bytes) -> str:
     if not certificate or len(certificate) > 64 * 1024:
         raise SigningError("keytool did not export a valid-sized DER certificate.")
@@ -142,14 +173,24 @@ def write_outputs(metadata: dict[str, str | int]) -> None:
                 stream.write(f"{key}={value}\n")
 
 
-def sign_manager(unsigned: Path, output: Path) -> dict[str, str | int]:
+def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path | None = None) -> dict[str, str | int]:
     unsigned = Path(unsigned).resolve()
-    output = Path(output).resolve()
+    if (output is None) == (output_dir is None):
+        raise SigningError("Choose exactly one signed output file or output directory.")
+    output = Path(output).resolve() if output is not None else None
     if unsigned == output:
         raise SigningError("The signed output must be a separate file from the unsigned input.")
     keystore_bytes, password, secrets = signing_material()
     tools = sdk_tools()
     validate_apk(unsigned)
+    source_badging = run_command([tools["aapt2"], "dump", "badging", str(unsigned)], password, secrets)
+    source_metadata = parse_apk_metadata(source_badging)
+    if output is None:
+        output = Path(output_dir).resolve() / apk_filename(source_metadata)
+        if unsigned == output:
+            raise SigningError("The signed output must be a separate file from the unsigned input.")
+    if any(ord(char) < 32 or ord(char) > 126 for char in output.name):
+        raise SigningError("The signed APK filename must contain only printable ASCII characters.")
     output.parent.mkdir(parents=True, exist_ok=True)
 
     # The private key stays outside the source/artifact tree and is deleted by
@@ -186,13 +227,16 @@ def sign_manager(unsigned: Path, output: Path) -> dict[str, str | int]:
                                    password, secrets)
         certificate_sha256 = verify_certificate(verification, certificate)
         badging = run_command([tools["aapt2"], "dump", "badging", str(signed)], password, secrets)
-        package = parse_package(badging)
+        signed_metadata = parse_apk_metadata(badging)
+        if signed_metadata != source_metadata:
+            raise SigningError("The signed APK package/version metadata does not match the source APK.")
         validate_apk(signed)
         metadata = {
-            "manager_package": package,
+            **signed_metadata,
             "manager_cert_size": len(certificate),
             "manager_cert_sha256": certificate_sha256,
             "apk_sha256": hashlib.sha256(signed.read_bytes()).hexdigest(),
+            "apk_filename": output.name,
         }
 
         # Publish atomically. Any signing/verification error leaves an existing
@@ -215,10 +259,12 @@ def sign_manager(unsigned: Path, output: Path) -> dict[str, str | int]:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--unsigned", required=True, type=Path)
-    parser.add_argument("--output", required=True, type=Path)
+    destination = parser.add_mutually_exclusive_group(required=True)
+    destination.add_argument("--output", type=Path, help="Explicit signed APK path (compatibility mode)")
+    destination.add_argument("--output-dir", type=Path, help="Directory for the APK named using its real version")
     args = parser.parse_args(argv)
     try:
-        metadata = sign_manager(args.unsigned, args.output)
+        metadata = sign_manager(args.unsigned, args.output, output_dir=args.output_dir)
     except (SigningError, OSError, UnicodeError) as error:
         values = (os.environ.get(KEYSTORE_ENV, ""), os.environ.get(PASSWORD_ENV, ""))
         print("Manager APK signing stopped: " + redact(str(error), values), file=sys.stderr)

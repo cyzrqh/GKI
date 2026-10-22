@@ -18,7 +18,9 @@ BRANCH_PATTERN = re.compile(r"android[0-9]+-[0-9]+\.[0-9]+-(?:[0-9]{4}-(?:0[1-9]
 
 
 def validate_ref(ref: str) -> str:
-    """Accept full branch/tag names, excluding Git's special revision syntax."""
+    """Accept full branch/tag names or immutable full commit IDs."""
+    if isinstance(ref, str) and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", ref):
+        return ref.lower()
     if not isinstance(ref, str) or not re.fullmatch(r"refs/(?:heads|tags)/[A-Za-z0-9._/-]+", ref):
         raise ValueError(f"Invalid kernel ref: {ref!r}")
     parts = ref.split("/")

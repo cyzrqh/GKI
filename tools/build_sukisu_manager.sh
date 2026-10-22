@@ -113,8 +113,12 @@ bash ./gradlew --no-daemon --stacktrace assembleRelease
 
 python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" <<'PY'
 from pathlib import Path
+import json
+import os
+import re
 import shutil
 import struct
+import subprocess
 import sys
 import zipfile
 release, output = map(Path, sys.argv[1:])
@@ -124,6 +128,8 @@ if len(apks) != 1:
 apk = apks[0]
 if 'unsigned' not in apk.stem.lower():
     raise SystemExit('Expected the unsigned release APK; signing material must remain outside the source build.')
+if not apk.name.endswith('-unsigned.apk') or any(ord(char) < 32 or ord(char) > 126 for char in apk.name):
+    raise SystemExit('Expected a printable official release-unsigned APK filename.')
 with zipfile.ZipFile(apk) as archive:
     required = {'AndroidManifest.xml', 'classes.dex', 'lib/arm64-v8a/libksud.so', 'lib/arm64-v8a/libkernelsu.so'}
     missing = required.difference(archive.namelist())
@@ -140,7 +146,42 @@ with zipfile.ZipFile(apk) as archive:
         raise SystemExit('The packaged ksud is not a little-endian ARM64 ELF binary.')
     if archive.testzip() is not None:
         raise SystemExit('The APK ZIP integrity check failed.')
+sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/37.0.0'
+aapt2 = next((path for path in (sdk / 'aapt2', sdk / 'aapt2.exe') if path.is_file()), None)
+if aapt2 is None:
+    raise SystemExit('Android build-tools 37.0.0 aapt2 was not prepared.')
+report = subprocess.run([str(aapt2), 'dump', 'badging', str(apk)], capture_output=True,
+                        text=True, encoding='utf-8', errors='replace', timeout=180)
+if report.returncode:
+    raise SystemExit('aapt2 could not read the built manager APK metadata.')
+rows = re.findall(r'^package:[^\r\n]*', report.stdout, re.M)
+if len(rows) != 1:
+    raise SystemExit('Expected one package metadata row in the built manager APK.')
+fields = {}
+for name in ('name', 'versionName', 'versionCode'):
+    values = re.findall(r'(?:^|\s)' + name + r"='([^'\r\n]*)'(?=\s|$)", rows[0])
+    if len(values) != 1:
+        raise SystemExit('Expected one built manager APK ' + name + '.')
+    fields[name] = values[0]
+if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', fields['name']):
+    raise SystemExit('The built manager application ID is not a valid ASCII package.')
+version = fields['versionName']
+if not version or len(version) > 128 or any(ord(char) < 32 or ord(char) > 126 for char in version):
+    raise SystemExit('The built manager versionName must be nonempty printable ASCII.')
+code = fields['versionCode']
+if not re.fullmatch(r'[1-9][0-9]{0,9}', code) or int(code) > 2147483647:
+    raise SystemExit('The built manager versionCode is invalid.')
+metadata = {'source_apk_filename': apk.name,
+            'apk_filename': apk.name.removesuffix('-unsigned.apk') + '.apk',
+            'manager_package': fields['name'], 'manager_version_name': version,
+            'manager_version_code': int(code)}
 target = output / 'manager-unsigned.apk'
 shutil.copyfile(apk, target)
+(output / 'manager-build-metadata.json').write_text(json.dumps(metadata, indent=2) + '\n', encoding='utf-8')
+if os.environ.get('GITHUB_OUTPUT'):
+    with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as stream:
+        for name, value in metadata.items():
+            stream.write(f'{name}={value}\n')
 print(f'Unsigned ARM64 manager APK: {target} ({target.stat().st_size} bytes)')
+print(json.dumps(metadata, sort_keys=True))
 PY

@@ -7,14 +7,12 @@ import json
 import os
 from pathlib import Path
 import re
-import subprocess
 import sys
-import uuid
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from pin_build_dependencies import CompatibilityError, TIERS as PROFILE_TIERS, custom_configuration, load_profile
+from pin_build_dependencies import CompatibilityError, TIERS as PROFILE_TIERS, load_profile
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -25,10 +23,6 @@ REPOSITORIES = {
     "BakaSU": "Baka-SU/BakaSU",
 }
 TIERS = frozenset(("Stable(标准)", "Dev(开发)", "Latest(最新)", "Custom(自定义)"))
-ENV_KEYS = frozenset((
-    "BRANCH", "RESOLVED_KSU_SHA", "RESOLVED_KSU_REPO", "RESOLVED_KSU_SOURCE_BRANCH",
-    "EFFECTIVE_KSU_BRANCH", "KSU_LATEST_SOURCE",
-))
 
 
 class SourceResolutionError(RuntimeError):
@@ -59,60 +53,6 @@ def validate_custom_ref(value: str) -> None:
         validate_ref(value, empty=True)
 
 
-def parse_environment(text: str) -> dict[str, str]:
-    """Read only the upstream resolver's simple, allowlisted assignments."""
-    values = {}
-    lines = text.split("\n")
-    for number, line in enumerate(lines):
-        if line.endswith("\r") and number < len(lines) - 1:
-            line = line[:-1]
-        if not line:
-            continue
-        key, separator, value = line.partition("=")
-        if (not separator or key not in ENV_KEYS or key in values
-                or any(ord(character) < 32 or ord(character) == 127 for character in value)):
-            raise SourceResolutionError("Invalid environment output from the KernelSU resolver")
-        values[key] = value
-    if not values.get("BRANCH"):
-        raise SourceResolutionError("KernelSU resolver did not emit a source ref")
-    for key in ("BRANCH", "RESOLVED_KSU_SHA", "RESOLVED_KSU_SOURCE_BRANCH", "KSU_LATEST_SOURCE"):
-        if key in values:
-            validate_ref(values[key], empty=key in ("RESOLVED_KSU_SOURCE_BRANCH", "KSU_LATEST_SOURCE"))
-    if values.get("RESOLVED_KSU_SHA", values["BRANCH"]) != values["BRANCH"]:
-        raise SourceResolutionError("KernelSU resolver emitted inconsistent source refs")
-    return values
-
-
-def upstream_selection(root: Path, variant: str, tier: str, custom_ref: str) -> dict[str, str]:
-    # A private environment file prevents upstream from mutating later prepare steps.
-    environment_path = root / f".gki-ksu-source-{uuid.uuid4().hex}.env"
-    with environment_path.open("x", encoding="utf-8"):
-        pass
-    try:
-        environment = {**os.environ, "KSU_VARIANT": variant, "KSU_BRANCH": tier,
-                       "CUSTOM_REF": custom_ref, "GITHUB_ENV": str(environment_path)}
-        # Do not let an upstream helper write unvalidated job outputs.
-        environment.pop("GITHUB_OUTPUT", None)
-        try:
-            result = subprocess.run(
-                ["bash", str(root / ".github/scripts/resolve-ksu-ref.sh")],
-                cwd=root, env=environment, capture_output=True, text=True,
-                encoding="utf-8", errors="replace", timeout=300,
-            )
-        except (OSError, subprocess.TimeoutExpired) as error:
-            raise SourceResolutionError("Upstream KernelSU source resolution could not complete") from error
-        if result.returncode:
-            # stdout/stderr may contain credentials or unsafe workflow commands.
-            raise SourceResolutionError(f"Upstream KernelSU source resolution failed (exit {result.returncode})")
-        try:
-            emitted = environment_path.read_bytes().decode("utf-8")
-        except (OSError, UnicodeError) as error:
-            raise SourceResolutionError("Cannot read the upstream KernelSU source result") from error
-        return parse_environment(emitted)
-    finally:
-        environment_path.unlink(missing_ok=True)
-
-
 class NoRedirect(HTTPRedirectHandler):
     """Keep Authorization on the single explicitly selected GitHub API URL."""
 
@@ -120,12 +60,13 @@ class NoRedirect(HTTPRedirectHandler):
         raise SourceResolutionError("GitHub source lookup redirects are not permitted")
 
 
-def github_commit(repository: str, ref: str) -> str:
-    """Resolve a public ref to a full SHA without following HTTP redirects."""
+def github_json(repository: str, resource: str = "", *, missing: bool = False) -> dict | None:
+    """Read an allowlisted official repository API without following redirects."""
     if repository not in REPOSITORIES.values():
         raise SourceResolutionError("KernelSU repository is not allowlisted")
-    validate_ref(ref)
-    url = f"https://api.github.com/repos/{repository}/commits/{quote(ref, safe='')}"
+    if resource and (not resource.startswith('/') or any(char in resource for char in ('\r', '\n', '#'))):
+        raise SourceResolutionError("Invalid official GitHub API resource")
+    url = f"https://api.github.com/repos/{repository}{resource}"
     headers = {"Accept": "application/vnd.github+json", "User-Agent": "gki-source-resolver"}
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if token:
@@ -144,12 +85,74 @@ def github_commit(repository: str, ref: str) -> str:
             if len(raw) > 1024 * 1024:
                 raise SourceResolutionError("GitHub source lookup response is too large")
             document = json.loads(raw)
-    except (HTTPError, URLError, OSError, ValueError) as error:
+    except HTTPError as error:
+        if missing and error.code == 404:
+            return None
+        raise SourceResolutionError("Official GitHub source lookup failed") from None
+    except (URLError, OSError, ValueError) as error:
         raise SourceResolutionError("GitHub source lookup failed") from error
+    if not isinstance(document, dict):
+        raise SourceResolutionError("Official GitHub source lookup did not return an object")
+    return document
+
+
+def github_commit(repository: str, ref: str) -> str:
+    """Resolve a public ref to a full SHA without following HTTP redirects."""
+    validate_ref(ref)
+    document = github_json(repository, f"/commits/{quote(ref, safe='')}")
     commit = document.get("sha") if isinstance(document, dict) else None
     if not isinstance(commit, str) or not SHA.fullmatch(commit):
         raise SourceResolutionError("GitHub source lookup did not return a full commit SHA")
     return commit.lower()
+
+
+def default_branch(repository: str) -> str:
+    document = github_json(repository)
+    branch = document.get('default_branch')
+    if not isinstance(branch, str):
+        raise SourceResolutionError('Official repository did not return a default branch')
+    return validate_ref(branch)
+
+
+def official_selection(repository: str, tier: str, custom_ref: str) -> tuple[str, str]:
+    if tier == 'Custom(自定义)':
+        if not custom_ref:
+            raise SourceResolutionError('Custom tier requires an explicit commit, tag, branch, or branch:N selector')
+        if ':' not in custom_ref:
+            commit = github_commit(repository, custom_ref)
+            return commit, '' if SHA.fullmatch(custom_ref) else custom_ref
+        branch, _, number = custom_ref.rpartition(':')
+        index = int(number) - 1
+        query = urlencode({'branch': branch, 'status': 'success', 'per_page': 100, 'page': index // 100 + 1})
+        document = github_json(repository, '/actions/workflows/build-manager.yml/runs?' + query, missing=True)
+        runs = document.get('workflow_runs') if document else None
+        selected = runs[index % 100] if isinstance(runs, list) and len(runs) > index % 100 else None
+        if (not isinstance(selected, dict) or selected.get('conclusion') != 'success'
+                or selected.get('head_branch') != branch
+                or not isinstance(selected.get('head_sha'), str) or not SHA.fullmatch(selected['head_sha'])):
+            raise SourceResolutionError('Custom branch:N requires the Nth successful official build-manager.yml run; none was found')
+        head_repository = selected.get('head_repository')
+        if head_repository is not None:
+            name = head_repository.get('full_name') if isinstance(head_repository, dict) else None
+            if not isinstance(name, str) or name.casefold() != repository.casefold():
+                raise SourceResolutionError('Custom workflow run did not originate in the selected official repository')
+        return selected['head_sha'].lower(), branch
+    if tier == 'Stable(标准)':
+        release = github_json(repository, '/releases/latest', missing=True)
+        tag = release.get('tag_name') if release else None
+        if not isinstance(tag, str):
+            raise SourceResolutionError('Official Stable has no published release; select Dev, Latest, or an explicit Custom ref')
+        validate_ref(tag)
+        return github_commit(repository, tag), tag
+    branch = default_branch(repository)
+    if tier == 'Dev(开发)':
+        development = github_json(repository, '/branches/dev', missing=True)
+        if development is not None:
+            commit = development.get('commit', {}).get('sha') if isinstance(development.get('commit'), dict) else None
+            if not isinstance(commit, str) or not SHA.fullmatch(commit):
+                raise SourceResolutionError('Official dev branch did not return a full commit SHA')
+            return commit.lower(), 'dev'
+    return github_commit(repository, branch), branch
 
 
 def source_result(commit: str, repository: str, source_branch: str, tier: str) -> dict[str, str]:
@@ -167,24 +170,18 @@ def resolve_sources(root: Path, variant: str, tier: str, custom_ref: str = "", s
         return source_result("", "", "", tier)
     root = root.resolve()
     repository = REPOSITORIES[variant]
-    if variant == "SukiSU" and susfs and tier in PROFILE_TIERS and not custom_configuration(root):
+    if variant == "SukiSU" and tier in PROFILE_TIERS:
         profile = load_profile(root)
-        if tier in profile["tiers"]:
-            commit = profile.get("source_ref", profile["ksu_commits"][0])
-            if not isinstance(commit, str) or not SHA.fullmatch(commit):
-                raise SourceResolutionError("Compatibility source_ref must be a full commit SHA")
-            return source_result(commit.lower(), repository, "", tier)
-    emitted = upstream_selection(root, variant, tier, custom_ref)
-    if emitted.get("RESOLVED_KSU_REPO", repository) != repository:
-        raise SourceResolutionError("KernelSU resolver returned an unexpected repository")
-    effective_tier = emitted.get("EFFECTIVE_KSU_BRANCH", tier)
-    if effective_tier not in TIERS:
-        raise SourceResolutionError("KernelSU resolver returned an invalid tier")
-    ref = emitted["BRANCH"]
-    commit = ref.lower() if SHA.fullmatch(ref) else github_commit(repository, ref)
+        if tier not in profile["tiers"]:
+            raise SourceResolutionError('Compatibility profile does not declare the requested pinned tier')
+        commit = profile.get("source_ref", profile["ksu_commits"][0])
+        if not isinstance(commit, str) or not SHA.fullmatch(commit):
+            raise SourceResolutionError("Compatibility source_ref must be a full commit SHA")
+        return source_result(commit.lower(), repository, "", tier)
+    commit, branch = official_selection(repository, tier, custom_ref)
     if not SHA.fullmatch(commit):
         raise SourceResolutionError("KernelSU source must resolve to a full commit SHA")
-    return source_result(commit.lower(), repository, emitted.get("RESOLVED_KSU_SOURCE_BRANCH", ""), effective_tier)
+    return source_result(commit.lower(), repository, branch, tier)
 
 
 def main(argv=None) -> int:

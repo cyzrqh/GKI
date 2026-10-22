@@ -29,6 +29,14 @@ class Susfs23ApplicationTests(unittest.TestCase):
         self.core = self.repository / "kernel/core/init.c"
         self.build.write_text("kernelsu-objs := core/init.o\n", encoding="utf-8", newline="\n")
         self.core.write_text("/* original kernel init */\n", encoding="utf-8", newline="\n")
+        self.providers = []
+        for arch in susfs.PATCH_MEMORY_ARCHES:
+            provider = self.repository / f"kernel/hook/{arch}/patch_memory.c"
+            provider.parent.mkdir(parents=True)
+            provider.write_text("int ksu_patch_text(void *dst, void *src, int len, int flags)\n"
+                                "{ return stop_machine(patch_callback, dst, cpu_online_mask); }\n",
+                                encoding="utf-8", newline="\n")
+            self.providers.append(provider)
         self.run_git("add", ".")
         self.run_git("commit", "--quiet", "-m", "test source")
         self.head = self.run_git("rev-parse", "HEAD").stdout.strip()
@@ -129,6 +137,83 @@ class Susfs23ApplicationTests(unittest.TestCase):
                 self.assertRaisesRegex(ValueError, "missing runner"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
         self.assertEqual(before, self.state())
+
+    def test_missing_or_modified_text_provider_fails_before_applying_any_hunk(self):
+        for removed in (False, True):
+            with self.subTest(removed=removed):
+                provider = self.providers[0]
+                if removed:
+                    provider.unlink()
+                else:
+                    provider.write_text("int ksu_patch_text(void) { return 0; }\n",
+                                        encoding="utf-8", newline="\n")
+                before = self.state()
+                with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+                        self.assertRaisesRegex(ValueError, "text patch providers differ"):
+                    susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
+                self.assertEqual(before, self.state())
+                self.run_git("restore", ".")
+
+
+class PatchMemoryBuildTests(unittest.TestCase):
+    RULES = """ifeq ($(CONFIG_ARM64),y)
+kernelsu-objs += hook/arm64/patch_memory.o
+else ifeq ($(CONFIG_X86_64),y)
+kernelsu-objs += hook/x86_64/patch_memory.o
+else ifeq ($(CONFIG_RISCV),y)
+kernelsu-objs += hook/riscv64/patch_memory.o
+endif
+"""
+
+    def test_arch_providers_remain_available_without_dynamic_syscall_registration(self):
+        susfs.verify_patch_memory_build(self.RULES)
+
+    def test_dropped_arch_provider_cannot_pass_integration_validation(self):
+        for arch in susfs.PATCH_MEMORY_ARCHES:
+            with self.subTest(arch=arch), self.assertRaisesRegex(ValueError, "real patch_memory object"):
+                susfs.verify_patch_memory_build(self.RULES.replace(f"hook/{arch}/patch_memory.o", ""))
+
+    def test_old_syscall_registration_cannot_be_restored_as_a_provider_fix(self):
+        with self.assertRaisesRegex(ValueError, "Legacy syscall hook registration"):
+            susfs.verify_patch_memory_build(self.RULES + "kernelsu-objs += hook/syscall_hook_manager.o\n")
+
+
+class ModuleBlacklistLifecycleTests(unittest.TestCase):
+    CORE = "void kernelsu_exit(void) { ksu_module_blacklist_exit(); }\n"
+    RUNTIME = '''void second_stage(void) {
+    if (check_argv(*argv, 1, "second_stage", buf, sizeof(buf))) {
+        setup_ksu_cred();
+        ksu_feature_apply_forced();
+        ksu_module_blacklist_apply();
+        static_branch_disable(&is_init_second_stage_not_executed);
+    }
+}
+'''
+
+    def test_sukisu_static_param_and_second_stage_lifecycle_is_preserved(self):
+        susfs.verify_blacklist_lifecycle(self.CORE, self.RUNTIME)
+
+    def test_foreign_kernelsu_init_api_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "foreign init hook"):
+            susfs.verify_blacklist_lifecycle(self.CORE + "void init(void) { ksu_module_blacklist_init(); }",
+                                             self.RUNTIME)
+
+    def test_moving_apply_to_early_core_init_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, "before second-stage"):
+            susfs.verify_blacklist_lifecycle(self.CORE + "void init(void) { ksu_module_blacklist_apply(); }",
+                                             self.RUNTIME.replace("ksu_module_blacklist_apply();", ""))
+
+    def test_missing_second_stage_apply_or_exit_cannot_silently_disable_feature(self):
+        with self.assertRaisesRegex(ValueError, "exactly once"):
+            susfs.verify_blacklist_lifecycle(self.CORE, self.RUNTIME.replace("ksu_module_blacklist_apply();", ""))
+        with self.assertRaisesRegex(ValueError, "teardown hook"):
+            susfs.verify_blacklist_lifecycle("", self.RUNTIME)
+
+    def test_apply_outside_second_stage_guard_is_rejected(self):
+        runtime = (self.RUNTIME.replace("ksu_module_blacklist_apply();", "")
+                   + "void other(void) { ksu_module_blacklist_apply(); }")
+        with self.assertRaisesRegex(ValueError, "exactly once"):
+            susfs.verify_blacklist_lifecycle(self.CORE, runtime)
 
 
 if __name__ == "__main__":

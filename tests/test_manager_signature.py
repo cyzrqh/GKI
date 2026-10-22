@@ -63,6 +63,23 @@ class ManagerSignatureTests(unittest.TestCase):
         signature.configure(self.root, '750', 'a' * 64)
         self.assertEqual(self.path.read_bytes(), self.expected().replace('\n', '\r\n').encode('utf-8'))
 
+    def test_legacy_native_package_macro_is_paired_and_idempotent(self):
+        legacy = ('KSU_EXPECTED_SIZE := 0x35c\nKSU_EXPECTED_HASH := old\n'
+                  'ifdef KSU_MANAGER_PACKAGE\n'
+                  'ccflags-y += -DKSU_MANAGER_PACKAGE=\\"$(KSU_MANAGER_PACKAGE)\\"\n'
+                  '$(info -- KernelSU Manager package name: $(KSU_MANAGER_PACKAGE))\nendif\n')
+        for newline in ('\n', '\r\n'):
+            with self.subTest(newline=newline):
+                self.path.write_bytes(legacy.replace('\n', newline).encode())
+                signature.configure(self.root, '750', 'a' * 64)
+                output = self.path.read_bytes()
+                self.assertIn(('KSU_MANAGER_PACKAGE := ' + signature.DEFAULT_PACKAGE + newline).encode(), output)
+                self.assertNotIn(b'KSU_PACKAGE_NAME', output)
+                signature.configure(self.root, '750', 'a' * 64)
+                self.assertEqual(self.path.read_bytes(), output)
+                signature.configure(self.root, '750', 'a' * 64, 'com.example.manager')
+                self.assertIn(b'KSU_MANAGER_PACKAGE := com.example.manager', self.path.read_bytes())
+
     def test_rejects_invalid_or_injected_certificate_metadata(self):
         for size, digest in [('0', 'a' * 64), ('99999', 'a' * 64), ('750\nexport X=1', 'a' * 64),
                              ('750', 'bad'), ('750', 'a' * 64 + '\n')]:
@@ -126,6 +143,14 @@ class ManagerSignatureTests(unittest.TestCase):
         self.path.unlink()
         with self.assertRaisesRegex(ValueError, 'Kbuild not found'):
             signature.configure(self.root, '750', 'a' * 64)
+
+    def test_optional_kernel_version_code_matches_apk_instead_of_mutable_remote(self):
+        self.path.write_text(self.text + 'KSU_VERSION := $(mutable_remote_count)\n', encoding='utf-8')
+        signature.configure(self.root, '750', 'a' * 64, version_code='41092')
+        self.assertIn('KSU_VERSION := 41092\n', self.path.read_text())
+        for value in ('', '0', '-1', '41092\nexport X=1', '999999999999'):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'version code'):
+                signature.configure(self.root, '750', 'a' * 64, version_code=value)
 
     def test_cli_accepts_actual_package_and_certificate_aliases(self):
         package = 'com.example.actual'

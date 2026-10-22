@@ -20,7 +20,7 @@ API_ROOT = "https://api.github.com"
 BRANCH = "automation/upstream-sync"
 OWNERSHIP_MARKER = "<!-- gki-upstream-sync:v1 -->"
 HEADS_MARKER_PATTERN = re.compile(
-    r"<!-- gki-upstream-heads:abk=[0-9a-f]{40};catalog=[0-9a-f]{40} -->\Z"
+    r"<!-- gki-official-heads:sha256=[0-9a-f]{64} -->\Z"
 )
 
 
@@ -137,7 +137,7 @@ def check_branch(
     owner, _ = validate_repository(repository)
     validate_base(base)
     if not HEADS_MARKER_PATTERN.fullmatch(heads_marker):
-        raise GuardError("Invalid upstream heads marker; expected full ABK and catalog commit SHAs")
+        raise GuardError("Invalid official-source snapshot marker; expected a full SHA256 digest")
     if fetch is None:
         fetch = GitHubReader(os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN", "")).get
     prefix = "/repos/" + quote(repository, safe="/")

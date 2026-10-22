@@ -17,12 +17,13 @@ import re
 import subprocess
 import sys
 
-from validate_susfs_hooks import HOOKS, inspect_c_source
+from validate_susfs_hooks import HOOKS, inspect_c_source, strip_comments_and_literals
 
 
 SUKISU_COMMIT = "17ff94d9da24d589a9705227fdda39a1c9045698"
 SUSFS_VERSION = "v2.3.0"
 PATCH_PATH = Path(__file__).resolve().parent / "patches" / "sukisu-susfs23.patch"
+PATCH_MEMORY_ARCHES = ("arm64", "x86_64", "riscv64")
 
 
 def git(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
@@ -73,8 +74,66 @@ def patch_files(patch: Path) -> tuple[str, ...]:
     return paths
 
 
+def verify_patch_memory_sources(repository: Path) -> None:
+    """Keep mount_hide's real text patcher from the pinned source, never a shim."""
+    paths = tuple(f"kernel/hook/{arch}/patch_memory.c" for arch in PATCH_MEMORY_ARCHES)
+    unchanged = git(repository, "diff", "--quiet", "HEAD", "--", *paths)
+    if unchanged.returncode:
+        raise ValueError("SukiSU text patch providers differ from the pinned source")
+    for relative in paths:
+        code = strip_comments_and_literals((repository / relative).read_text(encoding="utf-8"))
+        if not re.search(r"(?m)^int\s+ksu_patch_text\s*\([^;{}]+\)\s*\{", code):
+            raise ValueError(f"Missing real global ksu_patch_text definition in {relative}")
+        if not re.search(r"\bstop_machine(?:_cpuslocked)?\s*\(", code):
+            raise ValueError(f"Incomplete SukiSU text patch implementation in {relative}")
+
+
+def verify_patch_memory_build(kbuild: str) -> None:
+    """The direct hook port still needs SukiSU mount hiding's arch provider."""
+    rules = (
+        "ifeq ($(CONFIG_ARM64),y)\nkernelsu-objs += hook/arm64/patch_memory.o",
+        "else ifeq ($(CONFIG_X86_64),y)\nkernelsu-objs += hook/x86_64/patch_memory.o",
+        "else ifeq ($(CONFIG_RISCV),y)\nkernelsu-objs += hook/riscv64/patch_memory.o\nendif",
+    )
+    if any(rule not in kbuild for rule in rules):
+        raise ValueError("SukiSU mount_hide requires the architecture's real patch_memory object in Kbuild")
+    if any(f"kernelsu-objs += {object_name}" in kbuild for object_name in (
+        "hook/lsm_hook.o", "hook/syscall_hook_manager.o", "hook/syscall_event_bridge.o",
+        "hook/arm64/syscall_hook.o", "hook/x86_64/syscall_hook.o", "hook/riscv64/syscall_hook.o",
+    )):
+        raise ValueError("Legacy syscall hook registration must not replace SUSFS 2.3 direct hooks")
+
+
+def verify_blacklist_lifecycle(core: str, runtime: str) -> None:
+    """SukiSU configures static params, then merges the list in second-stage init."""
+    core_code = strip_comments_and_literals(core)
+    runtime_code = strip_comments_and_literals(runtime)
+    if re.search(r"\bksu_module_blacklist_(?:init|apply)\s*\(", core_code):
+        raise ValueError("SukiSU module blacklist must not use a foreign init hook or apply before second-stage init")
+    if len(re.findall(r"\bksu_module_blacklist_exit\s*\(", core_code)) != 1:
+        raise ValueError("SukiSU module blacklist teardown hook is missing")
+    guard = re.search(r'if\s*\(check_argv\(\*argv,\s*1,\s*"second_stage",[^{};]+\)\)\s*\{', runtime)
+    if guard is None:
+        raise ValueError("SukiSU module blacklist second-stage init guard is missing")
+    end = runtime.find("static_branch_disable(&is_init_second_stage_not_executed)", guard.end())
+    body = strip_comments_and_literals(runtime[guard.end():end]) if end >= 0 else ""
+    apply = body.find("ksu_module_blacklist_apply();")
+    ready = body.find("ksu_feature_apply_forced();")
+    if (len(re.findall(r"\bksu_module_blacklist_apply\s*\(", runtime_code)) != 1
+            or ready < 0 or apply <= ready):
+        raise ValueError("SukiSU module blacklist must apply exactly once after second-stage setup")
+
+
 def verify_integration(repository: Path) -> None:
     source = repository / "kernel"
+    verify_patch_memory_sources(repository)
+    verify_patch_memory_build((source / "Kbuild").read_text(encoding="utf-8"))
+    verify_blacklist_lifecycle((source / "core/init.c").read_text(encoding="utf-8"),
+                               (source / "runtime/ksud_integration.c").read_text(encoding="utf-8"))
+    original_blacklist = git(repository, "diff", "--quiet", "HEAD", "--",
+                             "kernel/feature/module_blacklist.c", "kernel/feature/module_blacklist.h")
+    if original_blacklist.returncode:
+        raise ValueError("SukiSU module blacklist provider must retain its pinned, real implementation")
     definitions = []
     for relative in ("preinit/preinit.c", "feature/selinux_hide.c"):
         path = source / relative
@@ -87,6 +146,7 @@ def verify_integration(repository: Path) -> None:
     required = {
         "Kconfig": ("config KSU_SUSFS\n", "config KSU_SUSFS_SUS_MAP\n", "config KPM\n"),
         "Kbuild": ("kernelsu-objs += preinit/preinit.o", "kernelsu-objs += preinit/blob.o",
+                   "kernelsu-objs += feature/module_blacklist.o",
                    "kernelsu-objs += feature/selinux_hide.o", "kernelsu-objs += selinux/selinux.o",
                    "kernelsu-objs += extension/extension.o",
                    "kernelsu-objs += extension/kpm.o", "CONFIG_KPM", "preinit/runner.elf"),
@@ -107,6 +167,7 @@ def verify_integration(repository: Path) -> None:
 def apply_integration(kernel_root: Path, susfs_dir: Path, patch: Path = PATCH_PATH) -> bool:
     repository = find_repository(kernel_root)
     check_versions(repository, susfs_dir)
+    verify_patch_memory_sources(repository)
     patch = patch.resolve(strict=True)
     paths = patch_files(patch)
     # A complete reverse dry run confirms every hunk is present, not just a marker.

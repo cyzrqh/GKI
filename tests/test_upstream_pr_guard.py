@@ -16,8 +16,8 @@ import upstream_pr_guard as guard
 
 
 REPOSITORY = "owner/gki"
-HEADS = "<!-- gki-upstream-heads:abk=" + "a" * 40 + ";catalog=" + "b" * 40 + " -->"
-OTHER_HEADS = "<!-- gki-upstream-heads:abk=" + "c" * 40 + ";catalog=" + "d" * 40 + " -->"
+HEADS = "<!-- gki-official-heads:sha256=" + "a" * 64 + " -->"
+OTHER_HEADS = "<!-- gki-official-heads:sha256=" + "b" * 64 + " -->"
 
 
 def pr(state="open", body=None, repository=REPOSITORY, number=1):

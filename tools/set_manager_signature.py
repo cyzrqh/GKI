@@ -41,6 +41,22 @@ def replace_setting(text: str, key: str, value: str) -> str:
 
 
 def replace_package(text: str, package: str) -> str:
+    # Older fixed SukiSU uses its native optional KSU_MANAGER_PACKAGE macro.
+    # Retain this path for builds where SUSFS is disabled or custom refs select
+    # that version; do not invent the newer PR/default branch layout there.
+    if not declarations(text, 'KSU_PACKAGE_NAME'):
+        marker = ('ifdef KSU_MANAGER_PACKAGE\n'
+                  'ccflags-y += -DKSU_MANAGER_PACKAGE=\\"$(KSU_MANAGER_PACKAGE)\\"\n'
+                  '$(info -- KernelSU Manager package name: $(KSU_MANAGER_PACKAGE))\n'
+                  'endif')
+        normalized = text.replace('\r\n', '\n')
+        if normalized.count(marker) != 1 or '-DKSU_PACKAGE_NAME' in text:
+            raise ValueError('Expected a known native manager package setting; review the source layout')
+        if declarations(text, 'KSU_MANAGER_PACKAGE'):
+            return replace_setting(text, 'KSU_MANAGER_PACKAGE', package)
+        newline = '\r\n' if '\r\n' in text else '\n'
+        anchor = marker.replace('\n', newline)
+        return text.replace(anchor, 'KSU_MANAGER_PACKAGE := ' + package + newline + anchor, 1)
     branches = list(PACKAGE_BRANCHES.finditer(text))
     if len(declarations(text, 'KSU_PACKAGE_NAME')) != 2 or len(branches) != 1:
         raise ValueError('Expected native KSU_PACKAGE_NAME PR/default branches; review the source layout')
@@ -71,13 +87,17 @@ def atomic_write(path: Path, content: bytes) -> None:
         temporary_path.unlink(missing_ok=True)
 
 
-def configure(root: Path, size: str, digest: str, package: str = DEFAULT_PACKAGE) -> Path:
+def configure(root: Path, size: str, digest: str, package: str = DEFAULT_PACKAGE,
+              version_code: str | None = None) -> Path:
     if not re.fullmatch(r'[0-9]+', size) or not 64 <= int(size) <= 4096:
         raise ValueError('Invalid manager certificate size')
     if not re.fullmatch(r'[0-9a-fA-F]{64}', digest):
         raise ValueError('Invalid manager certificate SHA256')
     if not PACKAGE.fullmatch(package):
         raise ValueError('Invalid manager package; expected an ASCII Android application ID')
+    if version_code is not None and (not re.fullmatch(r'[0-9]+', version_code)
+                                     or not 1 <= int(version_code) <= 2_100_000_000):
+        raise ValueError('Invalid manager version code')
     candidates = ('KernelSU/kernel/Kbuild', 'common/drivers/kernelsu/Kbuild', 'drivers/kernelsu/Kbuild')
     path = next((root / item for item in candidates if (root / item).is_file()), None)
     if path is None:
@@ -90,6 +110,8 @@ def configure(root: Path, size: str, digest: str, package: str = DEFAULT_PACKAGE
     for key, value in (('KSU_EXPECTED_SIZE', str(int(size))), ('KSU_EXPECTED_HASH', digest.lower())):
         updated = replace_setting(updated, key, value)
     updated = replace_package(updated, package)
+    if version_code is not None:
+        updated = replace_setting(updated, 'KSU_VERSION', str(int(version_code)))
     if updated != original:
         atomic_write(path, updated.encode('utf-8'))
     return path
@@ -102,10 +124,11 @@ def main():
     parser.add_argument('--certificate-sha256', '--cert-sha256', required=True)
     parser.add_argument('--package', default=DEFAULT_PACKAGE,
                         help='Actual application ID extracted from the signed manager APK')
+    parser.add_argument('--version-code', help='Use the same source version code as the signed manager APK')
     arguments = parser.parse_args()
     try:
         path = configure(arguments.kernel_root, arguments.certificate_size, arguments.certificate_sha256,
-                         arguments.package)
+                         arguments.package, arguments.version_code)
     except (ValueError, OSError) as error:
         raise SystemExit(f'Manager signature configuration failed: {error}') from None
     print(f'SukiSU manager certificate configured: {path}')

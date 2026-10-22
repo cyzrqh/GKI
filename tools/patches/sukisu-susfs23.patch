@@ -8,10 +8,10 @@
 # Original notices and upstream licenses apply: SUSFS repository LICENSE (GPLv3), SukiSU kernel/LICENSE (GPLv2).
 
 diff --git a/kernel/Kbuild b/kernel/Kbuild
-index f9f77af505550119b2f26951061488b4459ca546..ee578ad111c9b07ffe40fb55ac3389eb683d9a0c 100644
+index f9f77af505550119b2f26951061488b4459ca546..62eea4ea3a4b5738e098e838718a7d39385d3244 100644
 --- a/kernel/Kbuild
 +++ b/kernel/Kbuild
-@@ -6,21 +6,7 @@ kernelsu-objs += feature/mount_hide.o
+@@ -6,20 +6,15 @@ kernelsu-objs += feature/mount_hide.o
  kernelsu-objs += feature/sulog.o
  kernelsu-objs += feature/sucompat.o
  
@@ -20,20 +20,21 @@ index f9f77af505550119b2f26951061488b4459ca546..ee578ad111c9b07ffe40fb55ac3389eb
 -kernelsu-objs += hook/syscall_event_bridge.o
 -kernelsu-objs += hook/syscall_hook_manager.o
 -kernelsu-objs += hook/tp_marker.o
--ifeq ($(CONFIG_ARM64),y)
--kernelsu-objs += hook/arm64/patch_memory.o
++
++# SukiSU mount_hide uses ksu_patch_text independently of syscall hooks.
+ ifeq ($(CONFIG_ARM64),y)
+ kernelsu-objs += hook/arm64/patch_memory.o
 -kernelsu-objs += hook/arm64/syscall_hook.o
--else ifeq ($(CONFIG_X86_64),y)
--kernelsu-objs += hook/x86_64/patch_memory.o
+ else ifeq ($(CONFIG_X86_64),y)
+ kernelsu-objs += hook/x86_64/patch_memory.o
 -kernelsu-objs += hook/x86_64/syscall_hook.o
--else ifeq ($(CONFIG_RISCV),y)
--kernelsu-objs += hook/riscv64/patch_memory.o
+ else ifeq ($(CONFIG_RISCV),y)
+ kernelsu-objs += hook/riscv64/patch_memory.o
 -kernelsu-objs += hook/riscv64/syscall_hook.o
--endif
+ endif
  
  kernelsu-objs += infra/file_wrapper.o
- kernelsu-objs += infra/event_queue.o
-@@ -76,9 +62,6 @@ endif
+@@ -76,9 +71,6 @@ endif
  ifeq ($(CONFIG_KSU_DEBUG),y)
  ccflags-y += -DCONFIG_KSU_DEBUG=1
  endif
@@ -180,7 +181,7 @@ index 05888d7bf2178b82cc1ccbf27d8d1992e99bb6e0..208e7f0ed027f73728bc9282449f00e9
 +
  # Keep a new line here!! Because someone may append config
 diff --git a/kernel/core/init.c b/kernel/core/init.c
-index b0f086a51644e92e9363e7d1809ddef4c07990fc..f7be6ce366ec43727fe0295c5b67250887362622 100644
+index b0f086a51644e92e9363e7d1809ddef4c07990fc..c25ee4a032fdf7eaf09af1370252dfb626138be0 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
 @@ -6,6 +6,7 @@
@@ -286,7 +287,7 @@ index b0f086a51644e92e9363e7d1809ddef4c07990fc..f7be6ce366ec43727fe0295c5b672508
      if (allow_shell) {
          pr_alert("shell is allowed at init!");
      }
-@@ -144,91 +110,56 @@ int __init kernelsu_init(void)
+@@ -144,91 +110,54 @@ int __init kernelsu_init(void)
      }
  
      ksu_init_symbol_resolver();
@@ -299,8 +300,6 @@ index b0f086a51644e92e9363e7d1809ddef4c07990fc..f7be6ce366ec43727fe0295c5b672508
 +#ifdef CONFIG_KSU_SUSFS
 +    susfs_init();
 +#endif // #ifdef KSU_SUSFS
-+
-+    ksu_module_blacklist_init();
  
      ksu_feature_init();
 -    ksu_sulog_init();
@@ -399,7 +398,7 @@ index b0f086a51644e92e9363e7d1809ddef4c07990fc..f7be6ce366ec43727fe0295c5b672508
  
      // Wait for any in-flight RCU readers (e.g. handler traversing allow_list)
      synchronize_rcu();
-@@ -241,12 +172,17 @@ void __exit kernelsu_exit(void)
+@@ -241,12 +170,17 @@ void __exit kernelsu_exit(void)
      ksu_allowlist_exit();
  
      ksu_shell_su_adb_only_exit();

@@ -100,7 +100,9 @@ class ManagerSigningTests(unittest.TestCase):
         elif command == "keytool":
             Path(args[args.index("-file") + 1]).write_bytes(CERTIFICATE)
         elif command == "apksigner" and args[1] == "verify":
-            stdout = f"Signer #1 certificate SHA-256 digest: {CERTIFICATE_SHA}\n"
+            stdout = (f"Signer #1 certificate SHA-256 digest: {CERTIFICATE_SHA}\n"
+                      "-----BEGIN CERTIFICATE-----\n" + base64.b64encode(CERTIFICATE).decode() +
+                      "\n-----END CERTIFICATE-----\n")
         elif command == "aapt2":
             stdout = "package: name='com.sukisu.ultra' versionCode='41030' versionName='v4.2.1'\n"
         else:
@@ -187,6 +189,20 @@ class ManagerSigningTests(unittest.TestCase):
         self.assertEqual(self.output.read_bytes(), b"previous verified APK")
         self.assertFalse(self.workflow_output.exists())
         self.assertFalse(list(self.private_root.iterdir()))
+
+    def test_pem_verification_does_not_depend_on_human_signer_label(self):
+        pem = "-----BEGIN CERTIFICATE-----\n" + base64.b64encode(CERTIFICATE).decode() + "\n-----END CERTIFICATE-----\n"
+        for label in ('Signer #1', 'Signer (minSdkVersion=33, maxSdkVersion=2147483647)'):
+            with self.subTest(label=label):
+                report = label + ' certificate DN: CN=manager\n' + pem
+                self.assertEqual(signing.verify_certificate(report, CERTIFICATE), CERTIFICATE_SHA)
+                self.assertEqual(signing.verify_certificate(report.replace('\n', '\r\n'), CERTIFICATE), CERTIFICATE_SHA)
+
+    def test_additional_different_pem_signer_is_rejected(self):
+        def pem(value):
+            return '-----BEGIN CERTIFICATE-----\n' + base64.b64encode(value).decode() + '\n-----END CERTIFICATE-----\n'
+        with self.assertRaisesRegex(signing.SigningError, 'does not match'):
+            signing.verify_certificate(pem(CERTIFICATE) + pem(b'another signer'), CERTIFICATE)
 
     def test_sdk_error_redacts_both_password_and_base64_from_cli_logs(self):
         def failure(args, **kwargs):

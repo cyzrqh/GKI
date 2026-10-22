@@ -120,8 +120,15 @@ def verify_certificate(report: str, certificate: bytes) -> str:
     if not certificate or len(certificate) > 64 * 1024:
         raise SigningError("keytool did not export a valid-sized DER certificate.")
     expected = hashlib.sha256(certificate).hexdigest()
-    values = re.findall(r"^Signer #\d+ certificate SHA-256 digest:\s*([0-9a-fA-F:]+)\s*$", report, re.M)
-    actual = {value.replace(":", "").lower() for value in values}
+    # apksigner varies the human-readable signer label by signature scheme.
+    # Compare the certificates themselves, using its supported PEM output.
+    values = re.findall(r"^-----BEGIN CERTIFICATE-----\r?\n([A-Za-z0-9+/=\r\n]+)"
+                        r"\r?\n-----END CERTIFICATE-----\r?$", report, re.M)
+    try:
+        actual = {hashlib.sha256(base64.b64decode(''.join(value.split()), validate=True)).hexdigest()
+                  for value in values}
+    except (binascii.Error, ValueError):
+        raise SigningError("apksigner returned an invalid PEM signer certificate.") from None
     if actual != {expected}:
         raise SigningError("The APK signer certificate does not match the exported keystore certificate.")
     return expected
@@ -175,7 +182,7 @@ def sign_manager(unsigned: Path, output: Path) -> dict[str, str | int]:
             certificate = certificate_path.read_bytes()
         except OSError:
             raise SigningError("keytool did not export the signing certificate.") from None
-        verification = run_command([tools["apksigner"], "verify", "--print-certs", str(signed)],
+        verification = run_command([tools["apksigner"], "verify", "--print-certs-pem", str(signed)],
                                    password, secrets)
         certificate_sha256 = verify_certificate(verification, certificate)
         badging = run_command([tools["aapt2"], "dump", "badging", str(signed)], password, secrets)

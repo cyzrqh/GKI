@@ -174,7 +174,7 @@ fi
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 python3 -c "print('y\\n' * 100)" | "$sdkmanager" --licenses > /dev/null
-"$sdkmanager" 'platforms;android-37' 'build-tools;37.0.0' 'ndk;29.0.14206865'
+"$sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;29.0.14206865'
 echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 '''},
             {'name': '准备 ARM64 Rust 工具链',

@@ -184,10 +184,25 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(step['env']['GKI_KERNEL_REF'], '${{ matrix.kernel_ref }}')
         self.assertLess(step['run'].index('tools/set_kernel_ref.py'), step['run'].index('"$REPO" sync'))
 
-    def test_whitelist_contains_new_months_and_latest_versions(self):
+    def test_whitelist_reads_new_catalog_versions_without_workflow_regeneration(self):
+        import contextlib
+        import io
+        import json
+        import os
+        import re
+        from unittest.mock import patch
+        import matrix
         run = self.find('校验自定义内核版本组合')['run']
-        for pair in ('android14 6.1 145 2025-08', 'android15 6.6 143 2026-10', 'android16 6.12 92 2026-09'):
-            self.assertIn(pair, run)
+        script = re.search(r"KNOWN_KERNEL_PAIRS=\$\(python3 - <<'PY'\n(.*?)\nPY\n\)", run, re.S)[1]
+        catalog = json.loads((ROOT / 'data/kernels.json').read_text(encoding='utf-8'))
+        catalog['entries'].append({'android_version': 'android14', 'kernel_version': '6.1',
+                                   'kernel': '6.1.999', 'date': '2026-12', 'ref': 'a' * 40})
+        output = io.StringIO()
+        with patch.dict(os.environ, {'GITHUB_WORKSPACE': str(ROOT)}), patch.object(matrix, 'load_catalog', return_value=catalog), contextlib.redirect_stdout(output):
+            exec(compile(script, '<runtime-catalog-guard>', 'exec'), {})
+        for pair in ('android14 6.1 145 2025-08', 'android15 6.6 143 2026-10',
+                     'android16 6.12 92 2026-09', 'android14 6.1 999 2026-12'):
+            self.assertIn(pair, output.getvalue())
 
     def test_no_undeclared_inputs_remain(self):
         declared = set(self.workflow['on']['workflow_dispatch']['inputs'])

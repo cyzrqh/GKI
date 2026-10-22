@@ -251,10 +251,22 @@ def create_workflow(root):
     if 'KNOWN_KERNEL_PAIRS=' not in guard.get('run', ''):
         raise ValueError('Upstream kernel whitelist guard changed')
     rows = build_matrix(root)
-    pairs = '\n'.join(' '.join(row[key] for key in ('android_version', 'kernel_version', 'sub_level', 'os_patch_level')) for row in rows)
+    # Read the catalog at runtime: official catalog PRs only change data, so
+    # newly merged versions must not require regenerating workflow permissions.
+    pairs_script = '''KNOWN_KERNEL_PAIRS=$(python3 - <<'PY'
+import os,sys
+from pathlib import Path
+root = Path(os.environ['GITHUB_WORKSPACE'])
+sys.path.insert(0, str(root / 'tools'))
+from matrix import load_catalog
+for entry in load_catalog(root)['entries']:
+    if entry['date'] != 'lts':
+        print(entry['android_version'], entry['kernel_version'], entry['kernel'].rsplit('.', 1)[1], entry['date'])
+PY
+)'''
     guard['run'], replaced = re.subn(
-        r"(KNOWN_KERNEL_PAIRS=\$\(cat <<'EOF'\n).*?(\nEOF\n\))",
-        lambda match: match.group(1) + pairs + match.group(2), guard['run'], flags=re.S,
+        r"KNOWN_KERNEL_PAIRS=\$\(cat <<'EOF'\n.*?\nEOF\n\)",
+        lambda match: pairs_script, guard['run'], flags=re.S,
     )
     if replaced != 1:
         raise ValueError('Upstream KNOWN_KERNEL_PAIRS block changed')

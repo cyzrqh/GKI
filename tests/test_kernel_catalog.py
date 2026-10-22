@@ -9,6 +9,7 @@ import sys
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -222,13 +223,28 @@ class KernelCatalogTests(unittest.TestCase):
 class OfficialProviderTests(unittest.TestCase):
     def test_gitiles_refs_and_base64_makefile_responses(self):
         provider = catalog.OfficialProvider()
-        refs = {"refs/heads/android14-6.1-2026-12": {"value": "A" * 40}, "HEAD": {"target": "refs/heads/main"}}
+        refs = {"android14-6.1-2026-12": {"value": "A" * 40}}
         with patch.object(provider, "get", return_value=(")]}'\n" + json.dumps(refs)).encode()) as get:
             self.assertEqual(provider.refs("common"), {"refs/heads/android14-6.1-2026-12": "a" * 40})
-            get.assert_called_once_with("common/+refs?format=JSON")
+            get.assert_called_once_with("common/+refs/heads?format=JSON")
         with patch.object(provider, "get", return_value=base64.b64encode(makefile().encode())) as get:
             self.assertEqual(provider.makefile("a" * 40), makefile())
             get.assert_called_once_with("common/+/" + "a" * 40 + "/Makefile?format=TEXT")
+
+    def test_branch_namespace_keeps_deprecated_months_and_excludes_full_gerrit_refs(self):
+        provider = catalog.OfficialProvider()
+        for repository, prefix in (("manifest", "common-"), ("common", "")):
+            with self.subTest(repository=repository):
+                branches = {prefix + "android14-6.1-2026-12": {"value": "a" * 40},
+                            "deprecated/" + prefix + "android14-6.1-2025-08": {"value": "b" * 40}}
+                raw = (")]}'\n" + json.dumps(branches)).encode()
+                with patch.object(provider, "get", return_value=raw) as get:
+                    refs = provider.refs(repository)
+                get.assert_called_once_with(repository + "/+refs/heads?format=JSON")
+                selected = catalog.monthly_refs(refs, repository)
+                self.assertEqual(len(selected), 2)
+                self.assertEqual(selected[("android14", "6.1", "2025-08")],
+                                 ("refs/heads/deprecated/" + prefix + "android14-6.1-2025-08", "b" * 40))
 
     def test_only_fixed_official_repositories_and_full_commits_reach_http(self):
         provider = catalog.OfficialProvider()
@@ -241,7 +257,7 @@ class OfficialProviderTests(unittest.TestCase):
 
     def test_invalid_gitiles_data_is_rejected(self):
         provider = catalog.OfficialProvider()
-        for raw in (b"[]", b"invalid", b'{"refs/heads/main":{"value":"not-sha"}}'):
+        for raw in (b"[]", b"invalid", b'{"main":{"value":"not-sha"}}', b'{"":{"value":"' + b'a' * 40 + b'"}}'):
             with self.subTest(raw=raw), patch.object(provider, "get", return_value=raw):
                 with self.assertRaises(catalog.CatalogError):
                     provider.refs("common")
@@ -269,6 +285,38 @@ class OfficialProviderTests(unittest.TestCase):
         with patch.object(catalog, "build_opener", return_value=opener):
             with self.assertRaises(catalog.CatalogError):
                 catalog.OfficialProvider().get("common/+refs?format=JSON")
+
+    def test_transient_official_http_errors_retry_but_permanent_errors_stop(self):
+        path = "common/+refs/heads?format=JSON"
+        url = catalog.BASE + path
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.geturl.return_value = url
+        response.read.return_value = b"{}"
+        opener = MagicMock()
+        opener.open.side_effect = [HTTPError(url, 503, "Unavailable", {}, None),
+                                   HTTPError(url, 429, "Rate limited", {}, None), response]
+        with patch.object(catalog, "build_opener", return_value=opener), patch.object(catalog.time, "sleep") as sleep:
+            self.assertEqual(catalog.OfficialProvider().get(path), b"{}")
+        self.assertEqual(opener.open.call_count, 3)
+        self.assertEqual([call.args[0] for call in sleep.call_args_list], [1, 2])
+        for status, attempts in ((404, 1), (503, 3)):
+            with self.subTest(status=status):
+                opener = MagicMock()
+                opener.open.side_effect = HTTPError(url, status, "Unavailable", {}, None)
+                with patch.object(catalog, "build_opener", return_value=opener), patch.object(catalog.time, "sleep"):
+                    with self.assertRaisesRegex(catalog.CatalogError, f"HTTP {status}"):
+                        catalog.OfficialProvider().get(path)
+                self.assertEqual(opener.open.call_count, attempts)
+
+    def test_network_failure_is_not_relabelled_as_invalid_json_or_base64(self):
+        provider = catalog.OfficialProvider()
+        with patch.object(provider, "get", side_effect=catalog.CatalogError("HTTP 503")):
+            with self.assertRaisesRegex(catalog.CatalogError, "^HTTP 503$"):
+                provider.refs("common")
+            with self.assertRaisesRegex(catalog.CatalogError, "^HTTP 503$"):
+                provider.makefile("a" * 40)
 
 
 if __name__ == "__main__":

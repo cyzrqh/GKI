@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import sys
+import time
 from urllib.error import HTTPError, URLError
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
@@ -37,22 +38,34 @@ class OfficialProvider:
 
     def get(self, path: str) -> bytes:
         url = BASE + path
-        try:
-            with build_opener(NoRedirect()).open(Request(url, headers={"User-Agent": "gki-kernel-catalog"}), timeout=60) as response:
-                if response.status != 200 or response.geturl() != url:
-                    raise CatalogError("Unexpected response from the official Android source")
-                raw = response.read(32 * 1024 * 1024 + 1)
-                if len(raw) > 32 * 1024 * 1024:
-                    raise CatalogError("Official Android source response is too large")
-                return raw
-        except (HTTPError, URLError, OSError) as error:
-            raise CatalogError("Cannot read the official Android kernel source") from error
+        for attempt in range(3):
+            try:
+                with build_opener(NoRedirect()).open(Request(url, headers={"User-Agent": "gki-kernel-catalog"}), timeout=60) as response:
+                    if response.status != 200 or response.geturl() != url:
+                        raise CatalogError("Unexpected response from the official Android source")
+                    raw = response.read(32 * 1024 * 1024 + 1)
+                    if len(raw) > 32 * 1024 * 1024:
+                        raise CatalogError("Official Android source response is too large")
+                    return raw
+            except HTTPError as error:
+                if error.code not in (429, 500, 502, 503, 504) or attempt == 2:
+                    raise CatalogError(f"Cannot read the official Android kernel source (HTTP {error.code})") from error
+            except (URLError, OSError) as error:
+                if attempt == 2:
+                    raise CatalogError("Cannot read the official Android kernel source after three attempts") from error
+            time.sleep(attempt + 1)
+        raise CatalogError("Cannot read the official Android kernel source")
 
     def refs(self, repository: str) -> dict[str, str]:
         if repository not in ("manifest", "common"):
             raise CatalogError("Only official manifest/common repositories are supported")
+        # The common repository's full refs include Gerrit change refs
+        # and can exceed the response limit or be truncated.
+        # Gitiles returns only branch names, relative to refs/heads/, for
+        # this namespace endpoint (including deprecated/... branches).
+        response = self.get(repository + "/+refs/heads?format=JSON")
         try:
-            raw = self.get(repository + "/+refs?format=JSON").decode("utf-8")
+            raw = response.decode("utf-8")
             if raw.startswith(")]}'\n"):
                 raw = raw[5:]
             document = json.loads(raw)
@@ -61,20 +74,21 @@ class OfficialProvider:
         if not isinstance(document, dict):
             raise CatalogError("Official Android refs must be an object")
         refs = {}
-        for ref, value in document.items():
-            if not ref.startswith("refs/"):
-                continue
+        for branch, value in document.items():
+            if not isinstance(branch, str) or not branch:
+                raise CatalogError("Official Android branch refs contain an invalid name")
             commit = value.get("value") if isinstance(value, dict) else None
             if not isinstance(commit, str) or not SHA.fullmatch(commit):
                 raise CatalogError("Official Android refs contain an invalid commit ID")
+            ref = "refs/heads/" + branch
             refs[ref] = commit.lower()
         return refs
 
     def makefile(self, commit: str) -> str:
         if not isinstance(commit, str) or not SHA.fullmatch(commit):
             raise CatalogError("Makefile reads require a full official commit ID")
+        raw = self.get("common/+/" + commit.lower() + "/Makefile?format=TEXT")
         try:
-            raw = self.get("common/+/" + commit.lower() + "/Makefile?format=TEXT")
             return base64.b64decode(b"".join(raw.split()), validate=True).decode("utf-8")
         except (UnicodeError, binascii.Error, ValueError) as error:
             raise CatalogError("Official kernel Makefile is not valid Gitiles text") from error

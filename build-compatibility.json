@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "sukisu_susfs": {
+    "ksu_commits": ["cf87e3f4ddd3f6e5464d85acf56aaa6950e70841"],
+    "tiers": ["Stable(标准)", "Dev(开发)"],
+    "version": "v2.2.0",
+    "pins": {
+      "android12-5.10": "4003ecf2d01c6d13fa8edf6c4f2607365738dc3d",
+      "android13-5.15": "65ea8683c794cc309c3b0c4e6b57c1d972ca9a76",
+      "android14-6.1": "52eaf3b8fa50207af2ce4f78d73729dc9e1303ea",
+      "android15-6.6": "a8c720c42ca46fca13179280b13aa13c9fbe1562",
+      "android16-6.12": "72bdce7ce2de8189efb227c6cefbc578a9efd479"
+    }
+  }
+}

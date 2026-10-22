@@ -72,6 +72,22 @@ class WorkflowTests(unittest.TestCase):
         step = self.find('确定 KernelSU 分支')
         self.assertEqual(step['env']['CUSTOM_REF'], '${{ vars.KSU_CUSTOM_REF }}')
 
+    def test_susfs_compatibility_checkout_precedes_any_source_patches(self):
+        names = [step.get('name') for step in self.steps]
+        pin = self.find('选择配套的 SUSFS 源码版本')
+        self.assertLess(names.index('克隆依赖仓库'), names.index(pin['name']))
+        self.assertLess(names.index(pin['name']), names.index('应用 SUSFS 补丁'))
+        self.assertEqual(pin['env']['PIN_KSU_REF'], '${{ env.BRANCH }}')
+        self.assertEqual(pin['env']['PIN_KSU_TIER'], '${{ inputs.kernelsu_branch }}')
+        self.assertEqual(pin['if'], "inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'")
+
+    def test_susfs_hook_check_runs_after_patches_before_compiler(self):
+        names = [step.get('name') for step in self.steps]
+        check = self.find('检查 SUSFS 与 KernelSU 接口配套')
+        self.assertLess(names.index('最终修复 SukiSU/BakaSU 源码兼容'), names.index(check['name']))
+        self.assertLess(names.index(check['name']), names.index('编译内核'))
+        self.assertIn('validate_susfs_hooks.py', check['run'])
+
     def test_ak3_is_default_and_boot_steps_are_gated(self):
         self.assertEqual(self.workflow['on']['workflow_dispatch']['inputs']['artifact_mode']['default'], '仅 AK3')
         for name in ('构建 Boot 镜像 (Android 12)', '构建 Boot 镜像 (Android 13+)'):

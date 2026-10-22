@@ -772,6 +772,18 @@ jobs:
         echo "使用当前仓库补丁目录: $ZZH_PATCHES"
         python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
           https://github.com/Numbersf/Action-Build.git Action-Build --depth 1
+    - name: 选择配套的 SUSFS 源码版本
+      if: inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'
+      env:
+        PIN_KSU_VARIANT: ${{ inputs.kernelsu_variant }}
+        PIN_KSU_REF: ${{ env.BRANCH }}
+        PIN_KSU_TIER: ${{ inputs.kernelsu_branch }}
+        PIN_TARGET: ${{ matrix.android_version }}-${{ matrix.kernel_version }}
+      run: |
+        python3 "$GITHUB_WORKSPACE/tools/pin_build_dependencies.py" \
+          --root "$GITHUB_WORKSPACE" --susfs-dir "$SUSFS4KSU" \
+          --ksu-variant "$PIN_KSU_VARIANT" --ksu-ref "$PIN_KSU_REF" \
+          --ksu-tier "$PIN_KSU_TIER" --target "$PIN_TARGET"
     - name: 克隆自定义外部模块
       if: inputs.custom_external_modules != ''
       env:
@@ -5933,6 +5945,9 @@ jobs:
         fi
 
         echo "ABK Control 管理器桥接校验通过。"
+    - name: 检查 SUSFS 与 KernelSU 接口配套
+      if: inputs.enable_susfs && inputs.kernelsu_variant != 'None'
+      run: python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"
     - name: 编译内核
       uses: nick-fields/retry@v4
       with:

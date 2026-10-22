@@ -280,6 +280,26 @@ def create_workflow(root):
         raise ValueError('Upstream hmbird patch fetch changed')
     step['run'] = step['run'].replace(old_url, 'cp "$GITHUB_WORKSPACE/hmbird_patch.c" ./hmbird_patch.c')
 
+    dependencies = step_named(steps, '克隆依赖仓库')
+    steps.insert(steps.index(dependencies) + 1, {
+        'name': '选择配套的 SUSFS 源码版本',
+        'if': "inputs.enable_susfs && inputs.ksu_variant == 'SukiSU'",
+        'env': {'PIN_KSU_VARIANT': '${{ inputs.ksu_variant }}',
+                'PIN_KSU_REF': '${{ env.BRANCH }}', 'PIN_KSU_TIER': '${{ inputs.ksu_branch }}',
+                'PIN_TARGET': '${{ matrix.android_version }}-${{ matrix.kernel_version }}'},
+        'run': '''python3 "$GITHUB_WORKSPACE/tools/pin_build_dependencies.py" \\
+  --root "$GITHUB_WORKSPACE" --susfs-dir "$SUSFS4KSU" \\
+  --ksu-variant "$PIN_KSU_VARIANT" --ksu-ref "$PIN_KSU_REF" \\
+  --ksu-tier "$PIN_KSU_TIER" --target "$PIN_TARGET"
+''',
+    })
+    compile_step = step_named(steps, '编译内核')
+    steps.insert(steps.index(compile_step), {
+        'name': '检查 SUSFS 与 KernelSU 接口配套',
+        'if': "inputs.enable_susfs && inputs.ksu_variant != 'None'",
+        'run': 'python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"',
+    })
+
     image = step_named(steps, '准备 Boot 镜像')
     image['name'] = '准备 AK3 内核文件'
     image['run'] = PREPARE_IMAGE

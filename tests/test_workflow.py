@@ -23,14 +23,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(all('uses' not in job for job in self.workflow['jobs'].values()))
 
     def test_update_events_cannot_start_kernel_compilation(self):
-        for name in ('prepare-matrix', 'build-kernel'):
-            self.assertEqual(self.workflow['jobs'][name]['if'], generator.BUILD_IF)
+        self.assertEqual(self.workflow['jobs']['prepare-matrix']['if'], generator.PREPARE_IF)
+        self.assertEqual(self.workflow['jobs']['build-kernel']['if'], generator.KERNEL_JOB_IF)
+        self.assertIn(generator.BUILD_IF, generator.KERNEL_JOB_IF)
+        self.assertIn("needs.prepare-matrix.result == 'success'", generator.KERNEL_JOB_IF)
+        self.assertIn("needs.build-sukisu-manager.result == 'success'", generator.KERNEL_JOB_IF)
+        self.assertIn("inputs.kernelsu_variant != 'SukiSU'", generator.KERNEL_JOB_IF)
         self.assertIn("github.event_name == 'workflow_dispatch'", generator.BUILD_IF)
         self.assertIn("inputs.operation == '编译内核'", generator.BUILD_IF)
         self.assertEqual(self.workflow['on']['schedule'], [{'cron': '17 0 * * *'}])
         operation = self.workflow['on']['workflow_dispatch']['inputs']['operation']
         self.assertEqual(operation['default'], '编译内核')
-        self.assertEqual(operation['options'], ['编译内核', '检查上游更新'])
+        self.assertEqual(operation['options'], ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'])
+        self.assertNotIn('仅编译 SukiSU 安装包', generator.BUILD_IF)
+        self.assertNotIn('schedule', generator.PREPARE_IF)
+        self.assertEqual(self.workflow['jobs']['prepare-matrix']['steps'][1]['if'], generator.BUILD_IF)
 
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.workflow['jobs']['check-upstream']
@@ -69,8 +76,47 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('issues/$PR_NUMBER/comments', step['run'])
 
     def test_custom_ksu_ref_remains_available_through_repository_variable(self):
+        sources = next(step for step in self.workflow['jobs']['prepare-matrix']['steps'] if step.get('id') == 'sources')
+        self.assertEqual(sources['env']['CUSTOM_REF'], '${{ vars.KSU_CUSTOM_REF }}')
+        self.assertIn('tools/resolve_build_sources.py', sources['run'])
         step = self.find('确定 KernelSU 分支')
-        self.assertEqual(step['env']['CUSTOM_REF'], '${{ vars.KSU_CUSTOM_REF }}')
+        self.assertEqual(step['env']['BRANCH'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
+        self.assertNotIn('resolve-ksu-ref.sh', step['run'])
+
+    def test_sukisu_manager_is_built_once_and_kernel_uses_its_signature(self):
+        manager = self.workflow['jobs']['build-sukisu-manager']
+        self.assertEqual(manager['needs'], 'prepare-matrix')
+        self.assertNotIn('strategy', manager)
+        self.assertEqual(manager['if'], generator.MANAGER_IF)
+        checkout = next(step for step in manager['steps'] if step['name'] == '检出同一版本的 SukiSU 源码')
+        self.assertEqual(checkout['with']['ref'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
+        self.assertEqual(checkout['with']['fetch-depth'], 0)
+        self.assertIs(checkout['with']['persist-credentials'], False)
+        build = next(step for step in manager['steps'] if step['name'] == '编译管理器与同版本 ksud')
+        self.assertEqual(build['env']['KSU_PACKAGE_NAME'], build['env']['ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME'])
+        self.assertEqual(build['env']['KSU_PACKAGE_NAME'], 'com.cyzrqh.gki.sukisu')
+        self.assertNotIn('secrets.', str(build))
+        sign = next(step for step in manager['steps'] if step.get('id') == 'sign')
+        self.assertIn('secrets.SUKISU_APK_KEYSTORE', sign['env']['SUKISU_APK_KEYSTORE'])
+        kernel = self.workflow['jobs']['build-kernel']
+        self.assertEqual(kernel['needs'], ['prepare-matrix', 'build-sukisu-manager'])
+        signature = self.find('配对管理器包名与签名')
+        for key in ('MANAGER_PACKAGE', 'MANAGER_CERT_SIZE', 'MANAGER_CERT_SHA256'):
+            self.assertIn('needs.build-sukisu-manager.outputs.', signature['env'][key])
+        self.assertIn('--package "$MANAGER_PACKAGE"', signature['run'])
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index(signature['name']), names.index('编译内核'))
+
+    def test_susfs23_port_precedes_legacy_patches_and_uses_real_preinit(self):
+        names = [step.get('name') for step in self.steps]
+        port = self.find('应用完整 SukiSU SUSFS 2.3 适配')
+        self.assertEqual(port['if'], "env.SUSFS_COMPAT_VERSION == 'v2.3.0'")
+        self.assertEqual(names.index(port['name']), names.index('添加 KernelSU') + 1)
+        for name in ('确保 KernelSU SUSFS ABI 兼容', '补齐 SukiSU SUSFS 内联 hook 符号', '最终修复 SukiSU/BakaSU 源码兼容'):
+            self.assertIn("env.SUSFS_COMPAT_VERSION != 'v2.3.0'", self.find(name)['if'])
+        config = self.find('添加 SUSFS 配置')['run']
+        self.assertIn('CONFIG_HEADERS_INSTALL=y', config)
+        self.assertIn('"${SUSFS_COMPAT_VERSION:-}" != v2.3.0', config)
 
     def test_susfs_compatibility_checkout_precedes_any_source_patches(self):
         names = [step.get('name') for step in self.steps]

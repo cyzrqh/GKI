@@ -88,7 +88,7 @@ class BuildDependencyTests(unittest.TestCase):
             self.assertNotIn("shell", call.kwargs)
             self.assertEqual(call.kwargs["env"]["GIT_TERMINAL_PROMPT"], "0")
         self.assertEqual(self.output.read_text(encoding="utf-8"),
-                         f"SUSFS_LATEST_COMMIT_DATE=2026-06-22 10:00:03 +0800\nPINNED_SUSFS_SHA={SUSFS}\n")
+                         f"SUSFS_LATEST_COMMIT_DATE=2026-06-22 10:00:03 +0800\nPINNED_SUSFS_SHA={SUSFS}\nSUSFS_COMPAT_VERSION=v2.2.0\n")
 
     def test_mismatched_head_stops_without_environment_outputs(self):
         def fake(args, **kwargs):

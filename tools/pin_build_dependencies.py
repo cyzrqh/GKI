@@ -114,7 +114,7 @@ def pin_dependencies(root: Path, susfs_dir: Path, variant: str, ksu_ref: str, ti
     output = os.environ.get("GITHUB_ENV")
     if output:
         with Path(output).open("a", encoding="utf-8", newline="\n") as stream:
-            stream.write(f"SUSFS_LATEST_COMMIT_DATE={date}\nPINNED_SUSFS_SHA={commit}\n")
+            stream.write(f"SUSFS_LATEST_COMMIT_DATE={date}\nPINNED_SUSFS_SHA={commit}\nSUSFS_COMPAT_VERSION={version}\n")
     print(f"Selected compatible SUSFS {version} for {target}: {commit}")
     return True
 

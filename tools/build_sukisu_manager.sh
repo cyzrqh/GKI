@@ -1,0 +1,146 @@
+#!/usr/bin/env bash
+# Build an ARM64 GKI manager from the checked-out SukiSU source; signing is separate.
+set -euo pipefail
+
+source_dir=""
+output_dir=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --source|--output)
+      [ "$#" -ge 2 ] || { echo "Missing value for $1" >&2; exit 2; }
+      if [ "$1" = --source ]; then source_dir="$2"; else output_dir="$2"; fi
+      shift 2
+      ;;
+    -h|--help)
+      echo 'Usage: build_sukisu_manager.sh --source ROOT --output DIR'
+      exit 0
+      ;;
+    *) echo "Unknown argument: $1" >&2; exit 2 ;;
+  esac
+done
+[ -n "$source_dir" ] && [ -n "$output_dir" ] || {
+  echo 'Both --source and --output are required.' >&2
+  exit 2
+}
+source_dir="$(cd "$source_dir" && pwd -P)"
+mkdir -p "$output_dir"
+output_dir="$(cd "$output_dir" && pwd -P)"
+manager_dir="$source_dir/manager"
+for required in Cargo.toml Cargo.lock userspace/ksud/Cargo.toml .github/scripts/setup-rust-build.sh manager/gradlew manager/app/build.gradle.kts; do
+  [ -f "$source_dir/$required" ] || { echo "Missing SukiSU build source: $required" >&2; exit 1; }
+done
+: "${ANDROID_HOME:?ANDROID_HOME must point to the prepared Android SDK}"
+ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
+: "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point to the prepared Android NDK}"
+export ANDROID_NDK_HOME
+export CARGO_TARGET_DIR="$source_dir/target"
+[ -d "$ANDROID_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] || { echo 'Android SDK or NDK directory does not exist.' >&2; exit 1; }
+
+cd "$source_dir"
+echo "SukiSU manager source: $(git rev-parse HEAD)"
+echo "SukiSU source version: $(git describe --tags --always)"
+java -version
+rustc --version
+cargo --version
+
+# Keep the APK and its included daemon on the same ABI. The source patch is
+# intentionally limited to the official abiFilters list and rejects layout drift.
+python3 - "$manager_dir/app/build.gradle.kts" <<'PY'
+from pathlib import Path
+import re
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8')
+pattern = re.compile(r'\babiFilters\s*\+=\s*listOf\(([^)]*)\)')
+matches = list(pattern.finditer(text))
+if len(matches) != 1:
+    raise SystemExit('Expected one official manager abiFilters list; review the source before building.')
+values = matches[0].group(1)
+abis = re.findall(r'"([A-Za-z0-9_-]+)"', values)
+rest = re.sub(r'"[A-Za-z0-9_-]+"', '', values)
+if not abis or 'arm64-v8a' not in abis or rest.strip(' ,\r\n\t'):
+    raise SystemExit('Unexpected manager ABI configuration; refusing to replace it.')
+text = pattern.sub('abiFilters += listOf("arm64-v8a")', text, count=1)
+# The upstream signing plugin falls back to the shared debug key when no
+# keystore is present. Remove only its known declaration/configuration so the
+# release remains unsigned until the separate private signing step.
+plugin = re.compile(r'^[ \t]*alias\(libs\.plugins\.lsplugin\.apksign\)[ \t]*\r?\n', re.M)
+config = re.compile(r'^apksign[ \t]*\{([^{}]*)\}[ \t]*\r?\n', re.M)
+plugins, configs = list(plugin.finditer(text)), list(config.finditer(text))
+expected = {'storeFileProperty': 'KEYSTORE_FILE', 'storePasswordProperty': 'KEYSTORE_PASSWORD',
+            'keyAliasProperty': 'KEY_ALIAS', 'keyPasswordProperty': 'KEY_PASSWORD'}
+if len(plugins) != 1 or len(configs) != 1:
+    raise SystemExit('Expected the official APK signing plugin and configuration; review source drift.')
+body = configs[0].group(1)
+fields = re.findall(r'^\s*(\w+)\s*=\s*"([A-Z_]+)"\s*$', body, re.M)
+if len(fields) != len(expected) or dict(fields) != expected:
+    raise SystemExit('Unexpected APK signing configuration; refusing a partial rewrite.')
+text = plugin.sub('', config.sub('', text, count=1), count=1)
+if re.search(r'\b(?:apksign|signingConfig|signingConfigs)\b', text):
+    raise SystemExit('Additional source signing configuration requires review.')
+release = re.compile(r'^([ \t]*)release[ \t]*\{[ \t]*$', re.M)
+if len(list(release.finditer(text))) != 1:
+    raise SystemExit('Expected one release build type to keep unsigned.')
+text = release.sub(lambda m: m.group(0) + '\n' + m.group(1) + '    signingConfig = null', text, count=1)
+path.write_text(text, encoding='utf-8')
+print('Manager APK ABI: arm64-v8a')
+print('Release signing: separate workflow step')
+PY
+
+# The upstream helper configures the Android linker, archiver and bindgen sysroot.
+source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
+if [ -f userspace/ksuinit/Cargo.toml ]; then
+  builtins="$("$CLANG_PATH" --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
+  [ -f "$builtins" ] || { echo 'NDK ARM64 compiler builtins were not found.' >&2; exit 1; }
+  echo 'Building ARM64 ksuinit from the same source.'
+  RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$builtins" \
+    cargo build --locked --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
+  test -s "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit"
+  mkdir -p userspace/ksud/bin/aarch64
+  cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit" userspace/ksud/bin/aarch64/ksuinit
+fi
+
+echo 'Building ARM64 ksud from the same source.'
+cargo build --locked --target aarch64-linux-android --release --manifest-path userspace/ksud/Cargo.toml
+ksud="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
+[ -s "$ksud" ] || { echo 'The ARM64 ksud build produced no daemon.' >&2; exit 1; }
+mkdir -p "$manager_dir/app/src/main/jniLibs/arm64-v8a"
+cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
+
+cd "$manager_dir"
+echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
+bash ./gradlew --no-daemon --stacktrace assembleRelease
+
+python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" <<'PY'
+from pathlib import Path
+import shutil
+import struct
+import sys
+import zipfile
+release, output = map(Path, sys.argv[1:])
+apks = sorted(release.glob('*.apk'))
+if len(apks) != 1:
+    raise SystemExit(f'Expected exactly one release APK, found {len(apks)}.')
+apk = apks[0]
+if 'unsigned' not in apk.stem.lower():
+    raise SystemExit('Expected the unsigned release APK; signing material must remain outside the source build.')
+with zipfile.ZipFile(apk) as archive:
+    required = {'AndroidManifest.xml', 'classes.dex', 'lib/arm64-v8a/libksud.so', 'lib/arm64-v8a/libkernelsu.so'}
+    missing = required.difference(archive.namelist())
+    if missing:
+        raise SystemExit('Incomplete manager APK: ' + ', '.join(sorted(missing)))
+    other_abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and len(name.split('/')) >= 3}
+    if other_abis != {'arm64-v8a'}:
+        raise SystemExit('The manager APK unexpectedly contains another ABI.')
+    if archive.getinfo('lib/arm64-v8a/libksud.so').file_size == 0:
+        raise SystemExit('The packaged ksud is empty.')
+    with archive.open('lib/arm64-v8a/libksud.so') as binary:
+        header = binary.read(20)
+    if len(header) != 20 or header[:5] != b'\x7fELF\x02' or header[5] != 1 or struct.unpack_from('<H', header, 18)[0] != 183:
+        raise SystemExit('The packaged ksud is not a little-endian ARM64 ELF binary.')
+    if archive.testzip() is not None:
+        raise SystemExit('The APK ZIP integrity check failed.')
+target = output / 'manager-unsigned.apk'
+shutil.copyfile(apk, target)
+print(f'Unsigned ARM64 manager APK: {target} ({target.stat().st_size} bytes)')
+PY

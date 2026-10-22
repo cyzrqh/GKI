@@ -2,8 +2,9 @@
 # ABK d43ead425e175356abb66fa273c401ad2af13216
 # Version catalog 90b76411e8d8ca0417a02bd619996bbd9986fd5f
 name: GKI 全属性内核构建矩阵
-run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '检查上游更新' || format('{0} · {1} · {2}', inputs.kernelsu_variant,
-  inputs.kernel_versions, inputs.artifact_mode) }}
+run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '检查上游更新' || (inputs.operation == '仅编译 SukiSU
+  安装包' && '仅编译 SukiSU 安装包' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode))
+  }}
 'on':
   workflow_dispatch:
     inputs:
@@ -13,6 +14,7 @@ run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上
         type: choice
         options:
         - 编译内核
+        - 仅编译 SukiSU 安装包
         - 检查上游更新
         default: 编译内核
       kernel_versions:
@@ -162,17 +164,25 @@ jobs:
   prepare-matrix:
     name: 选择内核版本与补丁月份
     runs-on: ubuntu-24.04
-    if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
+    if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译 SukiSU 安装包')
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
+      ksu_ref: ${{ steps.sources.outputs.ksu_ref }}
+      ksu_repo: ${{ steps.sources.outputs.ksu_repo }}
+      ksu_short: ${{ steps.sources.outputs.ksu_short }}
+      ksu_source_branch: ${{ steps.sources.outputs.ksu_source_branch }}
+      effective_ksu_branch: ${{ steps.sources.outputs.effective_ksu_branch }}
     steps:
     - name: 检出 gki
       uses: actions/checkout@v6
+      with:
+        persist-credentials: false
     - name: 检查并生成矩阵
       id: matrix
       shell: bash
+      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
       env:
         KERNEL_VERSIONS: ${{ inputs.kernel_versions }}
         TARGETS: ${{ inputs.targets }}
@@ -190,6 +200,91 @@ jobs:
         PY
         python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \
           --include-lts "$INCLUDE_LTS" --github-output --summary
+    - name: 固定本次 KernelSU 与管理器源码
+      id: sources
+      env:
+        KSU_VARIANT: ${{ inputs.operation == '仅编译 SukiSU 安装包' && 'SukiSU' || inputs.kernelsu_variant }}
+        KSU_TIER: ${{ inputs.kernelsu_branch }}
+        CUSTOM_REF: ${{ vars.KSU_CUSTOM_REF }}
+        ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \
+          --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
+  build-sukisu-manager:
+    name: 编译配套 SukiSU 管理器 APK
+    if: github.event_name == 'workflow_dispatch' && (inputs.operation == '仅编译 SukiSU 安装包' || (inputs.operation == '编译内核' &&
+      inputs.kernelsu_variant == 'SukiSU'))
+    needs: prepare-matrix
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    outputs:
+      manager_package: ${{ steps.sign.outputs.manager_package }}
+      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
+      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+    steps:
+    - name: 检出构建工具
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 检查固定 APK 签名配置
+      env:
+        SIGNING_CONFIGURED: ${{ secrets.SUKISU_APK_KEYSTORE != '' && secrets.SUKISU_APK_PASSWORD != '' }}
+      run: |
+        if [ "$SIGNING_CONFIGURED" != true ]; then
+          echo '::error::请先按 README 配置 SUKISU_APK_KEYSTORE 和 SUKISU_APK_PASSWORD。签名密钥应长期保持不变。'
+          exit 1
+        fi
+    - name: 检出同一版本的 SukiSU 源码
+      uses: actions/checkout@v6
+      with:
+        repository: SukiSU-Ultra/SukiSU-Ultra
+        ref: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        path: manager-source
+        fetch-depth: 0
+        persist-credentials: false
+    - name: 准备 Java 21
+      uses: actions/setup-java@v5
+      with:
+        distribution: temurin
+        java-version: '21'
+    - name: 准备 Android SDK 与 NDK
+      run: |
+        set -euo pipefail
+        sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+        python3 -c "print('y\n' * 100)" | "$sdkmanager" --licenses > /dev/null
+        "$sdkmanager" 'platforms;android-37' 'build-tools;37.0.0' 'ndk;29.0.14206865'
+        echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
+    - name: 准备 ARM64 Rust 工具链
+      run: |
+        rustup toolchain install stable --profile minimal
+        rustup default stable
+        rustup target add aarch64-linux-android --toolchain stable
+    - name: 编译管理器与同版本 ksud
+      env:
+        KSU_PACKAGE_NAME: com.cyzrqh.gki.sukisu
+        ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME: com.cyzrqh.gki.sukisu
+        ORG_GRADLE_PROJECT_KSU_NAME: SukiSU GKI
+      run: |
+        bash -n tools/build_sukisu_manager.sh
+        bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
+    - name: 签名并校验可安装 APK
+      id: sign
+      env:
+        SUKISU_APK_KEYSTORE: ${{ secrets.SUKISU_APK_KEYSTORE }}
+        SUKISU_APK_PASSWORD: ${{ secrets.SUKISU_APK_PASSWORD }}
+        KSU_SHORT: ${{ needs.prepare-matrix.outputs.ksu_short }}
+      run: |
+        python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \
+          --output "$GITHUB_WORKSPACE/manager-artifact/SukiSU-Manager-$KSU_SHORT-arm64.apk"
+    - name: 上传 SukiSU 安装包
+      uses: actions/upload-artifact@v6
+      with:
+        name: SukiSU-Manager-${{ needs.prepare-matrix.outputs.ksu_short }}-arm64
+        path: manager-artifact/*.apk
+        if-no-files-found: error
+        compression-level: 0
   build-kernel:
     name: ${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}-${{
       inputs.kernelsu_variant }}
@@ -491,12 +586,22 @@ jobs:
       if: inputs.kernelsu_variant != 'None'
       id: ksu-branch
       env:
-        KSU_VARIANT: ${{ inputs.kernelsu_variant }}
-        KSU_BRANCH: ${{ inputs.kernelsu_branch }}
-        CUSTOM_REF: ${{ vars.KSU_CUSTOM_REF }}
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        GITHUB_REPOSITORY: ${{ github.repository }}
-      run: bash .github/scripts/resolve-ksu-ref.sh
+        BRANCH: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        RESOLVED_KSU_REPO: ${{ needs.prepare-matrix.outputs.ksu_repo }}
+        RESOLVED_KSU_SOURCE_BRANCH: ${{ needs.prepare-matrix.outputs.ksu_source_branch }}
+        EFFECTIVE_KSU_BRANCH: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
+      run: |
+        python3 - <<'PY'
+        import os
+        from pathlib import Path
+        keys = ('BRANCH', 'RESOLVED_KSU_REPO', 'RESOLVED_KSU_SOURCE_BRANCH', 'EFFECTIVE_KSU_BRANCH')
+        with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8') as output:
+            for key in keys:
+                value = os.environ[key]
+                if '\n' in value or '\r' in value:
+                    raise SystemExit('Invalid shared KernelSU source metadata')
+                output.write(f'{key}={value}\n')
+        PY
     - name: 准备 ABK 管理器证书元数据
       shell: bash
       run: |
@@ -1087,6 +1192,11 @@ jobs:
         else
           echo "KSU_LATEST_COMMIT_DATE=未知" >> $GITHUB_ENV
         fi
+    - name: 应用完整 SukiSU SUSFS 2.3 适配
+      if: env.SUSFS_COMPAT_VERSION == 'v2.3.0'
+      run: |
+        python3 "$GITHUB_WORKSPACE/tools/apply_susfs23.py" \
+          --kernel-root "$KERNEL_ROOT" --susfs-dir "$SUSFS4KSU"
     - name: 修复 BakaSU SUSFS 源码兼容
       if: inputs.kernelsu_variant == 'BakaSU' && inputs.enable_susfs
       env:
@@ -1437,7 +1547,8 @@ jobs:
                             break
         PY
     - name: 确保 KernelSU SUSFS ABI 兼容
-      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && inputs.enable_susfs
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+        && inputs.enable_susfs)
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -3641,7 +3752,7 @@ jobs:
         ABK_FEATURE_FAILURE_MESSAGE: SUSFS defconfig integration failed
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        if [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
+        if [ "${SUSFS_COMPAT_VERSION:-}" != v2.3.0 ] && [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ]; then
           KSU_SOURCE_DIR=""
           for dir in common/drivers/kernelsu drivers/kernelsu KernelSU/kernel kernel; do
             if [ -f "$dir/infra/symbol_resolver.c" ]; then
@@ -3671,6 +3782,11 @@ jobs:
         CONFIG_KSU_SUSFS_OPEN_REDIRECT=y
         CONFIG_KSU_SUSFS_SUS_MAP=y
         EOF
+
+        if [ "${SUSFS_COMPAT_VERSION:-}" = v2.3.0 ]; then
+          # The real preinit runner requires installed target UAPI headers.
+          echo 'CONFIG_HEADERS_INSTALL=y' >> "$DEFCONFIG"
+        fi
     - name: 配置内核名称
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
@@ -5516,7 +5632,7 @@ jobs:
             print(f"{path} 的 Official 6.1-6.12 SELinux 导出已满足要求")
         PY
     - name: 补齐 SukiSU SUSFS 内联 hook 符号
-      if: inputs.kernelsu_variant == 'SukiSU' && inputs.enable_susfs
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (inputs.kernelsu_variant == 'SukiSU' && inputs.enable_susfs)
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -5527,7 +5643,7 @@ jobs:
         set -euo pipefail
         python3 "$GITHUB_WORKSPACE/.github/scripts/fix_sukisu_susfs.py" "$KERNEL_ROOT"
     - name: 最终修复 SukiSU/BakaSU 源码兼容
-      if: inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -5767,7 +5883,7 @@ jobs:
         changed = False
 
         netlink_h = Path("common/include/linux/netlink.h")
-        super_access_c = ksu_dir / "kpm/super_access.c"
+        super_access_c = next((path for path in (ksu_dir / "extension/kpm/super_access.c", ksu_dir / "kpm/super_access.c") if path.is_file()), ksu_dir / "kpm/super_access.c")
         if super_access_c.exists() and netlink_h.exists():
             netlink_text = netlink_h.read_text(errors="ignore")
             if "cb_mutex" not in netlink_text:
@@ -5945,6 +6061,16 @@ jobs:
         fi
 
         echo "ABK Control 管理器桥接校验通过。"
+    - name: 配对管理器包名与签名
+      if: inputs.kernelsu_variant == 'SukiSU'
+      env:
+        MANAGER_PACKAGE: ${{ needs.build-sukisu-manager.outputs.manager_package }}
+        MANAGER_CERT_SIZE: ${{ needs.build-sukisu-manager.outputs.manager_cert_size }}
+        MANAGER_CERT_SHA256: ${{ needs.build-sukisu-manager.outputs.manager_cert_sha256 }}
+      run: |
+        python3 "$GITHUB_WORKSPACE/tools/set_manager_signature.py" \
+          --kernel-root "$KERNEL_ROOT" --package "$MANAGER_PACKAGE" \
+          --cert-size "$MANAGER_CERT_SIZE" --cert-sha256 "$MANAGER_CERT_SHA256"
     - name: 检查 SUSFS 与 KernelSU 接口配套
       if: inputs.enable_susfs && inputs.kernelsu_variant != 'None'
       run: python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"
@@ -6384,8 +6510,11 @@ jobs:
         path: patch-rejects/
         if-no-files-found: ignore
         compression-level: 9
-    if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
-    needs: prepare-matrix
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && (inputs.kernelsu_variant != 'SukiSU' || needs.build-sukisu-manager.result
+      == 'success') && (github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核')
+    needs:
+    - prepare-matrix
+    - build-sukisu-manager
     strategy:
       fail-fast: false
       max-parallel: ${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}

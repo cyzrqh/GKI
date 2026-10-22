@@ -2,7 +2,7 @@
 
 以 [ABK](https://github.com/xingguangcuican6666/ABK) 为主要构建上游的独立 GKI 构建仓库，参考 [zzh20188/GKI_KernelSU_SUSFS](https://github.com/zzh20188/GKI_KernelSU_SUSFS) 的版本目录补全可选组合。
 
-Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**，同时提供编译和检查上游更新两种操作。
+Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**，提供 **编译内核**、**仅编译 SukiSU 安装包** 和 **检查上游更新** 三种操作。
 
 ## 构建
 
@@ -37,9 +37,26 @@ Actions 中只有一个工作流：**GKI 全属性内核构建矩阵**，同时�
 
 ### SUSFS 版本兼容
 
-ABK 当前固定的 SukiSU Stable/Dev 提交 `cf87e3f4` 使用本仓库 `build-compatibility.json` 中配套的 SUSFS **v2.2.0** 源码与补丁，避免自动拉取 v2.3 后缺少接口而链接失败。五个内核系列分别锁定完整提交。若已在 `config/config` 中设置 `custom=true`，则优先使用你指定的 SUSFS 提交。
+本仓库的 SukiSU **Stable/Dev + SUSFS** 默认固定到已适配的 SukiSU 提交 `17ff94d9da24d589a9705227fdda39a1c9045698`，搭配 SUSFS **v2.3.0** 源码与补丁。具体配对记录在 `build-compatibility.json`，五个内核系列分别锁定完整的 SUSFS 提交。若已在 `config/config` 中设置 `custom=true`，则优先使用你指定的 SUSFS 提交。
 
 Latest/Custom 分支及其他 KernelSU 变体继续使用原有版本选择规则。所有启用 SUSFS 的构建都会在编译前检查这些直接调用的接口；发现不匹配时会提前停止并列出原因。同步上游不会覆盖本仓库的兼容锁文件。
+
+此前 v2.2.0 的实测结果属于旧配置；v2.3.0 配对及下述配套 APK 流程仍需真实 Actions 构建验证。
+
+### 配套 SukiSU 管理器安装包
+
+每次选择 SukiSU 编译内核时，工作流先确定一个完整的 SukiSU 源码提交，再用同一提交编译并签名一份 ARM64 管理器 APK；签名成功后，所有所选内核共用这份 APK 的包名与签名信息。管理器作为独立的 **`SukiSU-Manager-<提交前7位>-arm64`** Artifact 上传，下载并解压后即可取得 APK。
+
+安装包使用独立包名 **`com.cyzrqh.gki.sukisu`**，可与官方管理器并存，应配合本仓库同次构建的内核使用。只需要安装包时，将“操作”改为 **仅编译 SukiSU 安装包**，选择所需 KSU 分支即可，无需启动内核矩阵。
+
+仓库维护者需在 **Settings → Secrets and variables → Actions → Secrets** 一次性配置以下签名 Secrets，并长期保留同一密钥，保证后续 APK 可以直接更新安装：
+
+| Secret | 内容 |
+| --- | --- |
+| `SUKISU_APK_KEYSTORE` | PKCS12 格式签名密钥库的 Base64 编码，密钥别名固定为 `gki-sukisu` |
+| `SUKISU_APK_PASSWORD` | 上述密钥库与私钥共用的密码 |
+
+普通用户只需正常选择构建参数，无需填写或上传私钥。签名配置缺失时会提前提示维护者补齐；私钥和密码不会放入构建产物。
 
 ### 版本覆盖
 

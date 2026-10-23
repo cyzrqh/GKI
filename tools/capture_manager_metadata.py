@@ -40,7 +40,7 @@ def main():
                         positive_integer(fields['producer_run_id'], 'producer run ID'),
                         positive_integer(fields['producer_run_attempt'], 'producer run attempt'),
                         fields['producer_head_sha'], fields['ksu_ref'],
-                        'Manager-Identity-' + fields['ksu_ref'][:7])
+                        fields['file'])
     expected.validate()
     validate_metadata(fields, expected)
     args.output.parent.mkdir(parents=True, exist_ok=True)

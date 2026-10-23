@@ -1,4 +1,5 @@
 from contextlib import redirect_stderr, redirect_stdout
+import gzip
 import hashlib
 import io
 import json
@@ -12,11 +13,13 @@ import uuid
 import warnings
 import zipfile
 
+from kernel_fixture import ak3_bytes, kernel_fixture
+
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import package_release_kernel as assets
 
-IMAGE = b'compiled ARM64 Image with actual IKCONFIG'
+DOCUMENT, IMAGE = kernel_fixture()
 IMAGE_SHA = hashlib.sha256(IMAGE).hexdigest()
 PREFIX = 'android14-6.1.145-2025-08'
 
@@ -29,9 +32,15 @@ class KernelReleaseAssetTests(unittest.TestCase):
         self.output.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, self.root)
         self.metadata = self.output / 'kernel.json'
-        self.document = {'file': PREFIX + '-AnyKernel3.zip', 'image_sha256': IMAGE_SHA,
-                         'android_version': 'android14', 'kernel_version': '6.1', 'sub_level': '145',
-                         'os_patch_level': '2025-08', 'features': {'susfs': True, 'kpm': False}}
+        self.document = json.loads(json.dumps(DOCUMENT))
+        environment = {field.upper(): str(self.document[field]) for field in (
+            'manager_package', 'manager_cert_size', 'manager_cert_sha256', 'manager_apk_filename', 'manager_apk_sha256')}
+        environment.update({env: self.document[field] for field, env in (
+            ('producer_repository', 'GITHUB_REPOSITORY'), ('producer_run_id', 'GITHUB_RUN_ID'),
+            ('producer_run_attempt', 'GITHUB_RUN_ATTEMPT'), ('producer_head_sha', 'GITHUB_SHA'))})
+        env_patch = patch.dict(assets.os.environ, environment)
+        env_patch.start()
+        self.addCleanup(env_patch.stop)
         self.write_metadata(self.document)
         self.ak3 = self.workspace / self.document['file']
         self.make_ak3()
@@ -63,7 +72,8 @@ class KernelReleaseAssetTests(unittest.TestCase):
         updated = json.loads(self.metadata.read_text(encoding='utf-8'))
         self.assertEqual(updated['files'], [self.ak3.name])
         self.assertEqual(updated['features'], self.document['features'])
-        self.assertEqual((self.output / self.ak3.name).read_bytes(), self.ak3.read_bytes())
+        published = assets.read_kernel_ak3(self.output / self.ak3.name)
+        self.assertEqual(published, updated)
         self.assertEqual(sorted(path.suffix for path in self.output.iterdir()), ['.json', '.zip'])
         with zipfile.ZipFile(self.output / self.ak3.name) as archive:
             self.assertEqual(archive.read('Image'), IMAGE)
@@ -75,9 +85,11 @@ class KernelReleaseAssetTests(unittest.TestCase):
             (self.workspace / name).write_bytes(b'ANDROID!' + name.encode())
         result = self.package('AK3 + boot 镜像')
         self.assertEqual(result['files'], [self.ak3.name] + sorted(filenames))
-        for name in result['files']:
+        for name in result['files'][1:]:
             self.assertEqual((self.output / name).read_bytes(), (self.workspace / name).read_bytes())
         self.assertEqual(json.loads(self.metadata.read_text())['files'], result['files'])
+        published = assets.read_kernel_ak3(self.output / self.ak3.name)
+        self.assertEqual(published['boot_sha256'], {name: assets.sha256_file(self.workspace / name) for name in filenames})
 
     def test_lts_target_names_are_supported_consistently(self):
         self.ak3 = self.ak3.rename(self.workspace / self.ak3.name.replace('2025-08', 'lts'))
@@ -92,6 +104,9 @@ class KernelReleaseAssetTests(unittest.TestCase):
         self.document.update(file=self.ak3.name, sub_level='X', os_patch_level='lts')
         self.write_metadata(self.document)
         self.assertEqual(self.package()['files'], [self.ak3.name])
+        # Switching output modes is a new publication; never overwrite an
+        # already published ZIP with different embedded boot identities.
+        (self.output / self.ak3.name).unlink()
         boot = self.workspace / 'android14-6.1.X-lts-boot.img'
         boot.write_bytes(b'ANDROID! LTS kernel')
         self.assertEqual(self.package('AK3 + boot 镜像')['files'], [self.ak3.name, boot.name])
@@ -196,12 +211,14 @@ class KernelReleaseAssetTests(unittest.TestCase):
         image = self.workspace / (PREFIX + '-boot.img')
         image.write_bytes(b'ANDROID!')
         existing = self.output / self.ak3.name
-        shutil.copyfile(self.ak3, existing)
+        self.package('AK3 + boot 镜像')
+        (self.output / image.name).unlink()
+        before = existing.read_bytes()
         original = self.metadata.read_bytes()
         with patch.object(assets.os, 'link', side_effect=OSError('simulated publication failure')):
             with self.assertRaises(OSError):
                 self.package('AK3 + boot 镜像')
-        self.assertEqual(existing.read_bytes(), self.ak3.read_bytes())
+        self.assertEqual(existing.read_bytes(), before)
         self.assertEqual(self.metadata.read_bytes(), original)
         self.assertEqual(set(self.output.iterdir()), {self.metadata, existing})
 
@@ -257,6 +274,62 @@ class KernelReleaseAssetTests(unittest.TestCase):
                                   '--output', str(self.output), '--mode', '仅 AK3'])
         self.assertEqual(status, 0)
         self.assertEqual(json.loads(stdout.getvalue())['files'], [self.ak3.name])
+
+    def test_reader_checks_image_config_source_and_manager_trust(self):
+        self.package()
+        metadata = assets.read_kernel_ak3(self.output / self.ak3.name)
+        for changes in ({'image_sha256': 'e' * 64}, {'config_sha256': 'e' * 64},
+                        {'ksu_ref': 'moving-branch'}, {'manager_package': 'another.manager'},
+                        {'manager_cert_sha256': 'e' * 64}, {'manager_cert_size': True},
+                        {'manager_apk_filename': '../unsafe.apk'}, {'ak3_sha256': 'e' * 64},
+                        {'features': {**metadata['features'], 'kpm': True}},
+                        {'features': {**metadata['features'], 'susfs': 1}},
+                        {'files': [self.ak3.name, PREFIX + '-boot.img'], 'boot_sha256': {}},
+                        {'susfs_version': 'v9.9.9'}, {'producer_run_id': True},
+                        {'built_at_utc': '2026-10-24T08:00:00+08:00'}):
+            with self.subTest(changes=changes), self.assertRaises(ValueError):
+                assets.read_kernel_ak3(ak3_bytes({**metadata, **changes}, IMAGE), filename=self.ak3.name)
+
+    def test_reader_rejects_missing_identity_wrong_filename_and_changed_image_config(self):
+        with self.assertRaises(ValueError):
+            assets.read_kernel_ak3(self.ak3)
+        document = {**self.document, 'image_sha256': hashlib.sha256(b'unbound kernel').hexdigest()}
+        with self.assertRaisesRegex(ValueError, 'IKCONFIG'):
+            assets.read_kernel_ak3(ak3_bytes(document, b'unbound kernel'), filename=self.ak3.name)
+        with self.assertRaisesRegex(ValueError, 'filename'):
+            assets.read_kernel_ak3(ak3_bytes(self.document, IMAGE), filename='another.zip')
+
+    def test_reader_bounds_nested_ikconfig_before_unbounded_decompression(self):
+        oversized = b'IKCFG_ST' + gzip.compress(b'A' * (8 * 1024 * 1024 + 1), mtime=0) + b'IKCFG_ED'
+        document = {**self.document, 'image_sha256': hashlib.sha256(oversized).hexdigest()}
+        with self.assertRaisesRegex(ValueError, 'oversized'):
+            assets.read_kernel_ak3(ak3_bytes(document, oversized), filename=self.ak3.name)
+
+    def test_package_binds_verified_manager_env_and_fails_changed_identity(self):
+        expected = self.document.pop('manager_apk_sha256')
+        self.write_metadata(self.document)
+        with patch.dict(assets.os.environ, {'MANAGER_APK_SHA256': expected}):
+            self.package()
+        self.assertEqual(assets.read_kernel_ak3(self.output / self.ak3.name)['manager_apk_sha256'], expected)
+        with patch.dict(assets.os.environ, {'MANAGER_CERT_SHA256': 'e' * 64}):
+            with self.assertRaisesRegex(ValueError, 'verified paired APK'):
+                self.package()
+
+    def test_existing_embedded_identity_is_never_silently_replaced(self):
+        changed = {**self.document, 'ksu_ref': 'f' * 40}
+        self.ak3.write_bytes(ak3_bytes(changed, IMAGE))
+        with self.assertRaisesRegex(ValueError, 'different build identity'):
+            self.package()
+
+    def test_final_zip_retry_is_byte_identical_without_duplicate_metadata_members(self):
+        self.package()
+        final = (self.output / self.ak3.name).read_bytes()
+        self.ak3.write_bytes(final)
+        self.package()
+        self.assertEqual((self.output / self.ak3.name).read_bytes(), final)
+        with zipfile.ZipFile(io.BytesIO(final)) as archive:
+            self.assertEqual(archive.namelist().count(assets.KERNEL_MEMBER), 1)
+            self.assertNotIn('ak3_sha256', json.loads(archive.read(assets.KERNEL_MEMBER)))
 
 
 if __name__ == '__main__':

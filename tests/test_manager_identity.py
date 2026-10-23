@@ -1,4 +1,5 @@
 import copy
+import hashlib
 import io
 import json
 import os
@@ -16,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import capture_manager_metadata as capture
 import wait_manager_identity as identity
+from apk_fixture import manager_metadata, signed_apk
 
 
 class Clock:
@@ -65,25 +67,18 @@ class FakeReader:
 class ManagerIdentityTests(unittest.TestCase):
     def setUp(self):
         self.expected = identity.Expected('cyzrqh/gki', 123, 1, 'a' * 40, 'b' * 40,
-                                          'Manager-Identity-' + 'b' * 7)
-        self.metadata = {'file': 'SukiSU_v4.2.0_40922-release.apk', 'package': 'com.cyzrqh.gki.sukisu',
-                         'ksu_ref': 'b' * 40, 'ksu_variant': 'SukiSU', 'ksu_version_code': '40922',
-                         'ksu_version_name': '4.2.0', 'manager_cert_size': '730',
-                         'manager_cert_sha256': 'c' * 64, 'apk_sha256': 'd' * 64,
-                         'producer_repository': 'cyzrqh/gki', 'producer_run_id': '123',
-                         'producer_run_attempt': '1', 'producer_head_sha': 'a' * 40}
+                                          'SukiSU_v4.2.0_40922-release.apk')
+        self.metadata = manager_metadata(apk_sha256='d' * 64)
 
-    def zip(self, metadata=None, *, member='manager.json', extra=False):
-        content = io.BytesIO()
-        with zipfile.ZipFile(content, 'w') as archive:
-            archive.writestr(member, json.dumps(self.metadata if metadata is None else metadata))
-            if extra:
-                archive.writestr('untrusted.txt', 'extra')
-        return content.getvalue()
+    def zip(self, metadata=None, *, member='assets/gki-build.json', extra=False):
+        public = dict(self.metadata if metadata is None else metadata)
+        public.pop('apk_sha256', None)
+        return signed_apk(public, member=member, extra=extra)
 
     def artifact(self, artifact_id=7, **updates):
         value = {'id': artifact_id, 'name': self.expected.artifact_name, 'size_in_bytes': 500,
-                 'expired': False, 'workflow_run': {'id': 123, 'head_sha': 'a' * 40}}
+                 'expired': False, 'workflow_run': {'id': 123, 'head_sha': 'a' * 40},
+                 'digest': 'sha256:' + hashlib.sha256(self.zip()).hexdigest()}
         value.update(updates)
         return value
 
@@ -95,8 +90,8 @@ class ManagerIdentityTests(unittest.TestCase):
     def test_signed_public_identity_is_available_while_apk_job_still_runs(self):
         reader = FakeReader(self.expected, [[self.artifact()]], {7: self.zip()})
         result = self.wait(reader)
-        self.assertEqual(result['MANAGER_CERT_SIZE'], '730')
-        self.assertEqual(result['MANAGER_CERT_SHA256'], 'c' * 64)
+        self.assertEqual(result['MANAGER_CERT_SIZE'], self.metadata['manager_cert_size'])
+        self.assertEqual(result['MANAGER_CERT_SHA256'], self.metadata['manager_cert_sha256'])
         self.assertEqual(result['MANAGER_VERSION_CODE'], '40922')
         self.assertEqual(result['MANAGER_APK_FILENAME'], self.metadata['file'])
         self.assertNotIn('producer_run_id', result)
@@ -107,6 +102,30 @@ class ManagerIdentityTests(unittest.TestCase):
         reader = FakeReader(self.expected, [[], [], [self.artifact()]], {7: self.zip()})
         self.assertEqual(self.wait(reader)['MANAGER_PACKAGE'], self.metadata['package'])
         self.assertEqual(self.clock.waits, [15, 15])
+
+    def test_only_final_apk_artifact_is_used_and_self_hash_is_computed(self):
+        self.expected = identity.Expected('cyzrqh/gki', 123, 1, 'a' * 40, 'b' * 40)
+        apk = self.zip()
+        artifact = self.artifact(name=self.metadata['file'])
+        legacy = self.artifact(8, name='Manager-Identity-bbbbbbb')
+        reader = FakeReader(self.expected, [[legacy, artifact]], {7: apk, 8: b'old manager JSON zip'})
+        values = self.wait(reader)
+        self.assertEqual(values['MANAGER_APK_SHA256'], hashlib.sha256(apk).hexdigest())
+        self.assertNotIn('actions/artifacts/8/zip', reader.paths)
+
+    def test_github_artifact_digest_is_checked_before_using_the_apk(self):
+        for digest in (None, 'bad', 'sha256:' + '0' * 64):
+            reader = FakeReader(self.expected, [[self.artifact(digest=digest)]], {7: self.zip()})
+            with self.subTest(digest=digest), self.assertRaisesRegex(identity.IdentityError, 'GitHub digest'):
+                self.wait(reader)
+
+    def test_api_single_apk_transport_archive_preserves_exact_signed_file(self):
+        raw = self.zip()
+        stream = io.BytesIO()
+        with zipfile.ZipFile(stream, 'w') as archive:
+            archive.writestr(self.metadata['file'], raw)
+        values = identity.read_identity_archive(stream.getvalue(), self.expected)
+        self.assertEqual(values['MANAGER_APK_SHA256'], hashlib.sha256(raw).hexdigest())
 
     def test_failed_cancelled_and_skipped_apk_producers_stop_without_wait(self):
         for conclusion in ('failure', 'cancelled', 'skipped', 'timed_out', 'action_required'):
@@ -145,7 +164,7 @@ class ManagerIdentityTests(unittest.TestCase):
             self.assertFalse(any(path.endswith('/zip') for path in reader.paths))
 
     def test_rejects_large_artifact_without_download(self):
-        reader = FakeReader(self.expected, [[self.artifact(size_in_bytes=65537)]], {7: self.zip()})
+        reader = FakeReader(self.expected, [[self.artifact(size_in_bytes=identity.MAX_ARCHIVE_BYTES + 1)]], {7: self.zip()})
         with self.assertRaisesRegex(identity.IdentityError, 'artifact size'):
             self.wait(reader)
         self.assertFalse(any(path.endswith('/zip') for path in reader.paths))
@@ -168,7 +187,7 @@ class ManagerIdentityTests(unittest.TestCase):
                     identity.validate_metadata(changed, self.expected)
 
     def test_rejects_missing_fields_and_control_characters_everywhere(self):
-        for key in self.metadata:
+        for key in self.metadata.keys() - {'schema_version', 'ksu_branch'}:
             with self.subTest(missing=key):
                 changed = copy.deepcopy(self.metadata)
                 del changed[key]
@@ -186,35 +205,33 @@ class ManagerIdentityTests(unittest.TestCase):
                     identity.read_identity_archive(raw, self.expected)
 
     def test_rejects_duplicate_json_keys(self):
-        raw = io.BytesIO()
-        with zipfile.ZipFile(raw, 'w') as archive:
-            archive.writestr('manager.json', '{"package":"com.good.app","package":"com.evil.app"}')
         with self.assertRaises(identity.IdentityError):
-            identity.read_identity_archive(raw.getvalue(), self.expected)
+            identity.read_identity_archive(signed_apk(raw_metadata=b'{"package":"com.good.app","package":"com.evil.app"}'), self.expected)
 
     def test_previous_attempt_is_reused_only_with_retained_successful_manager_job(self):
         self.expected = identity.Expected('cyzrqh/gki', 123, 2, 'a' * 40, 'b' * 40,
-                                          'Manager-Identity-' + 'b' * 7)
+                                          self.metadata['file'])
         prior_job = {'name': self.expected.manager_job, 'status': 'completed',
                      'conclusion': 'success', 'run_attempt': 1}
         reader = FakeReader(self.expected, [[self.artifact()]], {7: self.zip()},
                             current_job='absent', latest_job=prior_job)
-        self.assertEqual(self.wait(reader)['MANAGER_CERT_SHA256'], 'c' * 64)
+        self.assertEqual(self.wait(reader)['MANAGER_CERT_SHA256'], self.metadata['manager_cert_sha256'])
         self.assertEqual(self.clock.waits, [])
 
     def test_rerun_manager_in_progress_waits_for_replacement_instead_of_using_old_certificate(self):
         self.expected = identity.Expected('cyzrqh/gki', 123, 2, 'a' * 40, 'b' * 40,
-                                          'Manager-Identity-' + 'b' * 7)
-        current = {**self.metadata, 'producer_run_attempt': '2', 'manager_cert_sha256': 'e' * 64}
-        reader = FakeReader(self.expected, [[self.artifact()], [self.artifact()], [self.artifact(8)]],
+                                          self.metadata['file'])
+        current = {**self.metadata, 'producer_run_attempt': '2'}
+        current_digest = 'sha256:' + hashlib.sha256(self.zip(current)).hexdigest()
+        reader = FakeReader(self.expected, [[self.artifact()], [self.artifact()], [self.artifact(8, digest=current_digest)]],
                             {7: self.zip(), 8: self.zip(current)})
-        self.assertEqual(self.wait(reader)['MANAGER_CERT_SHA256'], 'e' * 64)
+        self.assertEqual(self.wait(reader)['MANAGER_CERT_SHA256'], self.metadata['manager_cert_sha256'])
         self.assertEqual(self.clock.waits, [15, 15])
         self.assertEqual(reader.paths.count('actions/artifacts/7/zip'), 1)
 
     def test_old_identity_not_reused_for_different_successful_manager_attempt(self):
         self.expected = identity.Expected('cyzrqh/gki', 123, 3, 'a' * 40, 'b' * 40,
-                                          'Manager-Identity-' + 'b' * 7)
+                                          self.metadata['file'])
         job = {'name': self.expected.manager_job, 'status': 'completed',
                'conclusion': 'success', 'run_attempt': 2}
         reader = FakeReader(self.expected, [[self.artifact()]], {7: self.zip()},

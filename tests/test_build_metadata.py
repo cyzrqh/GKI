@@ -1,4 +1,5 @@
 import gzip
+import hashlib
 import json
 from pathlib import Path
 import shutil
@@ -7,11 +8,14 @@ import sys
 import unittest
 from unittest.mock import patch
 import uuid
+import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import capture_build_metadata as metadata
 import prepare_release
+from apk_fixture import manager_metadata, signed_apk
+from kernel_fixture import ak3_bytes, kernel_fixture
 
 
 class BuiltMetadataTests(unittest.TestCase):
@@ -177,6 +181,180 @@ class DirectReleasePreparationTests(unittest.TestCase):
             prepare_release.prepare(self.source, self.output)
         self.assertEqual(list((self.output / 'assets').iterdir()), [existing])
         self.assertEqual(existing.read_bytes(), b'user file')
+
+
+class RawReleasePreparationTests(unittest.TestCase):
+    """Exercise genuine APK-v2 verification and Image/IKCONFIG parsing end to end."""
+    def setUp(self):
+        self.root = ROOT / 'tests' / ('.raw-release-prep-' + uuid.uuid4().hex)
+        self.source = self.root / 'input'
+        self.source.mkdir(parents=True)
+        self.output = self.root / 'public'
+        self.addCleanup(shutil.rmtree, self.root)
+        self.manager = manager_metadata()
+        self.apk_bytes = signed_apk(self.manager)
+        self.manager['apk_sha256'] = hashlib.sha256(self.apk_bytes).hexdigest()
+
+    def write_asset(self, name, content, *, flat=False):
+        directory = self.source if flat else self.source / name
+        directory.mkdir(exist_ok=True)
+        path = directory / name
+        path.write_bytes(content)
+        return path
+
+    def make_raw(self, *, kernel=True, boot=False, flat=False, kernel_manager=None):
+        apk = self.write_asset(self.manager['file'], self.apk_bytes, flat=flat)
+        if not kernel:
+            return apk, None, None
+        document, image = kernel_fixture(manager=self.manager if kernel_manager is None else kernel_manager)
+        if boot:
+            name = document['file'].removesuffix('-AnyKernel3.zip') + '-boot.img'
+            contents = b'ANDROID! unit boot payload bound by actual SHA256'
+            self.write_asset(name, contents, flat=flat)
+            document['files'] = [document['file'], name]
+            document['boot_sha256'] = {name: hashlib.sha256(contents).hexdigest()}
+        ak3 = self.write_asset(document['file'], ak3_bytes(document, image), flat=flat)
+        return apk, ak3, document
+
+    def assert_no_output(self):
+        self.assertFalse(self.output.exists())
+
+    def test_raw_signed_apk_only_is_published_as_identical_original_bytes(self):
+        apk, _, _ = self.make_raw(kernel=False, flat=True)
+        result = prepare_release.prepare(self.source, self.output)
+        self.assertEqual({'assets': 1, 'kernels': 0, 'manager': True}, result)
+        self.assertEqual(self.apk_bytes, (self.output / 'assets' / apk.name).read_bytes())
+        self.assertEqual({apk.name, 'SHA256SUMS.txt'}, {path.name for path in (self.output / 'assets').iterdir()})
+        self.assertIn(self.manager['apk_sha256'] + '  ' + apk.name,
+                      (self.output / 'assets/SHA256SUMS.txt').read_text())
+
+    def test_separate_raw_artifact_directories_rejoin_apk_ak3_and_boot_without_wrappers(self):
+        apk, ak3, document = self.make_raw(boot=True)
+        originals = {path.name: path.read_bytes() for path in self.source.rglob('*') if path.is_file()}
+        report = prepare_release.prepare(self.source, self.output)
+        self.assertEqual({'assets': 3, 'kernels': 1, 'manager': True}, report)
+        for name, content in originals.items():
+            self.assertEqual(content, (self.output / 'assets' / name).read_bytes())
+        names = {path.name for path in (self.output / 'assets').iterdir()}
+        self.assertEqual(set(originals) | {'SHA256SUMS.txt'}, names)
+        self.assertEqual([ak3.name], [name for name in names if name.endswith('.zip')])
+        notes = (self.output / 'release.md').read_text(encoding='utf-8')
+        self.assertIn('| LTO | thin |', notes)
+        self.assertIn(document['susfs_version'], notes)
+        self.assertIn('1 个内核目标', notes)
+
+    def test_sidecars_and_matching_embedded_metadata_count_each_build_once(self):
+        apk, ak3, document = self.make_raw(flat=True)
+        (self.source / 'manager.json').write_text(json.dumps({key: value for key, value in self.manager.items()
+                                                           if key != 'apk_sha256'}), encoding='utf-8')
+        (self.source / 'kernel.json').write_text(json.dumps(document), encoding='utf-8')
+        result = prepare_release.prepare(self.source, self.output)
+        self.assertEqual({'assets': 2, 'kernels': 1, 'manager': True}, result)
+        self.assertEqual({apk.name, ak3.name, 'SHA256SUMS.txt'},
+                         {path.name for path in (self.output / 'assets').iterdir()})
+
+    def test_conflicting_legacy_sidecar_cannot_override_a_valid_signed_apk(self):
+        self.make_raw(flat=True)
+        legacy = {**self.manager, 'ksu_version_code': '1'}
+        (self.source / 'manager.json').write_text(json.dumps(legacy), encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'sidecar differs'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+
+    def test_kernel_must_match_actual_manager_source_certificate_and_apk_bytes(self):
+        changes = [('ksu_ref', 'c' * 40), ('ksu_version_code', '40923'),
+                   ('ksu_version_name', '4.2.1'), ('package', 'com.example.other'),
+                   ('manager_cert_size', str(int(self.manager['manager_cert_size']) + 1)),
+                   ('manager_cert_sha256', 'd' * 64), ('apk_sha256', 'e' * 64),
+                   ('file', 'SukiSU_different-release.apk')]
+        for field, value in changes:
+            with self.subTest(field=field):
+                other = {**self.manager, field: value}
+                self.make_raw(flat=True, kernel_manager=other)
+                with self.assertRaises(ValueError):
+                    prepare_release.prepare(self.source, self.output)
+                self.assert_no_output()
+                for path in self.source.iterdir():
+                    path.unlink()
+
+    def test_missing_changed_or_unclaimed_boot_is_rejected_before_any_output(self):
+        _, _, document = self.make_raw(boot=True, flat=True)
+        name = next(iter(document['boot_sha256']))
+        boot = self.source / name
+        original = boot.read_bytes()
+        boot.write_bytes(b'ANDROID! wrong kernel boot image')
+        with self.assertRaisesRegex(ValueError, 'Boot image SHA256'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+        boot.unlink()
+        with self.assertRaisesRegex(ValueError, 'Missing nonempty'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+        boot.write_bytes(original)
+        (self.source / 'android99-9.9.1-2025-01-boot.img').write_bytes(b'unrelated boot')
+        with self.assertRaisesRegex(ValueError, 'no matching kernel'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+
+    def test_raw_sukisu_kernel_requires_its_verified_signed_manager(self):
+        apk, _, _ = self.make_raw(flat=True)
+        apk.unlink()
+        with self.assertRaisesRegex(ValueError, 'verified signed manager'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+
+    def test_duplicate_target_files_or_invalid_apk_signature_leave_no_partial_release(self):
+        apk, ak3, _ = self.make_raw(flat=True)
+        other = self.source / 'duplicate-artifact'
+        other.mkdir()
+        duplicate = other / ak3.name
+        shutil.copyfile(ak3, duplicate)
+        with self.assertRaisesRegex(ValueError, 'Duplicate public release'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+        duplicate.unlink()
+        apk.write_bytes(self.apk_bytes.replace(b'APK dex fixture', b'APK dex fixturE'))
+        with self.assertRaisesRegex(ValueError, 'digest verification'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+
+    def test_actual_image_and_ikconfig_are_revalidated_without_reader_mocks(self):
+        _, ak3, document = self.make_raw(flat=True)
+        with zipfile.ZipFile(ak3) as archive:
+            data = {name: archive.read(name) for name in archive.namelist()}
+        data['Image'] = b'kernel image with missing IKCONFIG'
+        document['image_sha256'] = hashlib.sha256(data['Image']).hexdigest()
+        data['META-INF/gki/build.json'] = json.dumps(document).encode('utf-8')
+        with zipfile.ZipFile(ak3, 'w') as archive:
+            for name, value in data.items():
+                archive.writestr(name, value)
+        with self.assertRaisesRegex(ValueError, 'IKCONFIG'):
+            prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+
+    def test_multiple_targets_keep_one_complete_configuration_table(self):
+        self.make_raw(flat=True)
+        document, image = kernel_fixture(manager=self.manager,
+                                         file='android15-6.6.98-2025-09-AnyKernel3.zip')
+        self.write_asset(document['file'], ak3_bytes(document, image), flat=True)
+        report = prepare_release.prepare(self.source, self.output)
+        self.assertEqual({'assets': 3, 'kernels': 2, 'manager': True}, report)
+        notes = (self.output / 'release.md').read_text(encoding='utf-8')
+        self.assertEqual(1, notes.count('| LTO |'))
+        self.assertIn('Android 14 / 6.1', notes)
+        self.assertIn('Android 15 / 6.6', notes)
+        self.assertIn('2 个内核目标', notes)
+
+    def test_existing_unrelated_output_cannot_be_accidentally_included_in_release(self):
+        self.make_raw(kernel=False, flat=True)
+        assets = self.output / 'assets'
+        assets.mkdir(parents=True)
+        unrelated = assets / 'unrelated-AnyKernel3.zip'
+        unrelated.write_bytes(b'user-owned file')
+        with self.assertRaisesRegex(ValueError, 'already contains'):
+            prepare_release.prepare(self.source, self.output)
+        self.assertEqual([unrelated], list(assets.iterdir()))
+        self.assertEqual(b'user-owned file', unrelated.read_bytes())
 
 
 if __name__ == '__main__':

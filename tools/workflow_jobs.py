@@ -147,8 +147,11 @@ def release_job():
         'permissions': {'contents': 'write', 'actions': 'write'},
         'steps': [
             {'name': '检出发布工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
+            {'name': '准备 APK 内容签名验证',
+             'run': "python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check cryptography"},
             {'name': '收集本次构建产物', 'uses': 'actions/download-artifact@v8',
-             'with': {'pattern': 'Release-*', 'path': 'release-input', 'merge-multiple': False}},
+             'with': {'pattern': "{${{ needs.build-sukisu-manager.outputs.apk_filename || '__NO_MANAGER_APK__' }},*-AnyKernel3.zip,*-boot*.img}",
+                      'path': 'release-input', 'merge-multiple': False}},
             {'name': '整理直接下载文件与实际配置',
              'run': 'python3 tools/prepare_release.py --input release-input --output release-publish'},
             {'name': '发布独立安装包和刷机包', 'id': 'release',

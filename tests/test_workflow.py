@@ -1,4 +1,5 @@
 import copy
+import fnmatch
 import json
 import os
 import shutil
@@ -26,6 +27,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(list(self.workflow['on']), ['workflow_dispatch', 'schedule'])
         self.assertEqual(len(self.workflow['on']['workflow_dispatch']['inputs']), 25)
         self.assertTrue(all('uses' not in job for job in self.workflow['jobs'].values()))
+
+    def test_real_boot_patch_check_must_pass_before_signing_and_upload(self):
+        steps = self.workflow['jobs']['build-sukisu-manager']['steps']
+        index = next(i for i, step in enumerate(steps)
+                     if 'tools/verify_manager_boot_patch.py' in step.get('run', ''))
+        verify = steps[index]
+        self.assertNotIn('continue-on-error', verify)
+        self.assertNotIn('if', verify)
+        self.assertIn('--module-report "$RUNNER_TEMP/manager-lkm-stage.json"', verify['run'])
+        self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-build'), index)
+        self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'sign'))
+        self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('name') == '上传 SukiSU 安装包'))
 
     def test_sukisu_release_choices_preserve_old_dispatch_and_share_canonical_tier(self):
         fields = self.workflow['on']['workflow_dispatch']['inputs']
@@ -55,7 +68,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow['jobs']['build-kernel']['if'], generator.KERNEL_JOB_IF)
         self.assertIn(generator.BUILD_IF, generator.KERNEL_JOB_IF)
         self.assertIn("needs.prepare-matrix.result == 'success'", generator.KERNEL_JOB_IF)
-        self.assertNotIn('needs.build-sukisu-manager', generator.KERNEL_JOB_IF)
+        self.assertIn("needs.build-sukisu-manager.result == 'success'", generator.KERNEL_JOB_IF)
         self.assertIn("github.event_name == 'workflow_dispatch'", generator.BUILD_IF)
         self.assertIn("inputs.operation == '编译内核'", generator.BUILD_IF)
         self.assertEqual(self.workflow['on']['schedule'], [{'cron': '17 0 * * *'}])
@@ -175,7 +188,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_sukisu_manager_is_built_once_and_kernel_uses_its_signature(self):
         manager = self.workflow['jobs']['build-sukisu-manager']
-        self.assertEqual(manager['needs'], 'prepare-matrix')
+        self.assertEqual(manager['needs'], ['prepare-matrix', 'build-sukisu-lkm'])
         self.assertNotIn('strategy', manager)
         self.assertEqual(manager['if'], generator.MANAGER_IF)
         checkout = next(step for step in manager['steps'] if step['name'] == '检出同一版本的 SukiSU 源码')
@@ -193,17 +206,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('secrets.SUKISU_APK_KEYSTORE', sign['env']['SUKISU_APK_KEYSTORE'])
         self.assertIn('--build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"', sign['run'])
         kernel = self.workflow['jobs']['build-kernel']
-        self.assertEqual(kernel['needs'], ['prepare-matrix'])
+        self.assertEqual(kernel['needs'], ['prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager'])
         self.assertEqual(kernel['permissions'], {'contents': 'read', 'actions': 'read'})
         wait = self.find('编译前读取本次 APK 的实际签名信息')
         self.assertEqual(wait['if'], "inputs.kernelsu_variant == 'SukiSU'")
         self.assertIn('wait_manager_identity.py', wait['run'])
         self.assertIn('--expected-ref "$KSU_REF"', wait['run'])
         self.assertIn('--github-env "$GITHUB_ENV"', wait['run'])
-        identity = next(step for step in manager['steps'] if step['name'] == '提供内核配对的公开签名信息')
-        self.assertEqual(identity['with']['name'], 'Manager-Identity-${{ needs.prepare-matrix.outputs.ksu_short }}')
-        self.assertEqual(identity['with']['path'], 'manager-artifact/manager.json')
-        self.assertTrue(identity['with']['overwrite'])
+        self.assertNotIn('Manager-Identity-', str(manager))
+        self.assertIn('--artifact-name "$MANAGER_ARTIFACT"', wait['run'])
+        self.assertEqual(wait['env']['MANAGER_ARTIFACT'], '${{ needs.build-sukisu-manager.outputs.apk_filename }}')
+        self.assertIn('KSU_REF', sign['env'])
         upload = next(step for step in manager['steps'] if step['name'] == '上传 SukiSU 安装包')
         self.assertEqual(upload['uses'], 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)
@@ -211,7 +224,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('name', upload['with'])
         collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
                           if step['name'] == '收集本次构建产物')
-        self.assertEqual(collection['with']['pattern'], 'Release-*')
+        self.assertEqual(collection['with']['pattern'],
+                         "{${{ needs.build-sukisu-manager.outputs.apk_filename || '__NO_MANAGER_APK__' }},*-AnyKernel3.zip,*-boot*.img}")
         signature = self.find('配对管理器包名与签名')
         self.assertNotIn('env', signature)  # Use the verified previous step's GITHUB_ENV values.
         self.assertIn('--package "$MANAGER_PACKAGE"', signature['run'])
@@ -219,7 +233,48 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(names.index('初始化并同步内核源码'), names.index(wait['name']))
         self.assertLess(names.index(wait['name']), names.index(signature['name']))
         self.assertLess(names.index(signature['name']), names.index('编译内核'))
-        self.assertNotIn('needs.build-sukisu-manager', str(kernel))
+        self.assertIn("needs.build-sukisu-manager.result == 'success'", kernel['if'])
+
+    def test_twenty_kernel_jobs_cannot_starve_their_apk_producer(self):
+        kernels = self.workflow['jobs']['build-kernel']
+        manager = self.workflow['jobs']['build-sukisu-manager']
+        self.assertIn('build-sukisu-manager', kernels['needs'])
+        self.assertNotIn('build-kernel', manager['needs'])
+        self.assertEqual(20, self.workflow['on']['workflow_dispatch']['inputs']['max_parallel']['default'])
+        for variant in ('SukiSU', 'None', 'KernelSU', 'BakaSU'):
+            for producer in ('success', 'failure', 'cancelled', 'skipped'):
+                with self.subTest(variant=variant, producer=producer):
+                    values = {
+                        'always()': 'True', 'cancelled()': 'False',
+                        'needs.prepare-matrix.result': repr('success'),
+                        'needs.build-sukisu-lkm.result': repr('success' if variant == 'SukiSU' else 'skipped'),
+                        'needs.build-sukisu-manager.result': repr(producer),
+                        'github.event_name': repr('workflow_dispatch'),
+                        'inputs.operation': repr('编译内核'), 'inputs.kernelsu_variant': repr(variant),
+                    }
+                    expression = kernels['if']
+                    for name, value in values.items():
+                        expression = expression.replace(name, value)
+                    expression = expression.replace('&&', ' and ').replace('||', ' or ').replace('!False', 'not False')
+                    allowed = bool(eval(expression, {'__builtins__': {}}, {}))
+                    self.assertEqual(variant != 'SukiSU' or producer == 'success', allowed)
+
+    def test_release_rerun_collects_only_this_attempts_signed_manager_filename(self):
+        collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
+                          if step['name'] == '收集本次构建产物')
+        expression = "${{ needs.build-sukisu-manager.outputs.apk_filename || '__NO_MANAGER_APK__' }}"
+        current = 'SukiSU_v4.2.1-r1_41050-release.apk'
+        stale = 'SukiSU_v4.2.0_40922-release.apk'
+        kernel = 'android14-6.1.145-2025-08-AnyKernel3.zip'
+        boot = 'android14-6.1.145-2025-08-boot-lz4.img'
+        for selected in (current, ''):
+            with self.subTest(manager=selected):
+                pattern = collection['with']['pattern'].replace(expression, selected or '__NO_MANAGER_APK__')
+                alternatives = pattern[1:-1].split(',')
+                matches = {name for name in (current, stale, kernel, boot)
+                           if any(fnmatch.fnmatchcase(name, item) for item in alternatives)}
+                self.assertEqual({kernel, boot} | ({current} if selected else set()), matches)
+                self.assertNotIn('*.apk', alternatives)
 
     def test_sukisu_source_is_frozen_and_checked_before_any_kernel_sync(self):
         prepare = self.workflow['jobs']['prepare-matrix']['steps']
@@ -240,6 +295,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('integrate_sukisu.py', suki)
         for unstable in ('git clone', 'git pull', 'curl ', 'setup.sh'):
             self.assertNotIn(unstable, suki)
+
+    def test_public_files_are_never_uploaded_with_duplicate_release_wrappers(self):
+        for job in self.workflow['jobs'].values():
+            for step in job.get('steps', []):
+                if not step.get('uses', '').startswith('actions/upload-artifact@'):
+                    continue
+                self.assertFalse(str(step.get('with', {}).get('name', '')).startswith(('Release-', 'Manager-Identity-')))
+        self.assertNotIn('actions/upload-artifact', str(self.workflow['jobs']['build-sukisu-lkm']))
+        manager = self.workflow['jobs']['build-sukisu-manager']
+        public = [step for step in manager['steps'] if step.get('uses', '').startswith('actions/upload-artifact@')]
+        self.assertEqual(len(public), 1)
+        self.assertIs(public[0]['with']['archive'], False)
+        modules = self.workflow['jobs']['build-sukisu-lkm']
+        self.assertEqual(modules['needs'], 'prepare-matrix')
+        self.assertIn('build-sukisu-lkm', manager['needs'])
+        self.assertIn('build-sukisu-lkm', self.workflow['jobs']['build-kernel']['needs'])
+        self.assertNotIn('build-kernel', modules['needs'])
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']
@@ -315,8 +387,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('always() && !cancelled()', save['if'])
         self.assertGreater(steps.index(save), next(i for i, step in enumerate(steps)
                                                   if step.get('name') == '上传 SukiSU 安装包'))
-        self.assertGreater(steps.index(save), next(i for i, step in enumerate(steps)
-                                                  if step.get('name') == '提供内核配对的公开签名信息'))
         for cache in (restore, save):
             self.assertTrue(cache['continue-on-error'])
             self.assertLessEqual(cache['timeout-minutes'], 3)

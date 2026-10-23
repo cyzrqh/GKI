@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Sign a built ARM64 manager APK and export only public certificate metadata."""
+"""Sign an ARM64 manager APK containing its authenticated public build identity."""
 from __future__ import annotations
 
 import argparse
 import base64
 import binascii
+import datetime as dt
 import hashlib
 import json
 import os
@@ -15,6 +16,8 @@ import subprocess
 import sys
 import tempfile
 import zipfile
+
+from embedded_build_metadata import APK_MEMBER, read_member, validate_members
 
 
 KEYSTORE_ENV = "SUKISU_APK_KEYSTORE"
@@ -189,6 +192,45 @@ def write_outputs(metadata: dict[str, str | int]) -> None:
                 stream.write(f"{key}={value}\n")
 
 
+def public_build_identity(actual: dict, certificate: bytes, filename: str) -> dict:
+    """Only trusted workflow/source values and measured public APK identity."""
+    ref = os.environ.get('KSU_REF', '')
+    branch = os.environ.get('KSU_BRANCH', '')
+    repository = os.environ.get('GITHUB_REPOSITORY', '')
+    run_id = os.environ.get('GITHUB_RUN_ID', '')
+    attempt = os.environ.get('GITHUB_RUN_ATTEMPT', '')
+    head = os.environ.get('GITHUB_SHA', '')
+    if (not re.fullmatch(r'[0-9a-f]{40}', ref) or not re.fullmatch(r'[0-9a-f]{40}', head)
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}', repository)
+            or any(not re.fullmatch(r'[1-9][0-9]*', value) for value in (run_id, attempt))
+            or not branch or len(branch) > 200 or any(ord(c) < 32 or ord(c) == 127 for c in branch)):
+        raise SigningError('Missing or invalid immutable SukiSU/workflow provenance for the signed APK.')
+    return {'schema_version': 1, 'file': filename, 'package': actual['manager_package'],
+            'ksu_variant': 'SukiSU', 'ksu_ref': ref, 'ksu_branch': branch,
+            'ksu_version_code': actual['manager_version_code'], 'ksu_version_name': actual['manager_version_name'],
+            'manager_cert_size': len(certificate), 'manager_cert_sha256': hashlib.sha256(certificate).hexdigest(),
+            'producer_repository': repository, 'producer_run_id': run_id,
+            'producer_run_attempt': attempt, 'producer_head_sha': head,
+            'built_at_utc': dt.datetime.now(dt.timezone.utc).isoformat()}
+
+
+def embed_identity(unsigned: Path, destination: Path, identity: dict) -> None:
+    # Rebuild before zipalign/sign so the metadata is covered by the real APK
+    # signature. Existing APK content and file attributes are preserved.
+    with zipfile.ZipFile(unsigned) as source, zipfile.ZipFile(destination, 'w') as target:
+        validate_members(source)
+        target.comment = source.comment
+        for member in source.infolist():
+            if member.filename != APK_MEMBER:
+                target.writestr(member, source.read(member))
+        entry = zipfile.ZipInfo(APK_MEMBER)
+        entry.create_system = 3
+        entry.external_attr = (0o100644 << 16)
+        entry.compress_type = zipfile.ZIP_DEFLATED
+        target.writestr(entry, (json.dumps(identity, ensure_ascii=False, sort_keys=True,
+                                          allow_nan=False) + '\n').encode('utf-8'))
+
+
 def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path | None = None,
                  build_metadata: Path | None = None) -> dict[str, str | int]:
     unsigned = Path(unsigned).resolve()
@@ -221,6 +263,7 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
         directory = Path(private)
         keystore = directory / "manager.p12"
         certificate_path = directory / "certificate.der"
+        embedded = directory / "embedded-unsigned.apk"
         aligned = directory / "aligned.apk"
         signed = directory / "signed.apk"
         descriptor = os.open(keystore, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -228,13 +271,6 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
             stream.write(keystore_bytes)
         keystore.chmod(0o600)
 
-        run_command([tools["zipalign"], "-P", "16", "-f", "4", str(unsigned), str(aligned)],
-                    password, secrets)
-        run_command([
-            tools["apksigner"], "sign", "--ks", str(keystore), "--ks-type", "PKCS12",
-            "--ks-key-alias", KEY_ALIAS, "--ks-pass", f"env:{PASSWORD_ENV}",
-            "--key-pass", f"env:{PASSWORD_ENV}", "--out", str(signed), str(aligned),
-        ], password, secrets, needs_password=True)
         run_command([
             tools["keytool"], "-exportcert", "-storetype", "PKCS12", "-keystore", str(keystore),
             "-alias", KEY_ALIAS, "-storepass:env", PASSWORD_ENV, "-file", str(certificate_path),
@@ -243,6 +279,17 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
             certificate = certificate_path.read_bytes()
         except OSError:
             raise SigningError("keytool did not export the signing certificate.") from None
+        if not certificate or len(certificate) > 4096:
+            raise SigningError('keytool did not export a valid-sized public manager certificate.')
+        embedded_identity = public_build_identity(source_metadata, certificate, output.name)
+        embed_identity(unsigned, embedded, embedded_identity)
+        run_command([tools["zipalign"], "-P", "16", "-f", "4", str(embedded), str(aligned)],
+                    password, secrets)
+        run_command([
+            tools["apksigner"], "sign", "--ks", str(keystore), "--ks-type", "PKCS12",
+            "--ks-key-alias", KEY_ALIAS, "--ks-pass", f"env:{PASSWORD_ENV}",
+            "--key-pass", f"env:{PASSWORD_ENV}", "--out", str(signed), str(aligned),
+        ], password, secrets, needs_password=True)
         verification = run_command([tools["apksigner"], "verify", "--print-certs-pem", str(signed)],
                                    password, secrets)
         certificate_sha256 = verify_certificate(verification, certificate)
@@ -251,6 +298,9 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
         if signed_metadata != source_metadata:
             raise SigningError("The signed APK package/version metadata does not match the source APK.")
         validate_apk(signed)
+        with zipfile.ZipFile(signed) as archive:
+            if read_member(archive, APK_MEMBER) != embedded_identity:
+                raise SigningError('The signed APK embedded build identity changed during signing.')
         metadata = {
             **signed_metadata,
             "manager_cert_size": len(certificate),
@@ -287,7 +337,7 @@ def main(argv=None) -> int:
     try:
         metadata = sign_manager(args.unsigned, args.output, output_dir=args.output_dir,
                                 build_metadata=args.build_metadata)
-    except (SigningError, OSError, UnicodeError) as error:
+    except (SigningError, OSError, UnicodeError, ValueError) as error:
         values = (os.environ.get(KEYSTORE_ENV, ""), os.environ.get(PASSWORD_ENV, ""))
         print("Manager APK signing stopped: " + redact(str(error), values), file=sys.stderr)
         return 1

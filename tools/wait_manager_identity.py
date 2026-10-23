@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+import hashlib
 import io
 import json
 import os
@@ -16,8 +17,10 @@ import time
 from typing import Callable
 import zipfile
 
+from embedded_build_metadata import MAX_APK_BYTES, read_manager_apk, validate_members
 
-MAX_ARCHIVE_BYTES = 64 * 1024
+
+MAX_ARCHIVE_BYTES = MAX_APK_BYTES
 MAX_METADATA_BYTES = 16 * 1024
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
@@ -57,7 +60,7 @@ class Expected:
     run_attempt: int
     head_sha: str
     ksu_ref: str
-    artifact_name: str
+    artifact_name: str = ''
     manager_job: str = DEFAULT_MANAGER_JOB
 
     def validate(self):
@@ -66,7 +69,7 @@ class Expected:
         positive_integer(self.run_attempt, "workflow run attempt")
         if not SHA40.fullmatch(self.head_sha) or not SHA40.fullmatch(self.ksu_ref):
             raise IdentityError("Workflow and KernelSU references must be full commit hashes")
-        if (self.artifact_name != "Manager-Identity-" + self.ksu_ref[:7]
+        if (self.artifact_name and not APK_NAME.fullmatch(self.artifact_name)
                 or not self.manager_job or any(ord(c) < 32 for c in self.manager_job)):
             raise IdentityError("Invalid manager identity artifact or job name")
 
@@ -138,26 +141,32 @@ def validate_metadata(metadata: dict, expected: Expected, *,
 
 
 def read_identity_archive(archive: bytes, expected: Expected, *,
-                          reusable_attempt: int | None = None) -> dict[str, str]:
+                          reusable_attempt: int | None = None, filename: str | None = None) -> dict[str, str]:
     if not archive or len(archive) > MAX_ARCHIVE_BYTES:
-        raise IdentityError("Manager identity ZIP exceeds the 64 KiB limit")
+        raise IdentityError("Manager APK exceeds the size limit")
     try:
         with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
-            members = bundle.infolist()
-            if len(members) != 1 or members[0].filename != "manager.json":
-                raise IdentityError("Manager identity ZIP must contain only manager.json")
-            member = members[0]
-            if (member.is_dir() or member.flag_bits & 1 or member.file_size > MAX_METADATA_BYTES
-                    or stat.S_ISLNK(member.external_attr >> 16)):
-                raise IdentityError("Unsafe manager identity ZIP member")
-            with bundle.open(member) as source:
-                raw = source.read(MAX_METADATA_BYTES + 1)
-            if len(raw) > MAX_METADATA_BYTES:
-                raise IdentityError("Manager metadata exceeds the size limit")
-            metadata = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+            members = validate_members(bundle)
+            if 'AndroidManifest.xml' in members:
+                apk = archive
+            else:
+                # Some GitHub API versions still transport a raw artifact as
+                # one ZIP member. This is not another published artifact.
+                entries = list(members.values())
+                if (len(entries) != 1 or entries[0].is_dir()
+                        or not APK_NAME.fullmatch(entries[0].filename)
+                        or not 0 < entries[0].file_size <= MAX_APK_BYTES):
+                    raise IdentityError('Manager artifact must contain only its final APK')
+                if filename is not None and entries[0].filename != filename:
+                    raise IdentityError('Manager artifact filename does not match its APK')
+                filename = entries[0].filename
+                apk = bundle.read(entries[0])
+        metadata = read_manager_apk(apk, filename=filename or expected.artifact_name or None)
     except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, UnicodeError,
-            json.JSONDecodeError, OSError, NotImplementedError):
-        raise IdentityError("Could not read a valid manager identity ZIP") from None
+            ValueError, OSError, NotImplementedError) as error:
+        if isinstance(error, IdentityError):
+            raise
+        raise IdentityError('Could not verify the final signed manager APK: ' + str(error)) from None
     return validate_metadata(metadata, expected, reusable_attempt=reusable_attempt)
 
 
@@ -185,7 +194,7 @@ class GitHubReader:
             raise IdentityError("GitHub could not read this workflow's manager identity")
         if binary:
             if len(response.stdout) > MAX_ARCHIVE_BYTES:
-                raise IdentityError("Manager identity ZIP exceeds the 64 KiB limit")
+                raise IdentityError("Manager APK exceeds the size limit")
             return response.stdout
         try:
             return json.loads(response.stdout)
@@ -252,7 +261,9 @@ def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, inte
                 reusable_attempt = attempt
         artifacts = list(_pages(reader, f"actions/runs/{expected.run_id}/artifacts", "artifacts"))
         matches = [item for item in artifacts if isinstance(item, dict)
-                   and item.get("name") == expected.artifact_name and not item.get("expired")]
+                   and isinstance(item.get('name'), str) and APK_NAME.fullmatch(item['name'])
+                   and (not expected.artifact_name or item['name'] == expected.artifact_name)
+                   and not item.get("expired")]
         if len(matches) > 1:
             raise IdentityError("More than one manager identity artifact was found")
         if matches:
@@ -266,8 +277,12 @@ def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, inte
             raw = stale_archives.get(artifact_id)
             if raw is None:
                 raw = reader.get(f"actions/artifacts/{artifact_id}/zip", binary=True)
+            digest = artifact.get('digest')
+            if (not isinstance(digest, str) or not re.fullmatch(r'sha256:[0-9a-f]{64}', digest)
+                    or hashlib.sha256(raw).hexdigest() != digest.removeprefix('sha256:')):
+                raise IdentityError('Manager artifact SHA256 does not match the GitHub digest')
             try:
-                return read_identity_archive(raw, expected, reusable_attempt=reusable_attempt)
+                return read_identity_archive(raw, expected, reusable_attempt=reusable_attempt, filename=artifact['name'])
             except StaleIdentity:
                 stale_archives[artifact_id] = raw
         remaining = deadline - monotonic()
@@ -287,7 +302,7 @@ def write_environment(path: Path, values: dict[str, str]):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--expected-ref", required=True)
-    parser.add_argument("--artifact-name", required=True)
+    parser.add_argument("--artifact-name", default='', help='Optional exact final APK filename; otherwise require one APK')
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     parser.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""))

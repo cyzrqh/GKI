@@ -51,6 +51,9 @@ class ManagerSigningTests(unittest.TestCase):
             "ANDROID_SDK_ROOT": "",
             "GITHUB_OUTPUT": str(self.workflow_output),
             "RUNNER_TEMP": str(self.private_root),
+            "KSU_REF": "b" * 40, "KSU_BRANCH": "Dev(开发)",
+            "GITHUB_REPOSITORY": "cyzrqh/gki", "GITHUB_RUN_ID": "123",
+            "GITHUB_RUN_ATTEMPT": "1", "GITHUB_SHA": "a" * 40,
         }
         self.environ = patch.dict(os.environ, environment)
         self.environ.start()
@@ -126,14 +129,14 @@ class ManagerSigningTests(unittest.TestCase):
             metadata = self.run_signing()
         self.assertEqual([Path(args[0]).name + (":" + args[1] if Path(args[0]).name == "apksigner" else "")
                           for args, _ in self.calls],
-                         ["aapt2", "zipalign", "apksigner:sign", "keytool", "apksigner:verify", "aapt2"])
+                         ["aapt2", "keytool", "zipalign", "apksigner:sign", "apksigner:verify", "aapt2"])
         self.assertEqual(self.calls[0][0][-1], str(self.unsigned.resolve()))
-        self.assertEqual(self.calls[1][0][1:5], ["-P", "16", "-f", "4"])
-        sign_args = self.calls[2][0]
+        self.assertEqual(self.calls[2][0][1:5], ["-P", "16", "-f", "4"])
+        sign_args = self.calls[3][0]
         self.assertEqual(sign_args[sign_args.index("--ks-type") + 1], "PKCS12")
         self.assertEqual(sign_args[sign_args.index("--ks-key-alias") + 1], "gki-sukisu")
         self.assertIn(f"env:{signing.PASSWORD_ENV}", sign_args)
-        self.assertIn("-storepass:env", self.calls[3][0])
+        self.assertIn("-storepass:env", self.calls[1][0])
         self.assertEqual(metadata["manager_package"], "com.sukisu.ultra")
         self.assertEqual(metadata["manager_version_name"], "v4.2.1")
         self.assertEqual(metadata["manager_version_code"], 41030)
@@ -151,6 +154,38 @@ class ManagerSigningTests(unittest.TestCase):
         self.assertTrue(all(not path.exists() for path in self.private_paths))
         if os.name != "nt":
             self.assertEqual(self.mode_seen, 0o600)
+
+    def test_public_identity_is_inside_apk_before_alignment_and_signing(self):
+        unsigned = self.unsigned.read_bytes()
+        observed = []
+        def inspect(args, **kwargs):
+            if Path(args[0]).name == 'zipalign':
+                with zipfile.ZipFile(args[-2]) as archive:
+                    identity = json.loads(archive.read(signing.APK_MEMBER))
+                    observed.append(identity)
+                    self.assertEqual(identity['ksu_ref'], 'b' * 40)
+                    self.assertEqual(identity['producer_head_sha'], 'a' * 40)
+                    self.assertEqual(identity['manager_cert_sha256'], CERTIFICATE_SHA)
+                    self.assertEqual(identity['ksu_version_code'], 41030)
+                    self.assertNotIn('apk_sha256', identity)
+                    self.assertNotIn(PASSWORD, json.dumps(identity))
+                    self.assertNotIn(ENCODED_KEY, json.dumps(identity))
+            return self.fake_sdk(args, **kwargs)
+        with patch.object(signing.subprocess, 'run', side_effect=inspect):
+            self.run_signing()
+        self.assertEqual(len(observed), 1)
+        self.assertEqual(self.unsigned.read_bytes(), unsigned)
+        with zipfile.ZipFile(self.output) as archive:
+            self.assertEqual(json.loads(archive.read(signing.APK_MEMBER)), observed[0])
+
+    def test_missing_immutable_source_provenance_never_publishes_an_apk(self):
+        for field, value in (('KSU_REF', ''), ('KSU_REF', 'main'), ('KSU_BRANCH', ''), ('GITHUB_SHA', 'bad')):
+            with self.subTest(field=field, value=value), patch.dict(os.environ, {field: value}):
+                with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+                    with self.assertRaisesRegex(signing.SigningError, 'immutable SukiSU/workflow provenance'):
+                        self.run_signing()
+            self.assertFalse(self.output.exists())
+            self.assertFalse(self.workflow_output.exists())
 
     def test_password_is_not_in_arguments_and_private_key_never_enters_subprocess_env(self):
         with patch.object(signing.subprocess, "run", side_effect=self.fake_sdk):

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Build an ARM64 GKI manager from the checked-out SukiSU source; signing is separate.
 set -euo pipefail
+build_tools="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 source_dir=""
 output_dir=""
@@ -35,6 +36,33 @@ ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 export ANDROID_NDK_HOME
 export CARGO_TARGET_DIR="$source_dir/target"
 [ -d "$ANDROID_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] || { echo 'Android SDK or NDK directory does not exist.' >&2; exit 1; }
+
+# The caller stages and validates the same-source, same-certificate modules.
+# Refuse an incomplete asset directory before running either native compiler.
+python3 - "$source_dir" "$build_tools" <<'PY'
+from pathlib import Path
+import struct
+import sys
+sys.path.insert(0, sys.argv[2])
+from manager_lkm_jobs import KMIS
+assets = Path(sys.argv[1]) / 'userspace/ksud/bin/aarch64'
+expected = {kmi + '_kernelsu.ko' for kmi in KMIS}
+actual = {path.name for path in assets.glob('*_kernelsu.ko')}
+if actual != expected:
+    raise SystemExit('The manager requires all eight verified native KMI modules; missing: '
+                     + ', '.join(sorted(expected - actual)) + '; unexpected: '
+                     + ', '.join(sorted(actual - expected)))
+for name in sorted(expected):
+    path = assets / name
+    if path.is_symlink() or not path.is_file() or not 64 <= path.stat().st_size <= 64 * 1024 * 1024:
+        raise SystemExit('Missing or invalid staged manager module: ' + name)
+    with path.open('rb') as stream:
+        header = stream.read(64)
+    if (header[:7] != b'\x7fELF\x02\x01\x01'
+            or struct.unpack_from('<HHI', header, 16) != (1, 183, 1)):
+        raise SystemExit('The staged manager module is not an ARM64 ELF object: ' + name)
+print('Manager native KMI inputs: ' + ', '.join(KMIS))
+PY
 
 cd "$source_dir"
 echo "SukiSU manager source: $(git rev-parse HEAD)"
@@ -101,9 +129,28 @@ if [ -f userspace/ksuinit/Cargo.toml ]; then
 fi
 
 echo 'Building ARM64 ksud from the same source.'
+# Upstream enables rust-embed compression and explicitly requires cleaning
+# this crate after its binary assets change. Retain compiled dependencies.
+cargo clean -p ksud --target aarch64-linux-android --release
 cargo build --locked --target aarch64-linux-android --release --manifest-path userspace/ksud/Cargo.toml
 ksud="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
 [ -s "$ksud" ] || { echo 'The ARM64 ksud build produced no daemon.' >&2; exit 1; }
+python3 - "$ksud" "$build_tools" <<'PY'
+from pathlib import Path
+import struct
+import sys
+sys.path.insert(0, sys.argv[2])
+from manager_lkm_jobs import KMIS
+data = Path(sys.argv[1]).read_bytes()
+if (len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01'
+        or struct.unpack_from('<H', data, 16)[0] not in (2, 3)
+        or struct.unpack_from('<H', data, 18)[0] != 183):
+    raise SystemExit('The built ksud is not an ARM64 ELF executable.')
+missing = [kmi for kmi in KMIS if (kmi + '_kernelsu.ko').encode('ascii') not in data]
+if missing:
+    raise SystemExit('The built ksud is missing embedded native KMI modules: ' + ', '.join(missing))
+print('Verified eight native KMI assets in the built ARM64 ksud.')
+PY
 mkdir -p "$manager_dir/app/src/main/jniLibs/arm64-v8a"
 cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
 
@@ -111,7 +158,7 @@ cd "$manager_dir"
 echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
 bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease
 
-python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" <<'PY'
+python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools" <<'PY'
 from pathlib import Path
 import json
 import os
@@ -121,7 +168,9 @@ import struct
 import subprocess
 import sys
 import zipfile
-release, output = map(Path, sys.argv[1:])
+sys.path.insert(0, sys.argv[3])
+from manager_lkm_jobs import KMIS
+release, output = map(Path, sys.argv[1:3])
 apks = sorted(release.glob('*.apk'))
 if len(apks) != 1:
     raise SystemExit(f'Expected exactly one release APK, found {len(apks)}.')
@@ -140,10 +189,13 @@ with zipfile.ZipFile(apk) as archive:
         raise SystemExit('The manager APK unexpectedly contains another ABI.')
     if archive.getinfo('lib/arm64-v8a/libksud.so').file_size == 0:
         raise SystemExit('The packaged ksud is empty.')
-    with archive.open('lib/arm64-v8a/libksud.so') as binary:
-        header = binary.read(20)
+    packaged_ksud = archive.read('lib/arm64-v8a/libksud.so')
+    header = packaged_ksud[:20]
     if len(header) != 20 or header[:5] != b'\x7fELF\x02' or header[5] != 1 or struct.unpack_from('<H', header, 18)[0] != 183:
         raise SystemExit('The packaged ksud is not a little-endian ARM64 ELF binary.')
+    missing_kmis = [kmi for kmi in KMIS if (kmi + '_kernelsu.ko').encode('ascii') not in packaged_ksud]
+    if missing_kmis:
+        raise SystemExit('The packaged ksud is missing embedded native KMI modules: ' + ', '.join(missing_kmis))
     if archive.testzip() is not None:
         raise SystemExit('The APK ZIP integrity check failed.')
 sdk = Path(os.environ['ANDROID_HOME']) / 'build-tools/37.0.0'

@@ -10,6 +10,7 @@ from pathlib import Path
 
 import yaml
 from workflow_jobs import updater_job, release_job
+from manager_lkm_jobs import KMIS, load_ddk_matrix, lkm_cache_key, manager_lkm_job
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
@@ -150,7 +151,9 @@ zip_name="${GKI_ANDROID}-${GKI_KERNEL}.${GKI_SUBLEVEL}-${GKI_PATCH}-AnyKernel3.z
 BUILD_IF = "github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'"
 PREPARE_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译 SukiSU 安装包')"
 MANAGER_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '仅编译 SukiSU 安装包' || (inputs.operation == '编译内核' && inputs.kernelsu_variant == 'SukiSU'))"
-KERNEL_JOB_IF = "always() && !cancelled() && needs.prepare-matrix.result == 'success' && (" + BUILD_IF + ")"
+KERNEL_JOB_IF = ("always() && !cancelled() && needs.prepare-matrix.result == 'success' && (" + BUILD_IF + ")"
+                 " && (inputs.kernelsu_variant != 'SukiSU' || (needs.build-sukisu-lkm.result == 'success'"
+                 " && needs.build-sukisu-manager.result == 'success'))")
 
 # Cache dependency downloads, Gradle task results and reusable Rust objects.
 # APK outputs and signing files live outside these explicitly enumerated paths.
@@ -174,12 +177,14 @@ MANAGER_CARGO_CACHE = (
 def manager_job():
     return {
         'name': '编译配套 SukiSU 管理器 APK', 'if': MANAGER_IF,
-        'needs': 'prepare-matrix', 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 60,
+        'needs': ['prepare-matrix', 'build-sukisu-lkm'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 60,
         'outputs': {key: '${{ steps.sign.outputs.' + key + ' }}'
                     for key in ('manager_package', 'manager_cert_size', 'manager_cert_sha256', 'apk_sha256',
                                 'manager_version_name', 'manager_version_code', 'apk_filename')},
         'steps': [
             {'name': '检出构建工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
+            {'name': '准备 APK 内容签名验证',
+             'run': "python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check cryptography"},
             {'name': '检查固定 APK 签名配置',
              'env': {'SIGNING_CONFIGURED': "${{ secrets.SUKISU_APK_KEYSTORE != '' && secrets.SUKISU_APK_PASSWORD != '' }}"},
              'run': '''if [ "$SIGNING_CONFIGURED" != true ]; then
@@ -194,6 +199,30 @@ fi
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
   --output "$GITHUB_WORKSPACE/manager-source" --expected-ref "$KSU_REF"
+'''},
+            {'name': '准备本次模块与 APK 的公开签名信息',
+             'env': {'MANAGER_PACKAGE': '${{ needs.prepare-matrix.outputs.manager_package }}',
+                     'MANAGER_CERT_SIZE': '${{ needs.prepare-matrix.outputs.manager_cert_size }}',
+                     'MANAGER_CERT_SHA256': '${{ needs.prepare-matrix.outputs.manager_cert_sha256 }}'},
+             'run': '''python3 - <<'PY'
+import json,os,pathlib
+document = {'manager_package':os.environ['MANAGER_PACKAGE'],
+            'manager_cert_size':int(os.environ['MANAGER_CERT_SIZE']),
+            'manager_cert_sha256':os.environ['MANAGER_CERT_SHA256']}
+pathlib.Path(os.environ['RUNNER_TEMP'],'manager-public-certificate.json').write_text(json.dumps(document)+'\\n')
+PY
+'''},
+            *[{'name': '读取镜像修补模块 ' + kmi, 'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
+               'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
+               'with': {'path': 'manager-lkm/' + kmi,
+                        'key': lkm_cache_key(repr(kmi), f'fromJSON(needs.prepare-matrix.outputs.ddk_matrix).include[{index}].ddk_short'),
+                        'fail-on-cache-miss': True}}
+              for index, kmi in enumerate(KMIS)],
+            {'name': '按官方流程打包完整 LKM 模块',
+             'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
+             'run': '''python3 tools/prepare_manager_lkm.py stage --source manager-source --artifacts manager-lkm \\
+  --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF" \\
+  --expected-kmis "''' + ','.join(KMIS) + '''" --report "$RUNNER_TEMP/manager-lkm-stage.json"
 '''},
             {'name': '准备 Java 21', 'uses': 'actions/setup-java@v5',
              'with': {'distribution': 'temurin', 'java-version': '21'}},
@@ -237,10 +266,18 @@ rustup target add aarch64-linux-android --toolchain stable
              'run': '''bash -n tools/build_sukisu_manager.sh
 bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
 '''},
+            {'name': '实际验证八种 KMI 的镜像修补与恢复',
+             'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
+             'run': '''python3 tools/verify_manager_boot_patch.py --source "$GITHUB_WORKSPACE/manager-source" \\
+  --module-report "$RUNNER_TEMP/manager-lkm-stage.json" --expected-ref "$KSU_REF" \\
+  --output "$RUNNER_TEMP/manager-boot-patch-check"
+'''},
             {'name': '签名并校验可安装 APK', 'id': 'sign',
              'env': {'SUKISU_APK_KEYSTORE': '${{ secrets.SUKISU_APK_KEYSTORE }}',
                      'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}',
-                     'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}'},
+                     'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}',
+                     'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
+                     'KSU_BRANCH': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}'},
              'run': '''python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \\
   --output-dir "$GITHUB_WORKSPACE/manager-artifact" \\
   --build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"
@@ -257,13 +294,6 @@ bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" -
                      'META_APK_SHA256': '${{ steps.sign.outputs.apk_sha256 }}',
                      'META_ENABLE_SUSFS': '${{ inputs.enable_susfs }}'},
              'run': 'python3 tools/capture_manager_metadata.py --output manager-artifact/manager.json'},
-            {'name': '提供内核配对的公开签名信息', 'uses': 'actions/upload-artifact@v6',
-             'with': {'name': 'Manager-Identity-${{ needs.prepare-matrix.outputs.ksu_short }}',
-                      'path': 'manager-artifact/manager.json', 'if-no-files-found': 'error',
-                      'compression-level': 0, 'overwrite': True}},
-            {'name': '上传管理器发布中转包', 'uses': 'actions/upload-artifact@v6',
-             'with': {'name': 'Release-Manager-${{ steps.sign.outputs.apk_filename }}',
-                      'path': 'manager-artifact/*', 'if-no-files-found': 'error', 'compression-level': 0}},
             {'name': '上传 SukiSU 安装包', 'uses': 'actions/upload-artifact@v7',
              'with': {'path': 'manager-artifact/${{ steps.sign.outputs.apk_filename }}',
                       'archive': False, 'if-no-files-found': 'error', 'overwrite': True}},
@@ -454,9 +484,11 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
         'name': '编译前读取本次 APK 的实际签名信息', 'if': "inputs.ksu_variant == 'SukiSU'",
         'env': {'GH_TOKEN': '${{ github.token }}',
                 'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
-                'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}'},
+                'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}',
+                'MANAGER_ARTIFACT': '${{ needs.build-sukisu-manager.outputs.apk_filename }}'},
         'run': '''python3 "$GITHUB_WORKSPACE/tools/wait_manager_identity.py" \\
-  --expected-ref "$KSU_REF" --artifact-name "Manager-Identity-$KSU_SHORT" \\
+  --expected-ref "$KSU_REF" \\
+  --artifact-name "$MANAGER_ARTIFACT" \\
   --github-env "$GITHUB_ENV"
 ''',
     })
@@ -515,9 +547,6 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
 python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
   --workspace "$GITHUB_WORKSPACE" --output release-ready --mode "$ARTIFACT_MODE"
 '''},
-        {'name': '上传 Release 内核文件', 'uses': 'actions/upload-artifact@v6',
-         'with': {'name': 'Release-${{ inputs.ksu_variant }}-${{ env.CONFIG }}', 'path': 'release-ready/*',
-                  'if-no-files-found': 'error', 'compression-level': 0}},
         {'name': '上传可直接刷入的 AK3 包', 'uses': 'actions/upload-artifact@v7',
          'with': {'path': 'release-ready/${{ steps.kernel-assets.outputs.ak3 }}',
                   'archive': False, 'if-no-files-found': 'error', 'overwrite': True}},
@@ -554,7 +583,9 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
                             'echo "管理器包名    : ${GKI_MANAGER_PACKAGE:-由所选 KernelSU 决定}"',
                             summary['run'], count=1, flags=re.M)
     job['if'] = KERNEL_JOB_IF
-    job['needs'] = ['prepare-matrix']
+    # The signed APK must exist before a twenty-job kernel matrix can occupy
+    # the free runner pool; waiting inside those jobs could starve its producer.
+    job['needs'] = ['prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager']
     job['permissions'] = {'contents': 'read', 'actions': 'read'}
     job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
                        'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'}
@@ -565,6 +596,10 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
         'if': PREPARE_IF,
         'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}',
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
+                    'ddk_matrix': '${{ steps.lkm-matrix.outputs.matrix }}',
+                    'manager_package': '${{ steps.certificate.outputs.package }}',
+                    'manager_cert_size': '${{ steps.certificate.outputs.cert_size }}',
+                    'manager_cert_sha256': '${{ steps.certificate.outputs.cert_sha256 }}',
                     **{key: '${{ steps.sources.outputs.' + key + ' }}' for key in
                        ('ksu_ref', 'ksu_repo', 'ksu_short', 'ksu_source_branch', 'effective_ksu_branch')}},
         'steps': [
@@ -594,6 +629,20 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
              'run': '''python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \\
   --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
 '''},
+            {'name': '读取固定签名的公开证书', 'id': 'certificate', 'if': MANAGER_IF,
+             'env': {'SUKISU_APK_KEYSTORE': '${{ secrets.SUKISU_APK_KEYSTORE }}',
+                     'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}'},
+             'run': 'python3 tools/export_manager_certificate.py --output "$RUNNER_TEMP/manager-public-certificate.json"'},
+            {'name': '选择官方镜像修补构建环境', 'id': 'lkm-matrix', 'if': MANAGER_IF,
+             'run': '''python3 - <<'PY'
+import json,os,pathlib,sys
+sys.path.insert(0,'tools')
+from manager_lkm_jobs import load_ddk_matrix
+matrix = {'include':load_ddk_matrix(pathlib.Path.cwd())}
+with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+    output.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\\n')
+PY
+'''},
             {'name': '仅下载一次官方 SukiSU 源码', 'uses': 'actions/checkout@v6',
              'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
              'with': {'repository': 'SukiSU-Ultra/SukiSU-Ultra', 'ref': '${{ steps.sources.outputs.ksu_ref }}',
@@ -618,7 +667,8 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
         'run-name': "${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '检查上游更新' || (inputs.operation == '仅编译 SukiSU 安装包' && '仅编译 SukiSU 安装包' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode)) }}",
         'on': {'workflow_dispatch': {'inputs': dispatch}, 'schedule': [{'cron': '17 0 * * *'}]},
         'permissions': {'contents': 'read'},
-        'jobs': {'prepare-matrix': prepare, 'build-sukisu-manager': manager_job(),
+        'jobs': {'prepare-matrix': prepare, 'build-sukisu-lkm': manager_lkm_job(MANAGER_IF),
+                 'build-sukisu-manager': manager_job(),
                  'build-kernel': job, 'publish-release': release_job(), 'check-upstream': updater_job()},
     }
     return workflow

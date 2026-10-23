@@ -1,0 +1,20 @@
+{
+  "android13-5.15-2022-06": {
+    "include/trace/hooks/binder.h": "eefa056f44677cca79bdcf470e0d03c87abe91c6336b589226e33b74546cf302",
+    "drivers/android/binder.c": "16115856408920c498ba1110eb242f7951de6e5ae35decc794734b15f737fa07",
+    "drivers/android/binder_alloc.c": "efba0eb60cbf5915a60347da4dc2fdfd8c0468f1b3cd0325e0ac26ab58e4c19d",
+    "drivers/android/vendor_hooks.c": "3d5d521de4d38cb57b4ef2829466cba9131f7b77b527afa1f31d25ea5e4305cb"
+  },
+  "android13-5.15-2025-12": {
+    "include/trace/hooks/binder.h": "2deaa2d084d0e1237dc2bb4b62ba6c58a59957efa504178c71baff0023d3cd18",
+    "drivers/android/binder.c": "2cf6efa35a9d5864698eb8cce844ed1ee4025dc05bae7cc70fe9c26fc74acc0a",
+    "drivers/android/binder_alloc.c": "bf17d7aef145a45053eecbc3ffa6f08e945e759bda089e6bc16b5fb0dfce8625",
+    "drivers/android/vendor_hooks.c": "6a88ef14c00d76ab1d00d638dd9a10430a389941cf7c08c18c13949e67c1b88b"
+  },
+  "android12-5.10-2022-06": {
+    "include/trace/hooks/binder.h": "f3e1d124f82ce324219ea612ee865b0f7cc80922fc608ac9f1122b5ffcb96277",
+    "drivers/android/binder.c": "35b2d4df436f73d4d9dbbe0594d26c9a9b36560052bd477b990e6fc628fdbfdd",
+    "drivers/android/binder_alloc.c": "0f1972ac2b98221af1f05b7fbbb619aa65d322d59b75e30ff5484864da3b760c",
+    "drivers/android/vendor_hooks.c": "d59b4a1d5a433ae48e8d6df3ad3749ce5eff840b35ba9120d4e199f1ed6c6d97"
+  }
+}

@@ -2,3 +2,5 @@
 * -text
 # Upstream patch fixtures require their literal diff context whitespace.
 tests/fixtures/historical-susfs23/*.patch -whitespace
+# Full Android source fixtures retain their official checksum, including EOF.
+tests/fixtures/historical-rekernel/**/*.c -whitespace

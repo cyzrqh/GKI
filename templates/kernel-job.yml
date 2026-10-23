@@ -546,7 +546,7 @@ job:
 
       disable_broken_chrome_source
       apt_update_retry
-      sudo apt-get install -y ccache python3 git curl build-essential libssl-dev bison flex libelf-dev dwarves lz4
+      sudo apt-get install -y ccache python3 python3-cryptography git curl build-essential libssl-dev bison flex libelf-dev dwarves lz4
   - name: 配置自托管下载缓存
     env:
       ABK_RUNNER_ENVIRONMENT: ${{ runner.environment }}
@@ -564,14 +564,6 @@ job:
       ccache --set-config=compression=true
       ccache --set-config=hard_link=false
       echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
-  - name: 恢复 ccache 缓存
-    if: env.ABK_LOCAL_CACHE_ENABLED != 'true'
-    uses: actions/cache@v5
-    with:
-      path: ~/.ccache
-      key: ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-${{ github.sha }}
-      restore-keys: |
-        ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-
   - name: 缓存工具链
     if: env.ABK_LOCAL_CACHE_ENABLED != 'true'
     id: cache-toolchain
@@ -3712,8 +3704,10 @@ job:
       if [ -f common/drivers/rekernel/rekernel_binder.c ]; then
         sed -i 's|#include <../android/binder_internal.h>|#include "../../drivers/android/binder_internal.h"|g' common/drivers/rekernel/rekernel_binder.c
         grep -qF '#include <linux/seq_file.h>' common/drivers/rekernel/rekernel_binder.c || \
-          sed -i '/#include <trace\/hooks\/binder.h>/a #include <linux/seq_file.h>' common/drivers/rekernel/rekernel_binder.c
+          sed -i '/#include <trace\/hooks\/binder.h>/i #include <linux/seq_file.h>' common/drivers/rekernel/rekernel_binder.c
       fi
+
+      python3 "$GITHUB_WORKSPACE/tools/historical_rekernel.py" --kernel-root "$KERNEL_ROOT"
 
       # 配置 defconfig（幂等）
       grep -q '^CONFIG_REKERNEL=y$' "$DEFCONFIG" || echo "CONFIG_REKERNEL=y" >> "$DEFCONFIG"
@@ -6092,9 +6086,35 @@ job:
       key: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
       restore-keys: |
         gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-
+  - name: 选择 build.sh 编译缓存
+    id: ccache-config
+    run: |
+      set -euo pipefail
+      # Some historical 6.1 manifests also use build.sh. Select the real build
+      # system after source sync rather than assuming it from the kernel family.
+      if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
+        echo 'enabled=true' >> "$GITHUB_OUTPUT"
+      else
+        echo 'enabled=false' >> "$GITHUB_OUTPUT"
+      fi
+  - name: 恢复 ccache 缓存
+    id: ccache-restore
+    if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
+    uses: actions/cache/restore@v5
+    continue-on-error: true
+    timeout-minutes: 3
+    env:
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
+    with:
+      path: ~/.ccache
+      key: gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
+      restore-keys: |
+        gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-
+        ${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-ccache-
+        gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-
   - name: 开始记录实际 ccache 命中
     id: ccache-measurement
-    if: inputs.kernel_version == '5.10' || inputs.kernel_version == '5.15'
+    if: steps.ccache-config.outputs.enabled == 'true'
     run: |
       set -euo pipefail
       if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
@@ -6330,6 +6350,7 @@ job:
         sed -i '/KMI_SYMBOL_LIST_STRICT_MODE/d' ./common/build.config.gki.aarch64
 
         if [ -f "build/build.sh" ]; then
+          echo 'CCACHE_COMPILE_STARTED=true' >> "$GITHUB_ENV"
           LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
           strings "out/${{ inputs.android_version }}-${{ inputs.kernel_version }}/dist/Image" | grep 'Linux version'
         else
@@ -6374,6 +6395,14 @@ job:
         cat "$report"
         echo '```'
       } >> "$GITHUB_STEP_SUMMARY"
+  - name: 保存本次 ccache 编译结果
+    if: always() && !cancelled() && steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true' && env.CCACHE_COMPILE_STARTED == 'true' && (steps.compile-kernel.outcome == 'success' || steps.compile-kernel.outcome == 'failure')
+    uses: actions/cache/save@v5
+    continue-on-error: true
+    timeout-minutes: 3
+    with:
+      path: ~/.ccache
+      key: gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
   - name: 限制 Bazel 缓存上传体积
     id: bazel-cache-trim
     if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome != 'skipped'

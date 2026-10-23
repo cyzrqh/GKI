@@ -163,9 +163,12 @@ job:
     || vars.KERNEL_RUNNER || 'ubuntu-latest') }}
   timeout-minutes: 60
   env:
-    CCACHE_COMPILERCHECK: '%compiler% -dumpmachine; %compiler% -dumpversion'
+    CCACHE_COMPILERCHECK: content
+    CCACHE_BASEDIR: ${{ github.workspace }}
     CCACHE_NOHASHDIR: 'true'
-    CCACHE_HARDLINK: 'true'
+    CCACHE_NOHARDLINK: 'true'
+    CCACHE_COMPRESS: 'true'
+    CCACHE_MAXSIZE: 2G
   steps:
   - name: 构建信息摘要
     shell: bash
@@ -427,21 +430,10 @@ job:
       exit 1
   - name: 清理磁盘空间
     if: runner.environment == 'github-hosted'
-    uses: endersonmenezes/free-disk-space@v3
-    with:
-      remove_android: true
-      remove_dotnet: true
-      remove_haskell: true
-      remove_tool_cache: true
-      remove_swap: true
-      remove_packages: azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-*
-        *llvm* mysql* dotnet-sdk-*
-      remove_packages_one_command: true
-      remove_folders: /usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium
-        /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle
-      rm_cmd: rmz
-      rmz_version: 3.1.1
-      testing: false
+    timeout-minutes: 8
+    env:
+      GKI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+    run: python3 "$GITHUB_WORKSPACE/tools/free_build_space.py"
   - name: 校验类 LineageOS 源码构建参数
     if: inputs.source_mode == 'custom_git'
     env:
@@ -563,11 +555,15 @@ job:
     run: python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" configure
   - name: 配置 ccache
     run: |
+      set -euo pipefail
+      export CCACHE_DIR="$HOME/.ccache"
+      mkdir -p "$CCACHE_DIR"
       mkdir -p ~/.cache/bazel
       ccache --version
       ccache --max-size=2G
       ccache --set-config=compression=true
-      echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+      ccache --set-config=hard_link=false
+      echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
   - name: 恢复 ccache 缓存
     if: env.ABK_LOCAL_CACHE_ENABLED != 'true'
     uses: actions/cache@v5
@@ -6116,6 +6112,18 @@ job:
       key: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
       restore-keys: |
         gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-
+  - name: 开始记录实际 ccache 命中
+    id: ccache-measurement
+    if: inputs.kernel_version == '5.10' || inputs.kernel_version == '5.15'
+    run: |
+      set -euo pipefail
+      if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
+        echo "Available build CPUs: $(nproc)"
+        free -h
+        ccache --zero-stats
+        ccache --show-config
+        echo 'enabled=true' >> "$GITHUB_OUTPUT"
+      fi
   - name: 编译内核
     id: compile-kernel
     uses: nick-fields/retry@v4
@@ -6369,6 +6377,23 @@ job:
         echo "当前 KSU 最新提交日期: ${KSU_LATEST_COMMIT_DATE}"
         echo "当前 SUSFS 最新提交日期: ${SUSFS_LATEST_COMMIT_DATE}"
         echo "如果日期不同或相差过远则补丁失效、编译失败"
+  - name: 显示本次 ccache 命中统计
+    if: always() && !cancelled() && steps.ccache-measurement.outputs.enabled == 'true'
+    continue-on-error: true
+    timeout-minutes: 1
+    run: |
+      set -euo pipefail
+      report="$RUNNER_TEMP/gki-ccache-statistics.txt"
+      ccache --show-stats --verbose | tee "$report"
+      {
+        echo '### 本次内核编译缓存（ccache）'
+        echo ''
+        echo '以下命中、未命中及不可缓存数量仅统计本次 build.sh 编译；Bazel 使用单独的磁盘缓存。'
+        echo ''
+        echo '```text'
+        cat "$report"
+        echo '```'
+      } >> "$GITHUB_STEP_SUMMARY"
   - name: 限制 Bazel 缓存上传体积
     id: bazel-cache-trim
     if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome != 'skipped'

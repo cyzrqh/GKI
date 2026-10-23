@@ -19,7 +19,8 @@ REPOSITORIES = {
     "SukiSU": "SukiSU-Ultra/SukiSU-Ultra",
     "BakaSU": "Baka-SU/BakaSU",
 }
-TIERS = frozenset(("Stable(标准)", "Dev(开发)", "Latest(最新)", "Custom(自定义)"))
+TIER_ALIASES = {"SukiSU 正式版": "Stable(标准)", "SukiSU 最新版": "Latest(最新)"}
+TIERS = frozenset(("Stable(标准)", "Dev(开发)", "Latest(最新)", "Custom(自定义)", *TIER_ALIASES))
 
 
 class SourceResolutionError(RuntimeError):
@@ -162,6 +163,10 @@ def resolve_sources(root: Path, variant: str, tier: str, custom_ref: str = "", s
         raise SourceResolutionError("Unknown KernelSU variant")
     if tier not in TIERS:
         raise SourceResolutionError("Unknown KernelSU tier")
+    if tier in TIER_ALIASES:
+        if variant != 'SukiSU':
+            raise SourceResolutionError('SukiSU release options require the SukiSU variant')
+        tier = TIER_ALIASES[tier]
     validate_custom_ref(custom_ref)
     if variant == "None":
         return source_result("", "", "", tier)

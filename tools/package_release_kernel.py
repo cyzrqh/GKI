@@ -214,6 +214,14 @@ def main(argv=None) -> int:
     except (OSError, ValueError, UnicodeError) as error:
         print('Kernel Release asset packaging failed: ' + str(error), file=sys.stderr)
         return 1
+    if os.environ.get('GITHUB_OUTPUT'):
+        files = result['files']
+        outputs = {'ak3': next(name for name in files if name.endswith('-AnyKernel3.zip'))}
+        for key, suffix in (('boot', '-boot.img'), ('boot_gz', '-boot-gz.img'), ('boot_lz4', '-boot-lz4.img')):
+            outputs[key] = next((name for name in files if name.endswith(suffix)), '')
+        with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as stream:
+            for key, value in outputs.items():
+                stream.write(f'{key}={value}\n')
     print(json.dumps(result, ensure_ascii=False, sort_keys=True))
     return 0
 

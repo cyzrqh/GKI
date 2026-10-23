@@ -53,9 +53,9 @@ run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上
         - BakaSU
         - SukiSU
         - None
-        default: BakaSU
+        default: SukiSU
       kernelsu_branch:
-        description: KSU 分支
+        description: KSU 分支（SukiSU 正式版/最新版两项仅用于 SukiSU）
         required: true
         type: choice
         options:
@@ -63,7 +63,9 @@ run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上
         - Dev(开发)
         - Latest(最新)
         - Custom(自定义)
-        default: Dev(开发)
+        - SukiSU 正式版
+        - SukiSU 最新版
+        default: SukiSU 最新版
       version:
         description: 自定义版本名 (可选)
         required: false
@@ -266,6 +268,19 @@ jobs:
           'manager-source/manager/**/gradle.properties', 'manager-source/manager/**/libs.versions.toml', 'manager-source/manager/gradle/wrapper/gradle-wrapper.properties')
           }}
         restore-keys: gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-
+    - name: 恢复管理器 Gradle 编译缓存
+      id: manager-gradle-build-cache
+      uses: actions/cache/restore@v5
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
+      with:
+        path: ~/.gradle/caches/build-cache-1
+        key: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
+          'manager-source/manager/gradle/libs.versions.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
+          'manager-source/manager/gradle/libs.versions.toml') }}-
     - name: 准备 Android SDK 与 NDK
       run: |
         set -euo pipefail
@@ -346,13 +361,29 @@ jobs:
         if-no-files-found: error
         compression-level: 0
         overwrite: true
-    - name: 上传 SukiSU 安装包
+    - name: 上传管理器发布中转包
       uses: actions/upload-artifact@v6
       with:
-        name: Release-Manager-${{ needs.prepare-matrix.outputs.ksu_short }}
+        name: Release-Manager-${{ steps.sign.outputs.apk_filename }}
         path: manager-artifact/*
         if-no-files-found: error
         compression-level: 0
+    - name: 上传 SukiSU 安装包
+      uses: actions/upload-artifact@v7
+      with:
+        path: manager-artifact/${{ steps.sign.outputs.apk_filename }}
+        archive: false
+        if-no-files-found: error
+        overwrite: true
+    - name: 保存管理器 Gradle 编译缓存
+      uses: actions/cache/save@v5
+      if: always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-gradle-build-cache.outputs.cache-primary-key
+        != '' && steps.manager-gradle-build-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      timeout-minutes: 3
+      with:
+        path: ~/.gradle/caches/build-cache-1
+        key: ${{ steps.manager-gradle-build-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Gradle 依赖
       uses: actions/cache/save@v5
       if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key
@@ -392,9 +423,12 @@ jobs:
       || vars.KERNEL_RUNNER || 'ubuntu-24.04') }}
     timeout-minutes: 120
     env:
-      CCACHE_COMPILERCHECK: '%compiler% -dumpmachine; %compiler% -dumpversion'
+      CCACHE_COMPILERCHECK: content
+      CCACHE_BASEDIR: ${{ github.workspace }}
       CCACHE_NOHASHDIR: 'true'
-      CCACHE_HARDLINK: 'true'
+      CCACHE_NOHARDLINK: 'true'
+      CCACHE_COMPRESS: 'true'
+      CCACHE_MAXSIZE: 2G
     steps:
     - name: 构建信息摘要
       shell: bash
@@ -435,7 +469,7 @@ jobs:
           echo "EFFECTIVE_ZRAM_USE_OPTIONAL_ALGO=$effective_zram_use_optional_algo"
         } >> "$GITHUB_ENV"
 
-        effective_ksu_branch="${{ inputs.kernelsu_branch }}"
+        effective_ksu_branch="${{ needs.prepare-matrix.outputs.effective_ksu_branch }}"
         if [ "$effective_ksu_branch" = "SUSFS(自动)" ]; then
           effective_ksu_branch="Stable(标准)"
         fi
@@ -462,8 +496,8 @@ jobs:
         echo "DDK LSM       : ${{ inputs.use_ddk }}"
         echo "NTsync 补丁   : ${{ inputs.use_ntsync }}"
         echo "Networing 增强: ${{ inputs.use_networking }}"
-        echo "KPM 功能      : ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) }}"
-        echo "KPM 密码      : ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '') && '已自定义' || '默认' }}"
+        echo "KPM 功能      : ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) }}"
+        echo "KPM 密码      : ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '') && '已自定义' || '默认' }}"
         echo "Re-Kernel     : ${{ inputs.use_rekernel }}"
         echo "虚拟化支持   : ${{ (inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version == '6.12' && 'on' || (inputs.virtualization_support == 'on' && '678' || inputs.virtualization_support))) }}"
         echo "自定义注入    : ${{ inputs.custom_external_modules != '' }}"
@@ -492,15 +526,15 @@ jobs:
             ;;
         esac
 
-        if [ "${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) }}" = "true" ] \
+        if [ "${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) }}" = "true" ] \
           && [ "${{ inputs.kernelsu_variant }}" = "Official" ]; then
           echo "::error::Official / KernelSU 变体不支持 KPM，请关闭 KPM 后重试。"
           exit 1
         fi
 
-        if [ "${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) }}" = "true" ] \
+        if [ "${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) }}" = "true" ] \
           && [ "${{ inputs.kernelsu_variant }}" = "BakaSU" ] \
-          && { [ "${{ inputs.kernelsu_branch }}" = "Dev(开发)" ] || [ "${{ inputs.kernelsu_branch }}" = "Latest(最新)" ]; }; then
+          && { [ "${{ needs.prepare-matrix.outputs.effective_ksu_branch }}" = "Dev(开发)" ] || [ "${{ needs.prepare-matrix.outputs.effective_ksu_branch }}" = "Latest(最新)" ]; }; then
           echo "::error::BakaSU 仅 Stable(标准) / Custom(自定义) 支持 KPM，请切换分支或关闭 KPM。"
           exit 1
         fi
@@ -547,21 +581,10 @@ jobs:
         exit 1
     - name: 清理磁盘空间
       if: runner.environment == 'github-hosted'
-      uses: endersonmenezes/free-disk-space@v3
-      with:
-        remove_android: true
-        remove_dotnet: true
-        remove_haskell: true
-        remove_tool_cache: true
-        remove_swap: true
-        remove_packages: azure-cli google-cloud-cli microsoft-edge-stable google-chrome-stable firefox postgresql* temurin-*
-          *llvm* mysql* dotnet-sdk-*
-        remove_packages_one_command: true
-        remove_folders: /usr/share/swift /usr/share/miniconda /usr/share/az* /usr/local/lib/node_modules /usr/local/share/chromium
-          /usr/local/share/powershell /usr/local/julia /usr/local/aws-cli /usr/local/aws-sam-cli /usr/share/gradle
-        rm_cmd: rmz
-        rmz_version: 3.1.1
-        testing: false
+      timeout-minutes: 8
+      env:
+        GKI_RUNNER_ENVIRONMENT: ${{ runner.environment }}
+      run: python3 "$GITHUB_WORKSPACE/tools/free_build_space.py"
     - name: 确定 KernelSU 分支
       if: inputs.kernelsu_variant != 'None'
       id: ksu-branch
@@ -657,11 +680,15 @@ jobs:
       run: python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" configure
     - name: 配置 ccache
       run: |
+        set -euo pipefail
+        export CCACHE_DIR="$HOME/.ccache"
+        mkdir -p "$CCACHE_DIR"
         mkdir -p ~/.cache/bazel
         ccache --version
         ccache --max-size=2G
         ccache --set-config=compression=true
-        echo "CCACHE_DIR=$HOME/.ccache" >> $GITHUB_ENV
+        ccache --set-config=hard_link=false
+        echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
     - name: 恢复 ccache 缓存
       if: env.ABK_LOCAL_CACHE_ENABLED != 'true'
       uses: actions/cache@v5
@@ -799,7 +826,7 @@ jobs:
       env:
         PIN_KSU_VARIANT: ${{ inputs.kernelsu_variant }}
         PIN_KSU_REF: ${{ env.BRANCH }}
-        PIN_KSU_TIER: ${{ inputs.kernelsu_branch }}
+        PIN_KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
         PIN_TARGET: ${{ matrix.android_version }}-${{ matrix.kernel_version }}
       run: |
         python3 "$GITHUB_WORKSPACE/tools/pin_build_dependencies.py" \
@@ -2459,9 +2486,9 @@ jobs:
         print("SUSFS Kconfig 与核心链接契约校验通过")
         PY
     - name: 注入 SukiSU/BakaSU KPM Kconfig
-      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch
-        == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch
+        == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) && (inputs.kernelsu_variant
+        == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -3505,7 +3532,7 @@ jobs:
         ABK_BUILD_OS_PATCH_LEVEL: ${{ matrix.os_patch_level }}
         ABK_BUILD_REVISION: ${{ matrix.revision }}
         ABK_BUILD_KSU_VARIANT: ${{ inputs.kernelsu_variant }}
-        ABK_BUILD_KSU_BRANCH: ${{ inputs.kernelsu_branch }}
+        ABK_BUILD_KSU_BRANCH: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
         ABK_BUILD_VERSION: ${{ inputs.version }}
         ABK_BUILD_TIME: ${{ inputs.build_time }}
         ABK_BUILD_VIRTUALIZATION_SUPPORT: ${{ (inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version ==
@@ -3517,7 +3544,8 @@ jobs:
         ABK_FEATURE_USE_NTSYNC: ${{ inputs.use_ntsync }}
         ABK_FEATURE_USE_NETWORKING: ${{ inputs.use_networking }}
         ABK_FEATURE_USE_KPM: ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU'
-          && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) }}
+          && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch
+          == 'Custom(自定义)')))) }}
         ABK_FEATURE_USE_REKERNEL: ${{ inputs.use_rekernel }}
         ABK_FEATURE_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         ABK_FEATURE_SUPP_OP: ${{ inputs.supp_op }}
@@ -3601,7 +3629,7 @@ jobs:
           fi
         fi
 
-        if [ "${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) }}" == "true" ] && ! feature_disabled kpm && { [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ] || [ "${{ inputs.kernelsu_variant }}" == "BakaSU" ]; }; then
+        if [ "${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) }}" == "true" ] && ! feature_disabled kpm && { [ "${{ inputs.kernelsu_variant }}" == "SukiSU" ] || [ "${{ inputs.kernelsu_variant }}" == "BakaSU" ]; }; then
           if [ "$kpm_config_supported" = "true" ]; then
             echo "CONFIG_KPM=y" >> "$DEFCONFIG"
             case "$kpm_kconfig_status" in
@@ -3654,10 +3682,11 @@ jobs:
 
         sed -i 's/check_defconfig//' ./common/build.config.gki
     - name: 配置 KPM 超级密码
-      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch
-        == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) && (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU'
-        || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))
-        && inputs.kpm_password || '') != '' && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch
+        == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) && (inputs.use_kpm && (inputs.kernelsu_variant
+        == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)'
+        || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '') != '' && (inputs.kernelsu_variant
+        == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       run: |
         echo "KPM 超级密码将在 Image KPM patch 阶段写入。"
         echo "CONFIG_KPM_SUPER_KEY 不是当前 KSU Kconfig 符号，不能写入 defconfig fragment。"
@@ -3782,7 +3811,7 @@ jobs:
         ABK_BUILD_OS_PATCH_LEVEL: ${{ matrix.os_patch_level }}
         ABK_BUILD_REVISION: ${{ matrix.revision }}
         ABK_BUILD_KSU_VARIANT: ${{ inputs.kernelsu_variant }}
-        ABK_BUILD_KSU_BRANCH: ${{ inputs.kernelsu_branch }}
+        ABK_BUILD_KSU_BRANCH: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
         ABK_BUILD_VERSION: ${{ inputs.version }}
         ABK_BUILD_TIME: ${{ inputs.build_time }}
         ABK_BUILD_VIRTUALIZATION_SUPPORT: ${{ (inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version ==
@@ -3794,7 +3823,8 @@ jobs:
         ABK_FEATURE_USE_NTSYNC: ${{ inputs.use_ntsync }}
         ABK_FEATURE_USE_NETWORKING: ${{ inputs.use_networking }}
         ABK_FEATURE_USE_KPM: ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU'
-          && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) }}
+          && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch
+          == 'Custom(自定义)')))) }}
         ABK_FEATURE_USE_REKERNEL: ${{ inputs.use_rekernel }}
         ABK_FEATURE_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         ABK_FEATURE_SUPP_OP: ${{ inputs.supp_op }}
@@ -5882,6 +5912,18 @@ jobs:
           matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
+    - name: 开始记录实际 ccache 命中
+      id: ccache-measurement
+      if: matrix.kernel_version == '5.10' || matrix.kernel_version == '5.15'
+      run: |
+        set -euo pipefail
+        if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
+          echo "Available build CPUs: $(nproc)"
+          free -h
+          ccache --zero-stats
+          ccache --show-config
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+        fi
     - name: 在内核中记录实际构建配置
       run: |
         set -euo pipefail
@@ -6160,6 +6202,23 @@ jobs:
           echo "当前 KSU 最新提交日期: ${KSU_LATEST_COMMIT_DATE}"
           echo "当前 SUSFS 最新提交日期: ${SUSFS_LATEST_COMMIT_DATE}"
           echo "如果日期不同或相差过远则补丁失效、编译失败"
+    - name: 显示本次 ccache 命中统计
+      if: always() && !cancelled() && steps.ccache-measurement.outputs.enabled == 'true'
+      continue-on-error: true
+      timeout-minutes: 1
+      run: |
+        set -euo pipefail
+        report="$RUNNER_TEMP/gki-ccache-statistics.txt"
+        ccache --show-stats --verbose | tee "$report"
+        {
+          echo '### 本次内核编译缓存（ccache）'
+          echo ''
+          echo '以下命中、未命中及不可缓存数量仅统计本次 build.sh 编译；Bazel 使用单独的磁盘缓存。'
+          echo ''
+          echo '```text'
+          cat "$report"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
     - name: 限制 Bazel 缓存上传体积
       id: bazel-cache-trim
       if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome !=
@@ -6214,9 +6273,9 @@ jobs:
         path: ${{ env.BAZEL_DISK_CACHE }}
         key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
     - name: 应用 KPM 补丁 (SukiSU/BakaSU)
-      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch
-        == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)')))) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch
+        == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) && (inputs.kernelsu_variant
+        == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -6224,8 +6283,8 @@ jobs:
         ABK_FEATURE_END: 'true'
         ABK_FEATURE_FAILURE_MESSAGE: KPM image patch failed and the image was restored
         KPM_PASSWORD: ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU'
-          && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))) && inputs.kpm_password
-          || '') }}
+          && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch
+          == 'Custom(自定义)'))) && inputs.kpm_password || '') }}
       run: |
         set -euo pipefail
         if [ "${{ 'aosp' }}" = "custom_git" ] && [ -f "$ABK_CUSTOM_SOURCE_TRANSACTION_DIR/kpm.disabled" ]; then
@@ -6372,6 +6431,7 @@ jobs:
           done
         fi
     - name: 记录内核实际配置
+      id: kernel-assets
       env:
         META_FILE: ${{ matrix.android_version }}-${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.os_patch_level
           }}-AnyKernel3.zip
@@ -6400,23 +6460,36 @@ jobs:
         if-no-files-found: error
         compression-level: 0
     - name: 上传可直接刷入的 AK3 包
-      if: inputs.artifact_mode == '仅 AK3'
-      uses: actions/upload-artifact@v6
+      uses: actions/upload-artifact@v7
       with:
-        name: AnyKernel3-${{ inputs.kernelsu_variant }}-${{ env.CONFIG }}
-        path: AnyKernel3/*
+        path: release-ready/${{ steps.kernel-assets.outputs.ak3 }}
+        archive: false
         if-no-files-found: error
-        compression-level: 9
-    - name: 上传 AK3 和 boot 镜像
-      if: inputs.artifact_mode != '仅 AK3'
-      uses: actions/upload-artifact@v6
+        overwrite: true
+    - name: 上传独立 boot 镜像
+      if: steps.kernel-assets.outputs.boot != ''
+      uses: actions/upload-artifact@v7
       with:
-        name: ${{ inputs.kernelsu_variant }}_kernel-${{ env.CONFIG }}
-        path: |
-          *AnyKernel3.zip
-          *.img
+        path: release-ready/${{ steps.kernel-assets.outputs.boot }}
+        archive: false
         if-no-files-found: error
-        compression-level: 9
+        overwrite: true
+    - name: 上传独立 gzip boot 镜像
+      if: steps.kernel-assets.outputs.boot_gz != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: release-ready/${{ steps.kernel-assets.outputs.boot_gz }}
+        archive: false
+        if-no-files-found: error
+        overwrite: true
+    - name: 上传独立 LZ4 boot 镜像
+      if: steps.kernel-assets.outputs.boot_lz4 != ''
+      uses: actions/upload-artifact@v7
+      with:
+        path: release-ready/${{ steps.kernel-assets.outputs.boot_lz4 }}
+        archive: false
+        if-no-files-found: error
+        overwrite: true
     - name: 上传补丁冲突文件
       if: failure() && env.REJ_COUNT > 0
       uses: actions/upload-artifact@v6
@@ -6449,13 +6522,14 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: write
+      actions: write
     steps:
     - name: 检出发布工具
       uses: actions/checkout@v6
       with:
         persist-credentials: false
     - name: 收集本次构建产物
-      uses: actions/download-artifact@v6
+      uses: actions/download-artifact@v8
       with:
         pattern: Release-*
         path: release-input
@@ -6478,6 +6552,17 @@ jobs:
         url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
         printf 'release_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
         printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"
+    - name: 上传同名校验文件
+      uses: actions/upload-artifact@v7
+      with:
+        path: release-publish/assets/SHA256SUMS.txt
+        archive: false
+        if-no-files-found: error
+        overwrite: true
+    - name: 核对原文件并清理发布中转包
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID"
   check-upstream:
     name: 检查官方源并准备更新 PR
     if: (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch

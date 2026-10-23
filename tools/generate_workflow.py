@@ -150,9 +150,15 @@ PREPARE_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '
 MANAGER_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '仅编译 SukiSU 安装包' || (inputs.operation == '编译内核' && inputs.kernelsu_variant == 'SukiSU'))"
 KERNEL_JOB_IF = "always() && !cancelled() && needs.prepare-matrix.result == 'success' && (" + BUILD_IF + ")"
 
-# Cache dependency downloads and reusable Rust objects only. APKs, release
-# bundles and signing files live outside these explicitly enumerated paths.
+# Cache dependency downloads, Gradle task results and reusable Rust objects.
+# APK outputs and signing files live outside these explicitly enumerated paths.
 MANAGER_GRADLE_CACHE = '~/.gradle/caches/modules-2\n~/.gradle/wrapper\n'
+MANAGER_GRADLE_BUILD_CACHE = '~/.gradle/caches/build-cache-1'
+MANAGER_GRADLE_BUILD_CACHE_PREFIX = (
+    'gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-'
+    "${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', "
+    "'manager-source/manager/gradle/libs.versions.toml') }}-"
+)
 MANAGER_CARGO_CACHE = (
     '~/.cargo/registry/index\n~/.cargo/registry/cache\n~/.cargo/registry/src\n~/.cargo/git/db\n'
     'manager-source/target/*/release/deps\nmanager-source/target/*/release/build\n'
@@ -190,6 +196,12 @@ fi
              'with': {'path': MANAGER_GRADLE_CACHE,
                       'key': "gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-${{ hashFiles('manager-source/manager/**/*.gradle.kts', 'manager-source/manager/**/gradle.properties', 'manager-source/manager/**/libs.versions.toml', 'manager-source/manager/gradle/wrapper/gradle-wrapper.properties') }}",
                       'restore-keys': 'gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-'}},
+            {'name': '恢复管理器 Gradle 编译缓存', 'id': 'manager-gradle-build-cache',
+             'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 3,
+             'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
+             'with': {'path': MANAGER_GRADLE_BUILD_CACHE,
+                      'key': MANAGER_GRADLE_BUILD_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
+                      'restore-keys': MANAGER_GRADLE_BUILD_CACHE_PREFIX}},
             {'name': '准备 Android SDK 与 NDK',
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -241,11 +253,19 @@ bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" -
              'with': {'name': 'Manager-Identity-${{ needs.prepare-matrix.outputs.ksu_short }}',
                       'path': 'manager-artifact/manager.json', 'if-no-files-found': 'error',
                       'compression-level': 0, 'overwrite': True}},
-            {'name': '上传 SukiSU 安装包', 'uses': 'actions/upload-artifact@v6',
-             'with': {'name': 'Release-Manager-${{ needs.prepare-matrix.outputs.ksu_short }}',
+            {'name': '上传管理器发布中转包', 'uses': 'actions/upload-artifact@v6',
+             'with': {'name': 'Release-Manager-${{ steps.sign.outputs.apk_filename }}',
                       'path': 'manager-artifact/*', 'if-no-files-found': 'error', 'compression-level': 0}},
+            {'name': '上传 SukiSU 安装包', 'uses': 'actions/upload-artifact@v7',
+             'with': {'path': 'manager-artifact/${{ steps.sign.outputs.apk_filename }}',
+                      'archive': False, 'if-no-files-found': 'error', 'overwrite': True}},
             # Publish APK identity before optional cache uploads, so dependent
             # kernels can validate the signature without waiting for cache IO.
+            {'name': '保存管理器 Gradle 编译缓存', 'uses': 'actions/cache/save@v5',
+             'if': "always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-gradle-build-cache.outputs.cache-primary-key != '' && steps.manager-gradle-build-cache.outputs.cache-hit != 'true'",
+             'continue-on-error': True, 'timeout-minutes': 3,
+             'with': {'path': MANAGER_GRADLE_BUILD_CACHE,
+                      'key': '${{ steps.manager-gradle-build-cache.outputs.cache-primary-key }}'}},
             {'name': '保存管理器 Gradle 依赖', 'uses': 'actions/cache/save@v5',
              'if': "always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key != '' && steps.manager-gradle-cache.outputs.cache-hit != 'true'",
              'continue-on-error': True, 'timeout-minutes': 3,
@@ -270,7 +290,8 @@ def create_workflow(root):
     declarations = source['inputs']
     mapping = {key: f'inputs.{key}' for key in dispatch}
     mapping.update({key: f'matrix.{key}' for key in ('android_version', 'kernel_version', 'sub_level', 'os_patch_level', 'revision')})
-    mapping.update({'ksu_variant': 'inputs.kernelsu_variant', 'ksu_branch': 'inputs.kernelsu_branch'})
+    mapping.update({'ksu_variant': 'inputs.kernelsu_variant',
+                    'ksu_branch': 'needs.prepare-matrix.outputs.effective_ksu_branch'})
     for key, definition in declarations.items():
         if key in mapping:
             continue
@@ -284,11 +305,11 @@ def create_workflow(root):
         mapping[key] = f'matrix.{key}'
     mapping.update({
         'source_mode': "'aosp'", 'ksu_variant': 'inputs.kernelsu_variant',
-        'ksu_branch': 'inputs.kernelsu_branch', 'upload_aux_artifacts': 'false',
+        'ksu_branch': 'needs.prepare-matrix.outputs.effective_ksu_branch', 'upload_aux_artifacts': 'false',
         'custom_ref': 'vars.KSU_CUSTOM_REF',
         'virtualization_support': "(inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version == '6.12' && 'on' || (inputs.virtualization_support == 'on' && '678' || inputs.virtualization_support)))",
-        'use_kpm': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))))",
-        'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (inputs.kernelsu_branch == 'Stable(标准)' || inputs.kernelsu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '')",
+        'use_kpm': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)'))))",
+        'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '')",
     })
     # Required values are supplied by the matrix / renamed inputs above.
     job = copy.deepcopy(source['job'])
@@ -454,7 +475,7 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
     steps.remove(bundle)
     upload_index = steps.index(upload)
     steps[upload_index:upload_index+1] = [
-        {'name': '记录内核实际配置',
+        {'name': '记录内核实际配置', 'id': 'kernel-assets',
          'env': {'META_FILE': '${{ matrix.android_version }}-${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-AnyKernel3.zip',
                  'META_ANDROID_VERSION': '${{ matrix.android_version }}', 'META_KERNEL_VERSION': '${{ matrix.kernel_version }}',
                  'META_SUB_LEVEL': '${{ matrix.sub_level }}', 'META_OS_PATCH_LEVEL': '${{ matrix.os_patch_level }}',
@@ -474,12 +495,14 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
         {'name': '上传 Release 内核文件', 'uses': 'actions/upload-artifact@v6',
          'with': {'name': 'Release-${{ inputs.ksu_variant }}-${{ env.CONFIG }}', 'path': 'release-ready/*',
                   'if-no-files-found': 'error', 'compression-level': 0}},
-        {'name': '上传可直接刷入的 AK3 包', 'if': "inputs.artifact_mode == '仅 AK3'", 'uses': 'actions/upload-artifact@v6',
-         'with': {'name': 'AnyKernel3-${{ inputs.ksu_variant }}-${{ env.CONFIG }}', 'path': 'AnyKernel3/*',
-                  'if-no-files-found': 'error', 'compression-level': 9}},
-        {'name': '上传 AK3 和 boot 镜像', 'if': "inputs.artifact_mode != '仅 AK3'", 'uses': 'actions/upload-artifact@v6',
-         'with': {'name': '${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}',
-                  'path': '*AnyKernel3.zip\n*.img\n', 'if-no-files-found': 'error', 'compression-level': 9}},
+        {'name': '上传可直接刷入的 AK3 包', 'uses': 'actions/upload-artifact@v7',
+         'with': {'path': 'release-ready/${{ steps.kernel-assets.outputs.ak3 }}',
+                  'archive': False, 'if-no-files-found': 'error', 'overwrite': True}},
+        *[{'name': '上传独立 ' + label + ' 镜像',
+           'if': "steps.kernel-assets.outputs." + key + " != ''", 'uses': 'actions/upload-artifact@v7',
+           'with': {'path': 'release-ready/${{ steps.kernel-assets.outputs.' + key + ' }}',
+                    'archive': False, 'if-no-files-found': 'error', 'overwrite': True}}
+          for key, label in (('boot', 'boot'), ('boot_gz', 'gzip boot'), ('boot_lz4', 'LZ4 boot'))],
     ]
     step_named(steps, '上传补丁冲突文件')['if'] = "failure() && env.REJ_COUNT > 0"
     # mkbootimg is only needed for boot output; build-tools also supplies signing tools.

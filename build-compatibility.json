@@ -5,7 +5,7 @@
     "reviewed_kernel_tree": "8c1e2c46af23862e2ab5d44fe4fb82fc6bb2fdc2",
     "reviewed_uapi_tree": "7280aa0d007776e3de1f81395998d03a19b23f3e",
     "ksu_commits": ["17ff94d9da24d589a9705227fdda39a1c9045698"],
-    "tiers": ["Stable(标准)", "Dev(开发)"],
+    "tiers": ["Stable(标准)", "Dev(开发)", "Latest(最新)"],
     "version": "v2.3.0",
     "pins": {
       "android12-5.10": "f43926dc94b8ffbf9b74321313536600f69367b1",

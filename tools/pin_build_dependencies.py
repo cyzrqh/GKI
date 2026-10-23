@@ -14,7 +14,7 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 TARGET = re.compile(r"android[0-9]+-[0-9]+\.[0-9]+\Z")
-TIERS = frozenset(("Stable(标准)", "Dev(开发)"))
+TIERS = frozenset(("Stable(标准)", "Dev(开发)", "Latest(最新)"))
 
 
 class CompatibilityError(RuntimeError):
@@ -49,7 +49,7 @@ def load_profile(root: Path) -> dict:
         raise CompatibilityError("Reviewed kernel and UAPI trees must be paired full SHAs")
     if (not isinstance(tiers, list) or not tiers
             or any(not isinstance(value, str) or value not in TIERS for value in tiers)):
-        raise CompatibilityError("Compatibility tiers must be Stable or Dev")
+        raise CompatibilityError("Compatibility tiers must be Stable, Dev or Latest")
     if not isinstance(version, str) or not re.fullmatch(r"v[0-9]+\.[0-9]+\.[0-9]+", version):
         raise CompatibilityError("Invalid compatibility SUSFS version")
     if (not isinstance(pins, dict) or not pins

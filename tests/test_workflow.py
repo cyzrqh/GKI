@@ -27,6 +27,29 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(len(self.workflow['on']['workflow_dispatch']['inputs']), 25)
         self.assertTrue(all('uses' not in job for job in self.workflow['jobs'].values()))
 
+    def test_sukisu_release_choices_preserve_old_dispatch_and_share_canonical_tier(self):
+        fields = self.workflow['on']['workflow_dispatch']['inputs']
+        self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
+        self.assertEqual(fields['kernelsu_branch']['default'], 'SukiSU 最新版')
+        self.assertEqual(fields['kernelsu_branch']['options'],
+                         ['Stable(标准)', 'Dev(开发)', 'Latest(最新)', 'Custom(自定义)',
+                          'SukiSU 正式版', 'SukiSU 最新版'])
+        kernel = self.workflow['jobs']['build-kernel']
+        self.assertNotIn('inputs.kernelsu_branch', str(kernel))
+        canonical = '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}'
+        self.assertEqual(self.find('选择配套的 SUSFS 源码版本')['env']['PIN_KSU_TIER'], canonical)
+        self.assertEqual(self.find('记录内核实际配置')['env']['META_KSU_BRANCH'], canonical)
+        summary = self.find('构建信息摘要')['run']
+        self.assertIn('effective_ksu_branch="' + canonical + '"', summary)
+        # Alias labels reach only the resolver; every template branch receives
+        # its canonical value, preserving BakaSU's Stable/Custom-only KPM rule.
+        kpm = next(line for line in summary.splitlines() if 'KPM 功能' in line)
+        self.assertIn("inputs.kernelsu_variant == 'BakaSU'", kpm)
+        for tier in ('Stable(标准)', 'Custom(自定义)'):
+            self.assertIn("needs.prepare-matrix.outputs.effective_ksu_branch == '" + tier + "'", kpm)
+        self.assertNotIn("== 'Latest(最新)'", kpm)
+        self.assertNotIn("== 'Dev(开发)'", kpm)
+
     def test_update_events_cannot_start_kernel_compilation(self):
         self.assertEqual(self.workflow['jobs']['prepare-matrix']['if'], generator.PREPARE_IF)
         self.assertEqual(self.workflow['jobs']['build-kernel']['if'], generator.KERNEL_JOB_IF)
@@ -175,8 +198,17 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--expected-ref "$KSU_REF"', wait['run'])
         self.assertIn('--github-env "$GITHUB_ENV"', wait['run'])
         identity = next(step for step in manager['steps'] if step['name'] == '提供内核配对的公开签名信息')
+        self.assertEqual(identity['with']['name'], 'Manager-Identity-${{ needs.prepare-matrix.outputs.ksu_short }}')
         self.assertEqual(identity['with']['path'], 'manager-artifact/manager.json')
         self.assertTrue(identity['with']['overwrite'])
+        upload = next(step for step in manager['steps'] if step['name'] == '上传 SukiSU 安装包')
+        self.assertEqual(upload['uses'], 'actions/upload-artifact@v7')
+        self.assertIs(upload['with']['archive'], False)
+        self.assertEqual(upload['with']['path'], 'manager-artifact/${{ steps.sign.outputs.apk_filename }}')
+        self.assertNotIn('name', upload['with'])
+        collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
+                          if step['name'] == '收集本次构建产物')
+        self.assertEqual(collection['with']['pattern'], 'Release-*')
         signature = self.find('配对管理器包名与签名')
         self.assertNotIn('env', signature)  # Use the verified previous step's GITHUB_ENV values.
         self.assertIn('--package "$MANAGER_PACKAGE"', signature['run'])
@@ -188,7 +220,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']
-        self.assertEqual(release['permissions'], {'contents': 'write'})
+        self.assertEqual(release['permissions'], {'contents': 'write', 'actions': 'write'})
         self.assertIn("needs.build-kernel.result == 'success'", release['if'])
         self.assertIn("needs.build-sukisu-manager.result == 'success'", release['if'])
         self.assertIn("inputs.operation == '仅编译 SukiSU 安装包'", release['if'])
@@ -200,6 +232,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(publish['run'].index('gh release upload'), publish['run'].index('--draft=false'))
         self.assertIn('CONFIG_IKCONFIG=y', self.find('在内核中记录实际构建配置')['run'])
         self.assertIn('capture_build_metadata.py', self.find('记录内核实际配置')['run'])
+        checksum = next(step for step in release['steps'] if step['name'] == '上传同名校验文件')
+        self.assertIs(checksum['with']['archive'], False)
+        self.assertEqual(checksum['with']['path'], 'release-publish/assets/SHA256SUMS.txt')
+        self.assertIn('cleanup_build_artifacts.py', release['steps'][-1]['run'])
+        self.assertEqual(release['steps'][-1]['env']['GH_TOKEN'], '${{ github.token }}')
 
     def test_manager_caches_match_real_cargo_target_and_exclude_signing_outputs(self):
         steps = self.workflow['jobs']['build-sukisu-manager']['steps']
@@ -233,6 +270,37 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('ndk29', cargo['with']['key'])
         self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-rust-version'),
                         steps.index(cargo))
+
+    def test_gradle_task_cache_survives_source_changes_without_caching_signing_outputs(self):
+        steps = self.workflow['jobs']['build-sukisu-manager']['steps']
+        restore = next(step for step in steps if step.get('id') == 'manager-gradle-build-cache')
+        save = next(step for step in steps if step.get('name') == '保存管理器 Gradle 编译缓存')
+        self.assertEqual(restore['uses'], 'actions/cache/restore@v5')
+        self.assertEqual(save['uses'], 'actions/cache/save@v5')
+        self.assertEqual(restore['with']['path'], '~/.gradle/caches/build-cache-1')
+        self.assertEqual(save['with']['path'], restore['with']['path'])
+        for axis in ('runner.os', 'runner.arch', 'github.run_id', 'github.run_attempt'):
+            self.assertIn(axis, restore['with']['key'])
+        prefix = restore['with']['restore-keys']
+        self.assertNotIn('github.run_id', prefix)
+        self.assertNotIn('github.run_attempt', prefix)
+        self.assertNotIn('ksu_ref', prefix)
+        self.assertIn('jdk21-sdk37-ndk29-', prefix)
+        self.assertIn('gradle-wrapper.properties', prefix)
+        self.assertIn('libs.versions.toml', prefix)
+        self.assertIn("steps.manager-build.outcome == 'success'", save['if'])
+        self.assertIn('always() && !cancelled()', save['if'])
+        self.assertGreater(steps.index(save), next(i for i, step in enumerate(steps)
+                                                  if step.get('name') == '上传 SukiSU 安装包'))
+        self.assertGreater(steps.index(save), next(i for i, step in enumerate(steps)
+                                                  if step.get('name') == '提供内核配对的公开签名信息'))
+        for cache in (restore, save):
+            self.assertTrue(cache['continue-on-error'])
+            self.assertLessEqual(cache['timeout-minutes'], 3)
+            self.assertNotIn('secrets.', str(cache))
+        script = (ROOT / 'tools/build_sukisu_manager.sh').read_text(encoding='utf-8')
+        self.assertIn('--build-cache assembleRelease', script)
+        self.assertNotIn('--configuration-cache', script)
 
     def test_bazel_cache_is_scoped_bounded_and_saved_even_on_compile_failure(self):
         restore = self.find('恢复 Bazel 磁盘缓存')
@@ -316,7 +384,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(names.index('克隆依赖仓库'), names.index(pin['name']))
         self.assertLess(names.index(pin['name']), names.index('应用 SUSFS 补丁'))
         self.assertEqual(pin['env']['PIN_KSU_REF'], '${{ env.BRANCH }}')
-        self.assertEqual(pin['env']['PIN_KSU_TIER'], '${{ inputs.kernelsu_branch }}')
+        self.assertEqual(pin['env']['PIN_KSU_TIER'], '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}')
         self.assertEqual(pin['if'], "inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'")
 
     def test_susfs_hook_check_runs_after_patches_before_compiler(self):
@@ -331,8 +399,15 @@ class WorkflowTests(unittest.TestCase):
         for name in ('构建 Boot 镜像 (Android 12)', '构建 Boot 镜像 (Android 13+)'):
             self.assertIn("inputs.artifact_mode != '仅 AK3'", self.find(name)['if'])
         upload = self.find('上传可直接刷入的 AK3 包')
-        self.assertEqual(upload['with']['path'], 'AnyKernel3/*')
-        self.assertEqual(upload['if'], "inputs.artifact_mode == '仅 AK3'")
+        self.assertEqual(upload['with']['path'], 'release-ready/${{ steps.kernel-assets.outputs.ak3 }}')
+        self.assertIs(upload['with']['archive'], False)
+        self.assertNotIn('if', upload)
+        self.assertEqual(sum(step.get('name') == '上传可直接刷入的 AK3 包' for step in self.steps), 1)
+        for step in self.steps:
+            if step.get('uses') == 'actions/upload-artifact@v7':
+                self.assertIs(step['with']['archive'], False)
+                self.assertNotIn('*', step['with']['path'])
+                self.assertNotIn('name', step['with'])
         self.assertNotIn('打包签名内核 Bundle', [step['name'] for step in self.steps])
 
     def test_ak3_preparation_does_not_require_compressed_image(self):

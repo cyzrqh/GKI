@@ -80,10 +80,11 @@ class BuildDependencyTests(unittest.TestCase):
     def test_reviewed_kernel_tree_keeps_susfs23_for_live_source_commits(self):
         profile = copy.deepcopy(PROFILE)
         profile['sukisu_susfs'].update(version='v2.3.0', reviewed_kernel_tree='e' * 40,
-                                      reviewed_uapi_tree='f' * 40)
+                                      reviewed_uapi_tree='f' * 40,
+                                      tiers=['Stable(标准)', 'Dev(开发)', 'Latest(最新)'])
         self.write_profile(profile)
         for ref in (KSU, 'd' * 40):
-            for tier in ('Stable(标准)', 'Dev(开发)'):
+            for tier in ('Stable(标准)', 'Dev(开发)', 'Latest(最新)'):
                 with self.subTest(ref=ref, tier=tier):
                     self.assertEqual(self.select(ksu_ref=ref, tier=tier), (SUSFS, 'v2.3.0'))
         for ref in ('main', 'd' * 40 + '\n', ''):
@@ -147,7 +148,7 @@ class BuildDependencyTests(unittest.TestCase):
     def test_profile_rejects_invalid_fields_and_short_shas(self):
         mutations = [lambda d: d.update(schema_version=2),
                      lambda d: d["sukisu_susfs"].update(ksu_commits=["abc"]),
-                     lambda d: d["sukisu_susfs"].update(tiers=["Latest(最新)"]),
+                     lambda d: d["sukisu_susfs"].update(tiers=["invalid-tier"]),
                      lambda d: d["sukisu_susfs"].update(version="v2.2.0\n"),
                      lambda d: d["sukisu_susfs"].update(pins={"../target": SUSFS}),
                      lambda d: d["sukisu_susfs"].update(pins={"android14-6.1": SUSFS + "\n"})]

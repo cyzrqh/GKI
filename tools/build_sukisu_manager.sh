@@ -109,7 +109,7 @@ cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
 
 cd "$manager_dir"
 echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
-bash ./gradlew --no-daemon --stacktrace assembleRelease
+bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease
 
 python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" <<'PY'
 from pathlib import Path

@@ -20,13 +20,17 @@ Actions 只有一个入口：**GKI 全属性内核构建矩阵**，提供 **编�
 
 菜单保留 KernelSU 变体、分支、SUSFS、ZRAM、BBG、DDK、NTSync、网络增强、KPM、Re-Kernel、虚拟化、自定义模块及内核配置等选项，兼容规则由本仓库维护。例如 Official 不启用 KPM，6.12 跳过不兼容的旧 ZRAM 算法。
 
+构建 SukiSU 时，变体选择 **SukiSU**，分支可以直接选择 **SukiSU 正式版** 或 **SukiSU 最新版**：前者使用官方最新正式 Release，后者使用官方默认分支。APK 和 AK3 中的 SukiSU 使用同一提交和版本号；Android/内核版本仍由“内核系列”和“指定版本”选择。默认已选 SukiSU 最新版。其他 KernelSU 变体继续使用原有四种分支选项。
+
 首次验证可选择 `6.1` 和实际需要的一个版本，使用“仅 AK3”，确认编译与设备适配后再扩大矩阵。全部选择超过 GitHub 单个矩阵的 256 项限制时，需要缩小系列或目标范围。
 
 ### 构建速度
 
 SukiSU APK 与内核环境准备并行运行；内核在开始编译前读取同一次运行的已签名 APK 身份，核对源码、包名、证书和版本。管理器构建失败时停止配对，发布也要求配套管理器成功。
 
-Gradle 与 Cargo 依赖可跨运行复用；5.10/5.15 保留 ccache，Bazel 系列新增最多 2 GiB 的磁盘缓存。缓存只用于复用构建工作，全部功能配置和产物校验仍会执行。首次构建需要建立缓存，实际耗时还受源码同步与 GitHub 运行机器排队影响，不能保证固定分钟数。
+Gradle 与 Cargo 依赖可跨运行复用；管理器另启用 Gradle 编译结果缓存，相同任务可直接复用结果。5.10/5.15 使用压缩的 ccache，先设置同一缓存目录再配置，并在运行摘要输出本次真实命中、未命中统计；Bazel 系列使用最多 2 GiB 的磁盘缓存。缓存只用于复用构建工作，全部功能配置和产物校验仍会执行。首次构建需要建立缓存，实际耗时还受源码同步与 GitHub 运行机器排队影响，不能保证固定分钟数。
+
+GitHub 托管机器的磁盘清理由本仓库脚本执行，只删除固定的预装工具目录；不再下载额外删除工具或批量卸载系统软件包。达到 50 GiB 可用空间即可停止，低于 40 GiB 会在同步源码前明确失败；每个目录和整个步骤都有时间上限。该门槛用于提前发现空间不足，不代表所有自定义配置的峰值用量保证。
 
 ### 下载 Release
 
@@ -35,6 +39,7 @@ Gradle 与 Cargo 依赖可跨运行复用；5.10/5.15 保留 ccache，Bazel 系�
 - 管理器直接提供 `.apk`，名称为 `SukiSU_v<真实版本名>_<真实版本号>-release.apk`，版本信息从实际 APK 读取。
 - “仅 AK3”提供可刷入的 AnyKernel3 ZIP，跳过 boot 镜像生成、签名和打包；选择“AK3 + boot 镜像”时提供对应的 AK3 与 boot 产物。
 - `SHA256SUMS.txt` 用于核对下载文件。Actions Artifacts 用于任务之间传递文件，ZIP 中转由发布任务处理，日常下载使用 Release。
+- 编译页的最终 Artifacts 与 Release 使用同一批原文件和文件名：APK、一个对应版本的 AK3 ZIP、校验文件，以及选用 boot 模式时的独立镜像。原文件上传不再套一层 ZIP；发布成功且逐个核对摘要后，自动删除 `Manager-Identity-*`、`Release-*` 等中转产物。发布失败时保留中转文件供恢复。
 
 Release 正文用一张“构建配置”总表展示本次所有内核的实际配置：共同配置只列一次，不同配置在同一行注明对应系列或具体版本。表中包含构建范围、UTC 时间、KernelSU 变体与分支、版本名与版本号、SUSFS 版本、Hook、LTO、BBG 安全补丁、ZRAM、LZ4KD、KPM 及其他功能状态。功能配置从编译出的 `Image` 内嵌配置提取，不把菜单输入或示例值当成编译结果；无法确认的字段标为“未知”。挂载方式由设备上的管理器或元模块在运行时决定，不能仅凭内核构建宣称固定使用 Magic Mount。
 
@@ -59,11 +64,13 @@ Android 12 LTS 的 boot 头补丁日期采用目录中最新的 Android 12 稳�
 
 SukiSU **Stable(标准)** 跟随官方最新正式 Release，**Dev(开发)** 跟随官方 `dev` 分支（没有该分支时使用官方默认分支），**Latest(最新)** 使用官方默认分支。每次运行开始时解析一次完整提交，随后 APK 与所有内核均使用该提交；不再把这些菜单选项固定为旧的 41038。
 
-SukiSU Stable/Dev 开启 SUSFS 时配对 **v2.3.0**，五个内核系列的 SUSFS 完整提交及已审核的 SukiSU 内核源码树记录在 `build-compatibility.json`。官方更新保留相同的内核及接口源码树时，可以直接跟随管理器更新；源码树改变会明确停止并提示需要适配，不会静默回到旧版或降级 SUSFS。该文件的 `source_ref` 是适配基线，不是构建版本锁。设置 `config/config` 中的 `custom=true` 时，优先使用显式配置的 SUSFS 提交。
+SukiSU 正式版/最新版及原有 Stable、Dev、Latest 开启 SUSFS 时配对 **v2.3.0**，五个内核系列的 SUSFS 完整提交及已审核的 SukiSU 内核源码树记录在 `build-compatibility.json`。官方更新保留相同的内核及接口源码树时，可以直接跟随管理器更新；源码树改变会明确停止并提示需要适配，不会静默回到旧版或降级 SUSFS。该文件的 `source_ref` 是适配基线，不是构建版本锁。设置 `config/config` 中的 `custom=true` 时，优先使用显式配置的 SUSFS 提交。
 
 Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将本次源码固定为完整提交。启用 SUSFS 时会检查接口配套，不匹配会提前停止。
 
 **验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 修复后也已[单独补测成功](https://github.com/cyzrqh/gki/actions/runs/39901348783)，包含内核编译、产物校验和 Release 发布。此前的 `SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
+
+随后 [41050 配套构建](https://github.com/cyzrqh/gki/actions/runs/39936971198)也已成功：SukiSU 提交 `3c6ecb97305d8df8e85593302c8cb8337e763262`、5.10.246、SUSFS v2.3.0，原名 `SukiSU_v4.2.1-r1_41050-release.apk` 与 AK3 已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39936971198-1)。该 APK 的完整摘要、APK v2 签名和固定证书已独立核验。内核 C 编译实际用时 6 分 27 秒；该运行仍使用旧清理步骤，单清理耗时 12 分 50 秒，不能将此耗时视为新清理方案的实测结果。
 
 ### 自定义 KernelSU 提交
 

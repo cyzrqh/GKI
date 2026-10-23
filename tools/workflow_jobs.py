@@ -144,10 +144,10 @@ def release_job():
         'name': '发布 APK 与详细内核配置', 'if': condition,
         'needs': ['prepare-matrix', 'build-sukisu-manager', 'build-kernel'],
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
-        'permissions': {'contents': 'write'},
+        'permissions': {'contents': 'write', 'actions': 'write'},
         'steps': [
             {'name': '检出发布工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
-            {'name': '收集本次构建产物', 'uses': 'actions/download-artifact@v6',
+            {'name': '收集本次构建产物', 'uses': 'actions/download-artifact@v8',
              'with': {'pattern': 'Release-*', 'path': 'release-input', 'merge-multiple': False}},
             {'name': '整理直接下载文件与实际配置',
              'run': 'python3 tools/prepare_release.py --input release-input --output release-publish'},
@@ -164,5 +164,11 @@ url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
 printf 'release_url=%s\\n' "$url" >> "$GITHUB_OUTPUT"
 printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' "$url" >> "$GITHUB_STEP_SUMMARY"
 '''},
+            {'name': '上传同名校验文件', 'uses': 'actions/upload-artifact@v7',
+             'with': {'path': 'release-publish/assets/SHA256SUMS.txt', 'archive': False,
+                      'if-no-files-found': 'error', 'overwrite': True}},
+            {'name': '核对原文件并清理发布中转包',
+             'env': {'GH_TOKEN': '${{ github.token }}'},
+             'run': 'python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID"'},
         ],
     }

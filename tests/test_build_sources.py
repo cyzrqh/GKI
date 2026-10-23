@@ -69,6 +69,45 @@ class BuildSourceTests(unittest.TestCase):
             api.side_effect = [{'default_branch': 'main'}, None, {'sha': NEW_KSU}]
             self.assertEqual(self.resolve()['ksu_ref'], NEW_KSU)
 
+    def test_sukisu_formal_alias_uses_latest_release_and_exports_canonical_tier(self):
+        with patch.object(sources, 'github_json') as api:
+            api.side_effect = [{'tag_name': 'v4.2.1-r1'}, {'sha': NEW_KSU}]
+            result = self.resolve(tier='SukiSU 正式版')
+        self.assertEqual(result['ksu_ref'], NEW_KSU)
+        self.assertEqual(result['ksu_source_branch'], 'v4.2.1-r1')
+        self.assertEqual(result['effective_ksu_branch'], 'Stable(标准)')
+        self.assertEqual([call.args[1] for call in api.call_args_list],
+                         ['/releases/latest', '/commits/v4.2.1-r1'])
+
+    def test_sukisu_latest_alias_tracks_default_branch_without_dev_lookup(self):
+        for branch in ('main', 'next'):
+            with self.subTest(branch=branch), patch.object(sources, 'github_json') as api:
+                api.side_effect = [{'default_branch': branch}, {'sha': NEW_KSU}]
+                result = self.resolve(tier='SukiSU 最新版')
+            self.assertEqual(result['ksu_ref'], NEW_KSU)
+            self.assertEqual(result['ksu_source_branch'], branch)
+            self.assertEqual(result['effective_ksu_branch'], 'Latest(最新)')
+            self.assertEqual(api.call_args_list[1].args[1], '/commits/' + branch)
+            self.assertEqual(api.call_count, 2)
+
+    def test_sukisu_aliases_cannot_silently_select_a_different_variant(self):
+        for variant in ('Official', 'BakaSU', 'None'):
+            for tier in sources.TIER_ALIASES:
+                with self.subTest(variant=variant, tier=tier), patch.object(sources, 'github_json') as api:
+                    with self.assertRaisesRegex(sources.SourceResolutionError, 'require the SukiSU variant'):
+                        self.resolve(variant=variant, tier=tier)
+                api.assert_not_called()
+
+    def test_cli_accepts_latest_alias_but_shares_only_canonical_tier(self):
+        with patch.object(sources, 'github_json') as api, redirect_stdout(io.StringIO()):
+            api.side_effect = [{'default_branch': 'main'}, {'sha': NEW_KSU}]
+            status = sources.main(['--root', str(self.root), '--variant', 'SukiSU',
+                                   '--tier', 'SukiSU 最新版', '--susfs', 'true'])
+        self.assertEqual(status, 0)
+        output = self.output.read_text(encoding='utf-8')
+        self.assertIn('effective_ksu_branch=Latest(最新)\n', output)
+        self.assertNotIn('SukiSU 最新版', output)
+
     def test_none_needs_no_profile_or_network(self):
         self.profile.unlink()
         with patch.object(sources, 'github_json') as network:

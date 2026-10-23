@@ -137,14 +137,30 @@ def parse_apk_metadata(badging: str) -> dict[str, str | int]:
             "manager_version_code": int(code)}
 
 
-def apk_filename(metadata: dict[str, str | int]) -> str:
-    # The version itself remains unchanged in metadata. Only the public path
-    # component is sanitized, and an upstream v prefix is emitted once.
-    version = re.sub(r"[^A-Za-z0-9._+-]+", "_", str(metadata["manager_version_name"]))
-    version = version.lstrip("vV").strip("._-")
-    if not version:
-        raise SigningError("The manager versionName cannot form a safe APK filename.")
-    return f"SukiSU_v{version}_{metadata['manager_version_code']}-release.apk"
+def apk_filename(build_metadata: Path, actual: dict[str, str | int]) -> str:
+    """Keep the builder's native filename after proving its APK identity."""
+    path = Path(build_metadata)
+    if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 16 * 1024:
+        raise SigningError("The manager build metadata file is missing or invalid.")
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, UnicodeError):
+        raise SigningError("The manager build metadata file is not valid JSON.") from None
+    if (not isinstance(metadata, dict)
+            or type(metadata.get("manager_version_code")) is not int
+            or any(metadata.get(field) != value for field, value in actual.items())):
+        raise SigningError("The manager build metadata package/version does not match the source APK.")
+    source, output = metadata.get("source_apk_filename"), metadata.get("apk_filename")
+    # Filenames come from Gradle rather than being recreated from versionName:
+    # official development builds can use manager-ci or a version without v.
+    for name in (source, output):
+        if (not isinstance(name, str) or len(name) > 250 or ".." in name
+                or not re.fullmatch(r"SukiSU_[A-Za-z0-9][A-Za-z0-9._+-]*-release(?:-unsigned)?\.apk", name)):
+            raise SigningError("The manager build metadata must contain safe native SukiSU APK basenames.")
+    if (not source.endswith("-release-unsigned.apk") or not output.endswith("-release.apk")
+            or output != source.removesuffix("-unsigned.apk") + ".apk"):
+        raise SigningError("The signed APK filename must preserve the native source name, removing only -unsigned.")
+    return output
 
 
 def verify_certificate(report: str, certificate: bytes) -> str:
@@ -173,10 +189,13 @@ def write_outputs(metadata: dict[str, str | int]) -> None:
                 stream.write(f"{key}={value}\n")
 
 
-def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path | None = None) -> dict[str, str | int]:
+def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path | None = None,
+                 build_metadata: Path | None = None) -> dict[str, str | int]:
     unsigned = Path(unsigned).resolve()
     if (output is None) == (output_dir is None):
         raise SigningError("Choose exactly one signed output file or output directory.")
+    if output_dir is not None and build_metadata is None:
+        raise SigningError("--output-dir requires --build-metadata to preserve the native APK filename.")
     output = Path(output).resolve() if output is not None else None
     if unsigned == output:
         raise SigningError("The signed output must be a separate file from the unsigned input.")
@@ -185,8 +204,9 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
     validate_apk(unsigned)
     source_badging = run_command([tools["aapt2"], "dump", "badging", str(unsigned)], password, secrets)
     source_metadata = parse_apk_metadata(source_badging)
+    native_filename = apk_filename(build_metadata, source_metadata) if build_metadata is not None else None
     if output is None:
-        output = Path(output_dir).resolve() / apk_filename(source_metadata)
+        output = Path(output_dir).resolve() / native_filename
         if unsigned == output:
             raise SigningError("The signed output must be a separate file from the unsigned input.")
     if any(ord(char) < 32 or ord(char) > 126 for char in output.name):
@@ -261,10 +281,12 @@ def main(argv=None) -> int:
     parser.add_argument("--unsigned", required=True, type=Path)
     destination = parser.add_mutually_exclusive_group(required=True)
     destination.add_argument("--output", type=Path, help="Explicit signed APK path (compatibility mode)")
-    destination.add_argument("--output-dir", type=Path, help="Directory for the APK named using its real version")
+    destination.add_argument("--output-dir", type=Path, help="Directory for the APK retaining its original Gradle filename")
+    parser.add_argument("--build-metadata", type=Path, help="Verified manager-build-metadata.json written by the build step")
     args = parser.parse_args(argv)
     try:
-        metadata = sign_manager(args.unsigned, args.output, output_dir=args.output_dir)
+        metadata = sign_manager(args.unsigned, args.output, output_dir=args.output_dir,
+                                build_metadata=args.build_metadata)
     except (SigningError, OSError, UnicodeError) as error:
         values = (os.environ.get(KEYSTORE_ENV, ""), os.environ.get(PASSWORD_ENV, ""))
         print("Manager APK signing stopped: " + redact(str(error), values), file=sys.stderr)

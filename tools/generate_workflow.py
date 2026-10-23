@@ -112,8 +112,10 @@ formatted_branch="${GKI_ANDROID}-${GKI_KERNEL}-${GKI_PATCH}"
 python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \\
   --manifest-root "$KERNEL_ROOT/.repo/manifests" \\
   --kernel-ref "$GKI_KERNEL_REF" --branch "$formatted_branch"
+python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \\
+  --manifest-root "$KERNEL_ROOT/.repo/manifests"
 for attempt in 1 2 3; do
-  if "$REPO" sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
+  if "$REPO" --trace sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
     exit 0
   fi
   echo "::warning::源码同步失败（${attempt}/3）"
@@ -240,7 +242,8 @@ bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" -
                      'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}',
                      'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}'},
              'run': '''python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \\
-  --output-dir "$GITHUB_WORKSPACE/manager-artifact"
+  --output-dir "$GITHUB_WORKSPACE/manager-artifact" \\
+  --build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"
 '''},
             {'name': '记录管理器真实版本',
              'env': {'META_FILE': '${{ steps.sign.outputs.apk_filename }}',

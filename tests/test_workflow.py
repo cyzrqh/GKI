@@ -191,6 +191,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('secrets.', str(build))
         sign = next(step for step in manager['steps'] if step.get('id') == 'sign')
         self.assertIn('secrets.SUKISU_APK_KEYSTORE', sign['env']['SUKISU_APK_KEYSTORE'])
+        self.assertIn('--build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"', sign['run'])
         kernel = self.workflow['jobs']['build-kernel']
         self.assertEqual(kernel['needs'], ['prepare-matrix'])
         self.assertEqual(kernel['permissions'], {'contents': 'read', 'actions': 'read'})
@@ -409,6 +410,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(pin['env']['PIN_KSU_TIER'], '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}')
         self.assertEqual(pin['if'], "inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'")
 
+    def test_historical_susfs23_context_is_prepared_and_verified_around_main_patch(self):
+        script = self.find('应用 SUSFS 补丁')['run']
+        self.assertLess(script.index('--phase prepare'), script.index('patch -p1 < "50_add_susfs'))
+        self.assertLess(script.index('ensure_susfs_headers.py'), script.index('--phase finish'))
+        self.assertEqual(script.count('SUSFS_VERSION="2.0.0"'), 1)  # Missing-header fallback only.
+        self.assertIn('[ "$SUSFS_VERSION" = "2.3.0" ] && [[ "$rel_path" == */fdinfo.c.patch ]]', script)
+
     def test_susfs_hook_check_runs_after_patches_before_compiler(self):
         names = [step.get('name') for step in self.steps]
         check = self.find('检查 SUSFS 与 KernelSU 接口配套')
@@ -446,7 +454,8 @@ class WorkflowTests(unittest.TestCase):
     def test_catalog_refs_are_applied_before_repo_sync(self):
         step = self.find('初始化并同步内核源码')
         self.assertEqual(step['env']['GKI_KERNEL_REF'], '${{ matrix.kernel_ref }}')
-        self.assertLess(step['run'].index('tools/set_kernel_ref.py'), step['run'].index('"$REPO" sync'))
+        self.assertLess(step['run'].index('tools/set_kernel_ref.py'), step['run'].index('tools/optimize_manifest_fetch.py'))
+        self.assertLess(step['run'].index('tools/optimize_manifest_fetch.py'), step['run'].index('"$REPO" --trace sync'))
 
     def test_catalog_guard_runs_after_checkout_before_slow_disk_cleanup(self):
         names = [step.get('name') for step in self.steps]

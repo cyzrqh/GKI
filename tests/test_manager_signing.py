@@ -112,6 +112,15 @@ class ManagerSigningTests(unittest.TestCase):
     def run_signing(self):
         return signing.sign_manager(self.unsigned, self.output)
 
+    def build_metadata(self, filename='SukiSU_v4.2.1_41030-release.apk', version='v4.2.1', **changes):
+        metadata = {'source_apk_filename': filename.removesuffix('.apk') + '-unsigned.apk',
+                    'apk_filename': filename, 'manager_package': 'com.sukisu.ultra',
+                    'manager_version_name': version, 'manager_version_code': 41030}
+        metadata.update(changes)
+        path = self.unsigned.parent / 'manager-build-metadata.json'
+        path.write_text(json.dumps(metadata), encoding='utf-8')
+        return path
+
     def test_orders_alignment_signing_export_and_verification_with_public_outputs(self):
         with patch.object(signing.subprocess, "run", side_effect=self.fake_sdk):
             metadata = self.run_signing()
@@ -274,10 +283,11 @@ class ManagerSigningTests(unittest.TestCase):
         self.assertNotIn(PASSWORD, stdout.getvalue())
         self.assertNotIn(ENCODED_KEY, stdout.getvalue())
 
-    def test_output_directory_uses_actual_version_without_duplicating_v(self):
+    def test_output_directory_keeps_native_filename_and_real_versions(self):
         directory = self.root / 'versioned-artifacts'
+        build_metadata = self.build_metadata()
         with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
-            metadata = signing.sign_manager(self.unsigned, output_dir=directory)
+            metadata = signing.sign_manager(self.unsigned, output_dir=directory, build_metadata=build_metadata)
         filename = 'SukiSU_v4.2.1_41030-release.apk'
         self.assertEqual(metadata['apk_filename'], filename)
         self.assertTrue((directory / filename).is_file())
@@ -287,20 +297,69 @@ class ManagerSigningTests(unittest.TestCase):
         self.assertIn('manager_version_code=41030\n', outputs)
         self.assertIn('apk_filename=' + filename + '\n', outputs)
 
-    def test_version_path_is_cleaned_while_public_metadata_keeps_actual_version(self):
-        def unsafe_version(args, **kwargs):
-            result = self.fake_sdk(args, **kwargs)
-            if Path(args[0]).name == 'aapt2':
-                result.stdout = result.stdout.replace('v4.2.1', 'vv4.2.1/../branch @name')
-            return result
+    def test_native_development_and_release_names_preserve_prefix_exactly(self):
         directory = self.root / 'versioned-artifacts'
-        with patch.object(signing.subprocess, 'run', side_effect=unsafe_version):
-            metadata = signing.sign_manager(self.unsigned, output_dir=directory)
-        self.assertEqual(metadata['manager_version_name'], 'vv4.2.1/../branch @name')
-        self.assertEqual(metadata['apk_filename'], 'SukiSU_v4.2.1_.._branch_name_41030-release.apk')
-        self.assertEqual((directory / metadata['apk_filename']).parent, directory)
+        for version in ('manager-ci', 'v4.2.1', '4.2.1'):
+            filename = 'SukiSU_' + version + '_41030-release.apk'
+            path = self.build_metadata(filename, version)
+            def native_version(args, **kwargs):
+                result = self.fake_sdk(args, **kwargs)
+                if Path(args[0]).name == 'aapt2':
+                    result.stdout = result.stdout.replace("versionName='v4.2.1'", "versionName='" + version + "'")
+                return result
+            with self.subTest(version=version), patch.object(signing.subprocess, 'run', side_effect=native_version):
+                metadata = signing.sign_manager(self.unsigned, output_dir=directory, build_metadata=path)
+            self.assertEqual(metadata['manager_version_name'], version)
+            self.assertEqual(metadata['apk_filename'], filename)
+            self.assertTrue((directory / filename).is_file())
+
+    def test_native_filename_cannot_escape_directory_or_be_silently_renamed(self):
+        directory = self.root / 'versioned-artifacts'
+        names = ('../SukiSU_v4.2.1_41030-release.apk', '/tmp/SukiSU_v4.2.1_41030-release.apk',
+                 'C:\\SukiSU_v4.2.1_41030-release.apk', 'SukiSU_../bad-release.apk',
+                 'SukiSU_bad\nname_41030-release.apk', 'Other_v4.2.1_41030-release.apk',
+                 'SukiSU_v4.2.1_41030-release.apk:stream', 'SukiSU_' + 'a' * 250 + '-release.apk')
+        for filename in names:
+            path = self.build_metadata(filename)
+            with self.subTest(filename=filename), patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+                with self.assertRaisesRegex(signing.SigningError, 'safe native SukiSU APK basenames'):
+                    signing.sign_manager(self.unsigned, output_dir=directory, build_metadata=path)
+            self.assertFalse(self.private_paths)
+            self.assertFalse(directory.exists())
+        path = self.build_metadata(apk_filename='SukiSU_changed_41030-release.apk')
+        with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+            with self.assertRaisesRegex(signing.SigningError, 'removing only -unsigned'):
+                signing.sign_manager(self.unsigned, output_dir=directory, build_metadata=path)
+        self.assertFalse(self.private_paths)
+
+    def test_build_metadata_identity_must_match_actual_unsigned_apk(self):
+        for changes in ({'manager_package': 'com.other.manager'}, {'manager_version_code': 99999},
+                        {'manager_version_code': '41030'}, {'manager_version_code': True},
+                        {'manager_version_name': 'different-version'}):
+            path = self.build_metadata(**changes)
+            with self.subTest(changes=changes), patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+                with self.assertRaisesRegex(signing.SigningError, 'package/version does not match'):
+                    signing.sign_manager(self.unsigned, output_dir=self.output.parent, build_metadata=path)
+            self.assertFalse(self.private_paths)
+            self.assertFalse(self.workflow_output.exists())
+
+    def test_missing_invalid_or_incomplete_build_metadata_stops_before_signing(self):
+        with patch.object(signing.subprocess, 'run') as run:
+            with self.assertRaisesRegex(signing.SigningError, 'requires --build-metadata'):
+                signing.sign_manager(self.unsigned, output_dir=self.output.parent)
+            run.assert_not_called()
+        path = self.unsigned.parent / 'missing-metadata.json'
+        for content in (None, 'not-json', '[]', '{}', '{"manager_version_code":41030}'):
+            if content is not None:
+                path.write_text(content, encoding='utf-8')
+            with self.subTest(content=content), patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+                with self.assertRaises(signing.SigningError):
+                    signing.sign_manager(self.unsigned, output_dir=self.output.parent, build_metadata=path)
+            self.assertFalse(self.private_paths)
+            self.assertFalse(self.workflow_output.exists())
 
     def test_invalid_version_metadata_fails_before_creating_signing_key(self):
+        path = self.build_metadata()
         for fragment in ["versionCode='0'", "versionCode='2147483648'", "versionCode='01'",
                          "versionCode='not-a-number'", "versionName=''", "versionName='bad\nversion'",
                          "versionName='v4.2.1' versionName='duplicate'"]:
@@ -313,7 +372,7 @@ class ManagerSigningTests(unittest.TestCase):
                 return result
             with self.subTest(fragment=fragment), patch.object(signing.subprocess, 'run', side_effect=invalid):
                 with self.assertRaises(signing.SigningError):
-                    signing.sign_manager(self.unsigned, output_dir=self.output.parent)
+                    signing.sign_manager(self.unsigned, output_dir=self.output.parent, build_metadata=path)
                 self.assertFalse(self.private_paths)
                 self.assertFalse(self.workflow_output.exists())
 
@@ -336,9 +395,11 @@ class ManagerSigningTests(unittest.TestCase):
     def test_output_directory_cli_is_supported_and_output_flags_are_exclusive(self):
         stdout = io.StringIO()
         directory = self.root / 'versioned-artifacts'
+        metadata_path = self.build_metadata()
         with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
             with contextlib.redirect_stdout(stdout):
-                code = signing.main(['--unsigned', str(self.unsigned), '--output-dir', str(directory)])
+                code = signing.main(['--unsigned', str(self.unsigned), '--output-dir', str(directory),
+                                     '--build-metadata', str(metadata_path)])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(stdout.getvalue())['apk_filename'], 'SukiSU_v4.2.1_41030-release.apk')
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):

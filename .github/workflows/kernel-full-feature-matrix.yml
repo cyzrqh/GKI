@@ -371,7 +371,8 @@ jobs:
         KSU_SHORT: ${{ needs.prepare-matrix.outputs.ksu_short }}
       run: |
         python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \
-          --output-dir "$GITHUB_WORKSPACE/manager-artifact"
+          --output-dir "$GITHUB_WORKSPACE/manager-artifact" \
+          --build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"
     - name: 记录管理器真实版本
       env:
         META_FILE: ${{ steps.sign.outputs.apk_filename }}
@@ -1023,8 +1024,10 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \
           --manifest-root "$KERNEL_ROOT/.repo/manifests" \
           --kernel-ref "$GKI_KERNEL_REF" --branch "$formatted_branch"
+        python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \
+          --manifest-root "$KERNEL_ROOT/.repo/manifests"
         for attempt in 1 2 3; do
-          if "$REPO" sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
+          if "$REPO" --trace sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
             exit 0
           fi
           echo "::warning::源码同步失败（${attempt}/3）"
@@ -1615,8 +1618,7 @@ jobs:
         SUSFS_FIX_ROOT="$(resolve_susfs_fix_root "$SUSFS_FIX_VERSION" || true)"
         if [ -z "$SUSFS_FIX_ROOT" ] && [ "$SUSFS_FIX_VERSION" != "2.0.0" ]; then
           echo "未找到 v${SUSFS_FIX_VERSION} 的 SUSFS 修复补丁，回退 v2.0.0"
-          SUSFS_VERSION="2.0.0"
-          SUSFS_FIX_VERSION="$SUSFS_VERSION"
+          SUSFS_FIX_VERSION="2.0.0"
           SUSFS_FIX_ROOT="$(resolve_susfs_fix_root "$SUSFS_FIX_VERSION" || true)"
         fi
 
@@ -1635,6 +1637,12 @@ jobs:
         apply_susfs_patch_file() {
           local rel_path="$1"
           local patch_source=""
+
+          # The 2.0 fdinfo fix lacks the 2.3 SUS_KSTAT branch. Prepare the old
+          # native context for the complete 2.3 patch and verify it afterwards.
+          if [ "$SUSFS_VERSION" = "2.3.0" ] && [[ "$rel_path" == */fdinfo.c.patch ]]; then
+            return 0
+          fi
 
           if [ -n "$SUSFS_FIX_ROOT" ] && [ -f "$SUSFS_FIX_ROOT/$rel_path" ]; then
             patch_source="$SUSFS_FIX_ROOT/$rel_path"
@@ -1725,6 +1733,8 @@ jobs:
         esac
 
         cd $KERNEL_ROOT/common
+        python3 "$GITHUB_WORKSPACE/tools/historical_susfs23.py" --kernel-root "$KERNEL_ROOT" \
+          --version "$SUSFS_VERSION" --kernel "$ABK_KERNEL_VERSION" --sublevel "$ABK_SUB_LEVEL" --phase prepare
         patch -p1 < "50_add_susfs_in_gki-${ABK_ANDROID_VERSION}-${ABK_KERNEL_VERSION}.patch" || true
 
         if [ "$ABK_KSU_VARIANT" == "SukiSU" ] || [ "$ABK_KSU_VARIANT" == "BakaSU" ]; then
@@ -2377,6 +2387,8 @@ jobs:
           fix_task_mmu_vma_pad_start
         fi
         python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_headers.py" --kernel-root "$KERNEL_ROOT"
+        python3 "$GITHUB_WORKSPACE/tools/historical_susfs23.py" --kernel-root "$KERNEL_ROOT" \
+          --version "$SUSFS_VERSION" --kernel "$ABK_KERNEL_VERSION" --sublevel "$ABK_SUB_LEVEL" --phase finish
     - name: 确保 SUSFS Kconfig 与核心对象
       if: inputs.enable_susfs && inputs.kernelsu_variant != 'None'
       env:

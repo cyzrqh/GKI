@@ -1,2 +1,4 @@
 # Preserve exact imported bytes so upstream checksums work on Windows and Linux.
 * -text
+# Upstream patch fixtures require their literal diff context whitespace.
+tests/fixtures/historical-susfs23/*.patch -whitespace

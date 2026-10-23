@@ -37,9 +37,17 @@ class Susfs23ApplicationTests(unittest.TestCase):
                                 "{ return stop_machine(patch_callback, dst, cpu_online_mask); }\n",
                                 encoding="utf-8", newline="\n")
             self.providers.append(provider)
+        self.uapi = self.repository / "uapi/ioctl.h"
+        self.uapi.parent.mkdir()
+        self.uapi.write_text("/* reviewed UAPI */\n", encoding="utf-8", newline="\n")
         self.run_git("add", ".")
         self.run_git("commit", "--quiet", "-m", "test source")
         self.head = self.run_git("rev-parse", "HEAD").stdout.strip()
+        self.profile = {
+            "ksu_commits": [self.head],
+            "reviewed_kernel_tree": self.run_git("rev-parse", "HEAD:kernel").stdout.strip(),
+            "reviewed_uapi_tree": self.run_git("rev-parse", "HEAD:uapi").stdout.strip(),
+        }
         self.susfs = self.directory / "susfs/kernel_patches/include/linux"
         self.susfs.mkdir(parents=True)
         self.header = self.susfs / "susfs.h"
@@ -70,8 +78,8 @@ class Susfs23ApplicationTests(unittest.TestCase):
 
     def apply_fixture(self):
         # Exercise Git's real atomic apply/check/reverse behavior on a small repo.
-        # The actual pinned source and complete patch are verified separately.
-        with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+        # The complete patch and official reviewed trees are verified separately.
+        with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                 mock.patch.object(susfs, "verify_integration") as verify:
             result = susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
             verify.assert_called_once_with(self.repository.resolve())
@@ -85,16 +93,70 @@ class Susfs23ApplicationTests(unittest.TestCase):
         self.assertFalse(self.apply_fixture())
         self.assertEqual(applied, self.state())
 
-    def test_wrong_sukisu_commit_refused_before_modification(self):
+    def test_unreviewed_sukisu_tree_refused_before_modification(self):
         before = self.state()
-        with self.assertRaisesRegex(ValueError, "requires SukiSU"):
+        with self.assertRaisesRegex(ValueError, "requires the reviewed SukiSU kernel tree"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
         self.assertEqual(before, self.state())
+
+    def test_new_manager_commit_with_identical_kernel_and_uapi_is_accepted(self):
+        manager = self.repository / "manager/version.txt"
+        manager.parent.mkdir()
+        manager.write_text("new official manager revision\n", encoding="utf-8")
+        self.run_git("add", ".")
+        self.run_git("commit", "--quiet", "-m", "update manager without changing kernel ABI")
+        self.assertNotEqual(self.head, self.run_git("rev-parse", "HEAD").stdout.strip())
+        self.assertTrue(self.apply_fixture())
+        # The new commit is still accepted on a complete idempotent second run.
+        self.assertFalse(self.apply_fixture())
+
+    def test_drift_in_either_reviewed_tree_refused_before_modification(self):
+        for relative, tree in (("kernel/unpatched.c", "kernel"), ("uapi/ioctl.h", "uapi")):
+            with self.subTest(tree=tree):
+                (self.repository / relative).write_text("/* upstream source changed */\n", encoding="utf-8")
+                self.run_git("add", ".")
+                self.run_git("commit", "--quiet", "-m", f"change {tree} implementation")
+                before = self.state()
+                with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
+                        self.assertRaisesRegex(ValueError, f"requires the reviewed SukiSU {tree} tree"):
+                    susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
+                self.assertEqual(before, self.state())
+                self.run_git("reset", "--hard", "--quiet", self.head)
+
+    def test_local_uapi_drift_and_staged_drift_are_rejected(self):
+        for staged in (False, True):
+            with self.subTest(staged=staged):
+                self.uapi.write_text("/* local ABI change */\n", encoding="utf-8")
+                if staged:
+                    self.run_git("add", ".")
+                before = self.state()
+                with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
+                        self.assertRaisesRegex(ValueError, "UAPI files differ from the reviewed source"):
+                    susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
+                self.assertEqual(before, self.state())
+                self.run_git("reset", "--hard", "--quiet", self.head)
+
+    def test_reviewed_kernel_tree_alone_cannot_skip_uapi_verification(self):
+        profile = {key: value for key, value in self.profile.items() if key != "reviewed_uapi_tree"}
+        before = self.state()
+        with mock.patch.object(susfs, "load_profile", return_value=profile), \
+                self.assertRaisesRegex(ValueError, "missing a valid reviewed_uapi_tree"):
+            susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
+        self.assertEqual(before, self.state())
+
+    def test_legacy_commit_profile_remains_strict_without_tree_review(self):
+        profile = {"ksu_commits": [self.head]}
+        with mock.patch.object(susfs, "load_profile", return_value=profile):
+            susfs.check_versions(self.repository, self.directory / "susfs")
+        self.run_git("commit", "--quiet", "--allow-empty", "-m", "not explicitly reviewed")
+        with mock.patch.object(susfs, "load_profile", return_value=profile), \
+                self.assertRaisesRegex(ValueError, "requires SukiSU reviewed"):
+            susfs.check_versions(self.repository, self.directory / "susfs")
 
     def test_wrong_susfs_version_refused_before_modification(self):
         self.header.write_text('#define SUSFS_VERSION "v2.2.0"\n', encoding="utf-8")
         before = self.state()
-        with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+        with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                 self.assertRaisesRegex(ValueError, "requires v2.3.0"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
         self.assertEqual(before, self.state())
@@ -106,7 +168,7 @@ class Susfs23ApplicationTests(unittest.TestCase):
                 if staged:
                     self.run_git("add", ".")
                 before = self.state()
-                with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+                with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                         self.assertRaisesRegex(ValueError, "differ from the pinned source"):
                     susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
                 self.assertEqual(before, self.state())
@@ -116,7 +178,7 @@ class Susfs23ApplicationTests(unittest.TestCase):
         content = self.patch.read_text().replace("-/* original kernel init */", "-/* another upstream revision */")
         self.patch.write_text(content, encoding="utf-8", newline="\n")
         before = self.state()
-        with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+        with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                 self.assertRaisesRegex(ValueError, "Complete SUSFS 2.3 patch does not apply"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
         self.assertEqual(before, self.state())
@@ -124,7 +186,7 @@ class Susfs23ApplicationTests(unittest.TestCase):
     def test_partial_prior_application_is_rejected(self):
         self.core.write_text("/* integrated kernel init */\n", encoding="utf-8", newline="\n")
         before = self.state()
-        with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+        with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                 self.assertRaisesRegex(ValueError, "partial or conflicting patch"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
         self.assertEqual(before, self.state())
@@ -132,7 +194,7 @@ class Susfs23ApplicationTests(unittest.TestCase):
     def test_complete_reverse_check_does_not_skip_integration_validation(self):
         self.apply_fixture()
         before = self.state()
-        with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+        with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                 mock.patch.object(susfs, "verify_integration", side_effect=ValueError("missing runner")), \
                 self.assertRaisesRegex(ValueError, "missing runner"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
@@ -148,7 +210,7 @@ class Susfs23ApplicationTests(unittest.TestCase):
                     provider.write_text("int ksu_patch_text(void) { return 0; }\n",
                                         encoding="utf-8", newline="\n")
                 before = self.state()
-                with mock.patch.object(susfs, "SUKISU_COMMIT", self.head), \
+                with mock.patch.object(susfs, "load_profile", return_value=self.profile), \
                         self.assertRaisesRegex(ValueError, "text patch providers differ"):
                     susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
                 self.assertEqual(before, self.state())

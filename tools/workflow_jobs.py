@@ -79,7 +79,7 @@ if not (official_ok and catalog_ok):
 body = ('<!-- gki-upstream-sync:v1 -->\\n' + os.environ['HEADS_MARKER'] + '\\n\\n'
         '# 官方源更新\\n\\n本 PR 直接跟踪 SukiSU、SUSFS 和 Android GKI 官方源，不依赖其他构建仓库。\\n\\n'
         + status + '\\n\\n'
-        '新增 GKI 版本已核对官方 Makefile 并固定源码提交。SukiSU/SUSFS 候选仅记录新版本；合并候选记录不会切换已验证的构建源码，仍须完成接口适配和实际编译验证。\\n\\n'
+        '新增 GKI 版本已核对官方 Makefile 并固定源码提交。SukiSU 构建实时解析所选官方来源，候选 PR 用于更新提示；新 APK 需要重新运行构建。SUSFS 固定配对和适配基线不会随候选记录改变，源码变化仍须通过接口检查和实际编译验证。\\n\\n'
         '## 官方候选快照\\n```json\\n' + json.dumps(json.loads(os.environ['OFFICIAL_CANDIDATES']) if official_ok else None,ensure_ascii=False,indent=2) + '\\n```\\n\\n'
         '## 新增内核版本\\n```json\\n' + json.dumps(json.loads(os.environ['CATALOG_CANDIDATES']) if catalog_ok else [],ensure_ascii=False,indent=2) + '\\n```\\n')
 path.write_text(body,encoding='utf-8')

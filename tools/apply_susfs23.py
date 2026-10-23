@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
-"""Apply the reviewed, complete SUSFS 2.3 port to the pinned SukiSU source.
+"""Apply the complete SUSFS 2.3 port to SukiSU's reviewed kernel and UAPI trees.
 
 The patch is a three-way port of simonpunk/susfs4ksu's official
 10_enable_susfs_for_ksu.patch at b57ed1998b82c4e3a2a81cdbf11172a560979c40
-to SukiSU-Ultra 17ff94d9da24d589a9705227fdda39a1c9045698. It contains the
+to SukiSU-Ultra 17ff94d9da24d589a9705227fdda39a1c9045698. New official
+manager/ksud revisions can use this port when both source trees are identical.
+It contains the
 real preinit runner and SELinux implementations and preserves SukiSU's KPM,
 extensions and manager support. See the patch header for upstream attribution.
 Run after kernel/setup.sh, before other tools modify the KernelSU source.
@@ -18,9 +20,10 @@ import subprocess
 import sys
 
 from validate_susfs_hooks import HOOKS, inspect_c_source, strip_comments_and_literals
+from pin_build_dependencies import CompatibilityError, load_profile
 
 
-SUKISU_COMMIT = "17ff94d9da24d589a9705227fdda39a1c9045698"
+PROFILE_ROOT = Path(__file__).resolve().parents[1]
 SUSFS_VERSION = "v2.3.0"
 PATCH_PATH = Path(__file__).resolve().parent / "patches" / "sukisu-susfs23.patch"
 PATCH_MEMORY_ARCHES = ("arm64", "x86_64", "riscv64")
@@ -48,10 +51,36 @@ def find_repository(kernel_root: Path) -> Path:
 
 
 def check_versions(repository: Path, susfs_dir: Path) -> None:
+    try:
+        profile = load_profile(PROFILE_ROOT)
+    except CompatibilityError as error:
+        raise ValueError(str(error)) from error
     result = git(repository, "rev-parse", "HEAD")
-    if result.returncode or result.stdout.strip() != SUKISU_COMMIT:
-        actual = result.stdout.strip() or "unavailable"
-        raise ValueError(f"SUSFS 2.3 port requires SukiSU {SUKISU_COMMIT}; found {actual}")
+    actual = result.stdout.strip().lower()
+    if result.returncode or not re.fullmatch(r"[0-9a-f]{40}", actual):
+        raise ValueError("Cannot verify the SukiSU checkout commit")
+    if "reviewed_kernel_tree" in profile:
+        # Comparing complete Git trees covers additions, deletions, modes and
+        # symlinks as well as file contents. The root UAPI tree is included via
+        # kernel/include/uapi -> ../../uapi, and is part of the same ABI review.
+        for path, field in (("kernel", "reviewed_kernel_tree"), ("uapi", "reviewed_uapi_tree")):
+            expected = profile.get(field)
+            if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", expected):
+                raise ValueError(f"Reviewed SukiSU source profile is missing a valid {field}")
+            tree = git(repository, "rev-parse", "--verify", f"HEAD:{path}")
+            found = tree.stdout.strip().lower()
+            if tree.returncode or found != expected.lower():
+                raise ValueError(
+                    f"SUSFS 2.3 port requires the reviewed SukiSU {path} tree {expected}; "
+                    f"commit {actual} has {found or 'unavailable'}. "
+                    "Review and adapt the port before building this upstream revision."
+                )
+        unchanged = git(repository, "diff", "--quiet", "HEAD", "--", "uapi")
+        if unchanged.returncode:
+            raise ValueError("SukiSU UAPI files differ from the reviewed source")
+    elif actual not in {commit.lower() for commit in profile["ksu_commits"]}:
+        raise ValueError("SUSFS 2.3 port requires SukiSU reviewed by build-compatibility.json; "
+                         f"found {actual}")
     directory = susfs_dir.resolve(strict=True)
     header = next((path for path in (
         directory / "kernel_patches/include/linux/susfs.h",

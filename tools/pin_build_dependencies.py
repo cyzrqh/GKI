@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select a complete SUSFS source tree compatible with a known fixed KSU build."""
+"""Select SUSFS pins; verify the reviewed SukiSU kernel tree before patching."""
 from __future__ import annotations
 
 import argparse
@@ -35,6 +35,18 @@ def load_profile(root: Path) -> dict:
     if (not isinstance(commits, list) or not commits
             or any(not isinstance(value, str) or not SHA.fullmatch(value) for value in commits)):
         raise CompatibilityError("Compatibility KSU commits must be full 40-character SHAs")
+    source = profile.get("source_ref")
+    if source is not None and (not isinstance(source, str) or not SHA.fullmatch(source)
+                               or source.lower() not in {value.lower() for value in commits}):
+        raise CompatibilityError("Compatibility source_ref must name a reviewed KSU commit")
+    tree = profile.get("reviewed_kernel_tree")
+    if tree is not None and (not isinstance(tree, str) or not SHA.fullmatch(tree)
+                             or version != "v2.3.0"):
+        raise CompatibilityError("Reviewed kernel tree requires a full SHA and SUSFS v2.3.0")
+    uapi = profile.get("reviewed_uapi_tree")
+    if (tree is None) != (uapi is None) or (uapi is not None and
+            (not isinstance(uapi, str) or not SHA.fullmatch(uapi))):
+        raise CompatibilityError("Reviewed kernel and UAPI trees must be paired full SHAs")
     if (not isinstance(tiers, list) or not tiers
             or any(not isinstance(value, str) or value not in TIERS for value in tiers)):
         raise CompatibilityError("Compatibility tiers must be Stable or Dev")
@@ -62,10 +74,18 @@ def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str)
     if variant != "SukiSU" or tier not in TIERS:
         return None
     profile = load_profile(root)
-    if tier not in profile["tiers"] or ksu_ref.lower() not in {value.lower() for value in profile["ksu_commits"]}:
+    if tier not in profile["tiers"]:
         return None
     if custom_configuration(root):
         return None
+    if not isinstance(ksu_ref, str) or not SHA.fullmatch(ksu_ref):
+        raise CompatibilityError("Selected SukiSU source must be a full commit SHA")
+    if (ksu_ref.lower() not in {value.lower() for value in profile["ksu_commits"]}
+            and "reviewed_kernel_tree" not in profile):
+        return None
+    # A newer manager/ksud commit can retain the exact reviewed kernel sources.
+    # apply_susfs23.py verifies HEAD:kernel before any patch or C compilation;
+    # an incompatible source fails there instead of silently using older SUSFS.
     if target not in profile["pins"]:
         raise CompatibilityError(f"No compatible SUSFS pin for {target}; review build-compatibility.json")
     return profile["pins"][target].lower(), profile["version"]

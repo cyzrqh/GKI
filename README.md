@@ -36,7 +36,7 @@ Gradle 与 Cargo 依赖可跨运行复用；5.10/5.15 保留 ccache，Bazel 系�
 - “仅 AK3”提供可刷入的 AnyKernel3 ZIP，跳过 boot 镜像生成、签名和打包；选择“AK3 + boot 镜像”时提供对应的 AK3 与 boot 产物。
 - `SHA256SUMS.txt` 用于核对下载文件。Actions Artifacts 用于任务之间传递文件，ZIP 中转由发布任务处理，日常下载使用 Release。
 
-Release 正文逐内核展示本次实际构建范围、UTC 时间、KernelSU 变体与分支、版本名与版本号、SUSFS 版本、Hook、LTO、BBG 安全补丁、ZRAM、LZ4KD、KPM 及其他功能状态。功能配置从编译出的 `Image` 内嵌配置提取，不把菜单输入或示例值当成编译结果；无法确认的字段标为“未知”。挂载方式由设备上的管理器或元模块在运行时决定，不能仅凭内核构建宣称固定使用 Magic Mount。
+Release 正文用一张“构建配置”总表展示本次所有内核的实际配置：共同配置只列一次，不同配置在同一行注明对应系列或具体版本。表中包含构建范围、UTC 时间、KernelSU 变体与分支、版本名与版本号、SUSFS 版本、Hook、LTO、BBG 安全补丁、ZRAM、LZ4KD、KPM 及其他功能状态。功能配置从编译出的 `Image` 内嵌配置提取，不把菜单输入或示例值当成编译结果；无法确认的字段标为“未知”。挂载方式由设备上的管理器或元模块在运行时决定，不能仅凭内核构建宣称固定使用 Magic Mount。
 
 Android 12 LTS 的 boot 头补丁日期采用目录中最新的 Android 12 稳定补丁月份，文件名仍标明 LTS。
 
@@ -57,11 +57,13 @@ Android 12 LTS 的 boot 头补丁日期采用目录中最新的 Android 12 稳�
 
 ### 源码与 SUSFS 配对
 
-SukiSU **Stable/Dev** 固定为本地适配的提交 `17ff94d9da24d589a9705227fdda39a1c9045698`；开启 SUSFS 时配对 **v2.3.0**，具体记录在 `build-compatibility.json`，五个内核系列分别固定完整的 SUSFS 提交。设置 `config/config` 中的 `custom=true` 时，优先使用显式配置的 SUSFS 提交。
+SukiSU **Stable(标准)** 跟随官方最新正式 Release，**Dev(开发)** 跟随官方 `dev` 分支（没有该分支时使用官方默认分支），**Latest(最新)** 使用官方默认分支。每次运行开始时解析一次完整提交，随后 APK 与所有内核均使用该提交；不再把这些菜单选项固定为旧的 41038。
+
+SukiSU Stable/Dev 开启 SUSFS 时配对 **v2.3.0**，五个内核系列的 SUSFS 完整提交及已审核的 SukiSU 内核源码树记录在 `build-compatibility.json`。官方更新保留相同的内核及接口源码树时，可以直接跟随管理器更新；源码树改变会明确停止并提示需要适配，不会静默回到旧版或降级 SUSFS。该文件的 `source_ref` 是适配基线，不是构建版本锁。设置 `config/config` 中的 `custom=true` 时，优先使用显式配置的 SUSFS 提交。
 
 Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将本次源码固定为完整提交。启用 SUSFS 时会检查接口配套，不匹配会提前停止。
 
-**验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 的旧接口与版本校验步骤顺序已修复，正在单独补测。`SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
+**验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 修复后也已[单独补测成功](https://github.com/cyzrqh/gki/actions/runs/39901348783)，包含内核编译、产物校验和 Release 发布。此前的 `SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
 
 ### 自定义 KernelSU 提交
 
@@ -86,9 +88,9 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 同一工作流每天北京时间 **08:17** 检查官方源，GitHub 定时运行可能延迟。也可在默认分支上手动选择 **检查上游更新**；检查不会启动内核或 APK 编译。
 
 - **Android GKI 目录：** 直接读取 `android.googlesource.com/kernel/manifest` 与 `kernel/common` 的 Gitiles refs，只纳入上述五组 Android/内核配对的月度分支，核对官方 Makefile 的完整版本，新增行固定为读取时的完整源码 SHA。历史月份、已有 refs 与 LTS 保留在 `data/kernels.json`。
-- **SukiSU / SUSFS：** 直接检测 SukiSU 官方提交与发布、SUSFS 官方各 GKI 分支，将新候选记录到 `data/upstream-candidates.json`。**合并候选 PR 只确认已收到更新，不会自动切换 `build-compatibility.json` 中的构建配对。** 更新配对仍需接口适配和真实编译验证。
+- **SukiSU / SUSFS：** 直接检测 SukiSU 官方提交与发布、SUSFS 官方各 GKI 分支，将新候选记录到 `data/upstream-candidates.json`。SukiSU 构建每次实时解析所选官方来源，无需先合并候选 PR 才能取得新版。候选 PR 提供更新提示与审核记录；SUSFS 固定配对和内核适配基线的变更仍需接口适配和真实编译验证。
 
-发现变化时创建或更新待审核 PR；相同候选已有 PR 时跳过重复创建，更新检查不会自动合并或触发构建。PR 会分配并提醒仓库所有者。官方 GKI 目录更新合并后，新目标可供手动选择；SukiSU/SUSFS 的新候选不能视为已经完成自动升级或兼容验证。
+发现变化时创建或更新待审核 PR；相同候选已有 PR 时跳过重复创建，更新检查不会自动合并或触发构建。PR 会分配并提醒仓库所有者。官方 GKI 目录更新合并后，新目标可供手动选择；收到 SukiSU/SUSFS 更新提示不代表已自动生成新版安装包，实际产物需要重新运行构建，且必须通过配套检查。
 
 Android 目录检查缓存已核实的完整源码 SHA 与版本；未变化的提交直接复用结果，新提交再核对 Makefile。遇到官方接口限流时保留已核实进度，下次检查可接续；其他官方源的成功结果仍可创建更新 PR，运行摘要会明确指出未完成的检查。
 

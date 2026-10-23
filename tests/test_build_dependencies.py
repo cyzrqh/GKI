@@ -77,6 +77,33 @@ class BuildDependencyTests(unittest.TestCase):
                     self.assertFalse(self.run_pin())
                     run.assert_not_called()
 
+    def test_reviewed_kernel_tree_keeps_susfs23_for_live_source_commits(self):
+        profile = copy.deepcopy(PROFILE)
+        profile['sukisu_susfs'].update(version='v2.3.0', reviewed_kernel_tree='e' * 40,
+                                      reviewed_uapi_tree='f' * 40)
+        self.write_profile(profile)
+        for ref in (KSU, 'd' * 40):
+            for tier in ('Stable(标准)', 'Dev(开发)'):
+                with self.subTest(ref=ref, tier=tier):
+                    self.assertEqual(self.select(ksu_ref=ref, tier=tier), (SUSFS, 'v2.3.0'))
+        for ref in ('main', 'd' * 40 + '\n', ''):
+            with self.subTest(ref=ref), self.assertRaisesRegex(pin.CompatibilityError, 'full commit SHA'):
+                self.select(ksu_ref=ref)
+
+    def test_invalid_reviewed_tree_or_unreviewed_base_is_rejected(self):
+        for changes in ({'reviewed_kernel_tree': 'main'}, {'reviewed_kernel_tree': 'e' * 40 + '\n'},
+                        {'reviewed_kernel_tree': 'e' * 40},
+                        {'version': 'v2.3.0', 'reviewed_kernel_tree': 'e' * 40},
+                        {'version': 'v2.3.0', 'reviewed_uapi_tree': 'f' * 40},
+                        {'version': 'v2.3.0', 'reviewed_kernel_tree': 'e' * 40, 'reviewed_uapi_tree': 'main'},
+                        {'source_ref': 'd' * 40},
+                        {'source_ref': 'main'}):
+            profile = copy.deepcopy(PROFILE)
+            profile['sukisu_susfs'].update(changes)
+            self.write_profile(profile)
+            with self.subTest(changes=changes), self.assertRaises(pin.CompatibilityError):
+                self.select()
+
     def test_checkout_verifies_full_sha_and_version_then_updates_environment(self):
         with patch.object(pin.subprocess, "run", side_effect=self.mock_git) as run:
             self.assertTrue(self.run_pin())

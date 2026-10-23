@@ -1,4 +1,3 @@
-import copy
 import io
 import json
 import os
@@ -43,44 +42,32 @@ class BuildSourceTests(unittest.TestCase):
         values.update(overrides)
         return sources.resolve_sources(**values)
 
-    def test_sukisu_stable_and_dev_pin_profile_with_or_without_susfs(self):
-        with patch.object(sources, 'github_json') as network:
-            for tier in ('Stable(标准)', 'Dev(开发)'):
-                for susfs in (True, False):
-                    with self.subTest(tier=tier, susfs=susfs):
-                        result = self.resolve(tier=tier, susfs=susfs)
-                        self.assertEqual(result, {'ksu_ref': KSU, 'ksu_repo': REPO, 'ksu_short': KSU[:7],
-                                                  'ksu_source_branch': '', 'effective_ksu_branch': tier})
-        network.assert_not_called()
+    def test_sukisu_stable_and_dev_follow_official_source_with_or_without_susfs(self):
+        for tier, branch, responses in (
+                ('Stable(标准)', 'v4.2.1-r1', [{'tag_name': 'v4.2.1-r1'}, {'sha': NEW_KSU.upper()}]),
+                ('Dev(开发)', 'dev', [{'default_branch': 'main'}, {'commit': {'sha': NEW_KSU.upper()}}])):
+            for susfs in (True, False):
+                with self.subTest(tier=tier, susfs=susfs), patch.object(sources, 'github_json') as api:
+                    api.side_effect = responses
+                    result = self.resolve(tier=tier, susfs=susfs)
+                    self.assertEqual(result, {'ksu_ref': NEW_KSU, 'ksu_repo': REPO, 'ksu_short': NEW_KSU[:7],
+                                              'ksu_source_branch': branch, 'effective_ksu_branch': tier})
+                    self.assertEqual(api.call_count, 2)
         self.assertFalse(hasattr(sources, 'subprocess'))
         self.assertNotIn('resolve-ksu-ref.sh', Path(sources.__file__).read_text(encoding='utf-8'))
 
-    def test_profile_source_ref_takes_precedence_and_is_normalized(self):
-        profile = copy.deepcopy(PROFILE)
-        profile['sukisu_susfs']['source_ref'] = NEW_KSU.upper()
-        self.write_profile(profile)
-        with patch.object(sources, 'github_json') as network:
+    def test_sukisu_resolution_does_not_read_compatibility_profile(self):
+        self.profile.write_text('invalid compatibility profile', encoding='utf-8')
+        for tier, responses in (
+                ('Stable(标准)', [{'tag_name': 'v4.2.1-r1'}, {'sha': NEW_KSU}]),
+                ('Dev(开发)', [{'default_branch': 'main'}, None, {'sha': NEW_KSU}])):
+            with self.subTest(tier=tier), patch.object(sources, 'github_json') as api:
+                api.side_effect = responses
+                self.assertEqual(self.resolve(tier=tier)['ksu_ref'], NEW_KSU)
+        self.profile.unlink()
+        with patch.object(sources, 'github_json') as api:
+            api.side_effect = [{'default_branch': 'main'}, None, {'sha': NEW_KSU}]
             self.assertEqual(self.resolve()['ksu_ref'], NEW_KSU)
-        network.assert_not_called()
-
-    def test_invalid_profile_source_is_never_replaced_with_live_head(self):
-        for ref in ('main', NEW_KSU + '\n', None):
-            profile = copy.deepcopy(PROFILE)
-            profile['sukisu_susfs']['source_ref'] = ref
-            self.write_profile(profile)
-            with self.subTest(ref=ref), patch.object(sources, 'github_json') as network:
-                with self.assertRaisesRegex(sources.SourceResolutionError, 'source_ref'):
-                    self.resolve()
-                network.assert_not_called()
-
-    def test_undeclared_pinned_tier_never_falls_back_to_a_live_branch(self):
-        profile = copy.deepcopy(PROFILE)
-        profile['sukisu_susfs']['tiers'] = ['Stable(标准)']
-        self.write_profile(profile)
-        with patch.object(sources, 'github_json') as network:
-            with self.assertRaisesRegex(sources.SourceResolutionError, 'pinned tier'):
-                self.resolve()
-        network.assert_not_called()
 
     def test_none_needs_no_profile_or_network(self):
         self.profile.unlink()
@@ -101,9 +88,9 @@ class BuildSourceTests(unittest.TestCase):
                 self.assertEqual(api.call_args_list[0].args, (sources.REPOSITORIES[variant],))
                 self.assertEqual(api.call_args_list[1].args[1], '/commits/next')
 
-    def test_other_variants_stable_resolve_official_release_tag(self):
+    def test_all_variants_stable_resolve_official_release_tag(self):
         self.profile.unlink()
-        for variant in ('Official', 'BakaSU'):
+        for variant in sources.REPOSITORIES:
             with self.subTest(variant=variant), patch.object(sources, 'github_json') as api:
                 api.side_effect = [{'tag_name': 'v4.2.1'}, {'sha': NEW_KSU}]
                 result = self.resolve(variant=variant, tier='Stable(标准)')
@@ -111,20 +98,22 @@ class BuildSourceTests(unittest.TestCase):
                 self.assertEqual(api.call_args_list[0].args[1], '/releases/latest')
                 self.assertEqual(api.call_args_list[1].args[1], '/commits/v4.2.1')
 
-    def test_other_variants_dev_uses_real_dev_or_explicit_default_fallback(self):
-        for development, expected_branch in [({'commit': {'sha': NEW_KSU}}, 'dev'), (None, 'main')]:
-            with self.subTest(expected_branch=expected_branch), patch.object(sources, 'github_json') as api:
-                api.side_effect = [{'default_branch': 'main'}, development, {'sha': NEW_KSU}]
-                result = self.resolve(variant='Official')
-                self.assertEqual(result['ksu_ref'], NEW_KSU)
-                self.assertEqual(result['ksu_source_branch'], expected_branch)
-                self.assertEqual(api.call_args_list[1].args[1], '/branches/dev')
-                self.assertEqual(api.call_count, 2 if development else 3)
+    def test_all_variants_dev_uses_real_dev_or_explicit_default_fallback(self):
+        for variant in sources.REPOSITORIES:
+            for development, expected_branch in [({'commit': {'sha': NEW_KSU}}, 'dev'), (None, 'main')]:
+                with self.subTest(variant=variant, expected_branch=expected_branch), patch.object(sources, 'github_json') as api:
+                    api.side_effect = [{'default_branch': 'main'}, development, {'sha': NEW_KSU}]
+                    result = self.resolve(variant=variant)
+                    self.assertEqual(result['ksu_ref'], NEW_KSU)
+                    self.assertEqual(result['ksu_source_branch'], expected_branch)
+                    self.assertEqual(api.call_args_list[1].args[1], '/branches/dev')
+                    self.assertEqual(api.call_count, 2 if development else 3)
 
     def test_missing_stable_release_fails_without_silent_tier_change(self):
-        with patch.object(sources, 'github_json', return_value=None):
-            with self.assertRaisesRegex(sources.SourceResolutionError, 'no published release'):
-                self.resolve(variant='Official', tier='Stable(标准)')
+        for variant in sources.REPOSITORIES:
+            with self.subTest(variant=variant), patch.object(sources, 'github_json', return_value=None):
+                with self.assertRaisesRegex(sources.SourceResolutionError, 'no published release'):
+                    self.resolve(variant=variant, tier='Stable(标准)')
 
     def test_custom_exact_ref_uses_only_requested_official_commit_lookup(self):
         for ref in ('feature/manager', 'v4.2.1', NEW_KSU.upper()):
@@ -177,13 +166,14 @@ class BuildSourceTests(unittest.TestCase):
         self.assertFalse(self.output.exists())
 
     def test_cli_writes_only_public_shared_source_outputs(self):
-        with redirect_stdout(io.StringIO()):
+        with patch.object(sources, 'github_json') as api, redirect_stdout(io.StringIO()):
+            api.side_effect = [{'default_branch': 'main'}, None, {'sha': NEW_KSU}]
             status = sources.main(['--root', str(self.root), '--variant', 'SukiSU',
                                    '--tier', 'Dev(开发)', '--susfs', 'true'])
         self.assertEqual(status, 0)
         self.assertEqual(self.output.read_text(encoding='utf-8'),
-                         f'ksu_ref={KSU}\nksu_repo={REPO}\nksu_short={KSU[:7]}\n'
-                         'ksu_source_branch=\neffective_ksu_branch=Dev(开发)\n')
+                         f'ksu_ref={NEW_KSU}\nksu_repo={REPO}\nksu_short={NEW_KSU[:7]}\n'
+                         'ksu_source_branch=main\neffective_ksu_branch=Dev(开发)\n')
 
 
 class GitHubSourceLookupTests(unittest.TestCase):

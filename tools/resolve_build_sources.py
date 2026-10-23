@@ -12,9 +12,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from pin_build_dependencies import CompatibilityError, TIERS as PROFILE_TIERS, load_profile
-
-
 ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 REPOSITORIES = {
@@ -168,16 +165,7 @@ def resolve_sources(root: Path, variant: str, tier: str, custom_ref: str = "", s
     validate_custom_ref(custom_ref)
     if variant == "None":
         return source_result("", "", "", tier)
-    root = root.resolve()
     repository = REPOSITORIES[variant]
-    if variant == "SukiSU" and tier in PROFILE_TIERS:
-        profile = load_profile(root)
-        if tier not in profile["tiers"]:
-            raise SourceResolutionError('Compatibility profile does not declare the requested pinned tier')
-        commit = profile.get("source_ref", profile["ksu_commits"][0])
-        if not isinstance(commit, str) or not SHA.fullmatch(commit):
-            raise SourceResolutionError("Compatibility source_ref must be a full commit SHA")
-        return source_result(commit.lower(), repository, "", tier)
     commit, branch = official_selection(repository, tier, custom_ref)
     if not SHA.fullmatch(commit):
         raise SourceResolutionError("KernelSU source must resolve to a full commit SHA")
@@ -200,7 +188,7 @@ def main(argv=None) -> int:
                 for key, value in result.items():
                     stream.write(f"{key}={value}\n")
         print(f"KernelSU source: {result['ksu_repo']}@{result['ksu_ref']}" if result["ksu_ref"] else "KernelSU source: None")
-    except (SourceResolutionError, CompatibilityError, OSError, UnicodeError) as error:
+    except (SourceResolutionError, OSError, UnicodeError) as error:
         print(f"KernelSU source selection failed: {error}", file=sys.stderr)
         return 1
     return 0

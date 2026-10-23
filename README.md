@@ -22,6 +22,12 @@ Actions 只有一个入口：**GKI 全属性内核构建矩阵**，提供 **编�
 
 首次验证可选择 `6.1` 和实际需要的一个版本，使用“仅 AK3”，确认编译与设备适配后再扩大矩阵。全部选择超过 GitHub 单个矩阵的 256 项限制时，需要缩小系列或目标范围。
 
+### 构建速度
+
+SukiSU APK 与内核环境准备并行运行；内核在开始编译前读取同一次运行的已签名 APK 身份，核对源码、包名、证书和版本。管理器构建失败时停止配对，发布也要求配套管理器成功。
+
+Gradle 与 Cargo 依赖可跨运行复用；5.10/5.15 保留 ccache，Bazel 系列新增最多 2 GiB 的磁盘缓存。缓存只用于复用构建工作，全部功能配置和产物校验仍会执行。首次构建需要建立缓存，实际耗时还受源码同步与 GitHub 运行机器排队影响，不能保证固定分钟数。
+
 ### 下载 Release
 
 成功完成一次内核构建或“仅编译 SukiSU 安装包”操作后，发布步骤会创建对应的 **Release**。在运行摘要中打开 Release，或进入仓库 **Releases** 下载文件：
@@ -55,7 +61,7 @@ SukiSU **Stable/Dev** 固定为本地适配的提交 `17ff94d9da24d589a9705227fd
 
 Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将本次源码固定为完整提交。启用 SUSFS 时会检查接口配套，不匹配会提前停止。
 
-**验证状态：** v2.3.0 的本地源码适配已加入，实际 C 编译、完整 Actions 与五系列构建验证仍未全部完成。此前 v2.2.0 的实测属于旧配置；旧版管理器 APK 已做过真实编译、签名和下载校验，本次新命名与 Release 发布流程仍待完整线上验证，不能沿用旧结果宣称已经通过。
+**验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 的旧接口与版本校验步骤顺序已修复，正在单独补测。`SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
 
 ### 自定义 KernelSU 提交
 
@@ -84,9 +90,11 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 
 发现变化时创建或更新待审核 PR；相同候选已有 PR 时跳过重复创建，更新检查不会自动合并或触发构建。PR 会分配并提醒仓库所有者。官方 GKI 目录更新合并后，新目标可供手动选择；SukiSU/SUSFS 的新候选不能视为已经完成自动升级或兼容验证。
 
+Android 目录检查缓存已核实的完整源码 SHA 与版本；未变化的提交直接复用结果，新提交再核对 Makefile。遇到官方接口限流时保留已核实进度，下次检查可接续；其他官方源的成功结果仍可创建更新 PR，运行摘要会明确指出未完成的检查。
+
 ### 官方候选 PR 令牌
 
-只读检测使用工作流自带令牌或官方公开接口。**`UPSTREAM_SYNC_TOKEN`** 仅用于创建官方候选与目录更新 PR，原有 Secret 可以继续使用，无需重新配置。当前日常 PR 只修改 `data/kernels.json` 与 `data/upstream-candidates.json`，所需仓库权限为 **Contents: Read and write** 和 **Pull requests: Read and write**；旧令牌的 Workflows 写入权限现可收窄。
+只读检测使用工作流自带令牌或官方公开接口。**`UPSTREAM_SYNC_TOKEN`** 用于创建官方候选与目录更新 PR，发布步骤也优先使用它，以支持给历史构建创建 Release。原有 Secret 可以继续使用，无需重新配置。日常 PR 只修改 `data/kernels.json` 与 `data/upstream-candidates.json`；令牌保留该仓库的 **Contents、Pull requests、Workflows: Read and write** 权限，其中 Workflows 用于历史构建的发布权限要求。
 
 如在新仓库部署，可使用仅授权该仓库的 fine-grained token，保存到同名 Actions Secret。令牌过期时续期或更新 Secret，勿将令牌放入代码或聊天。
 

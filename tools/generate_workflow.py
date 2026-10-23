@@ -148,7 +148,19 @@ zip_name="${GKI_ANDROID}-${GKI_KERNEL}.${GKI_SUBLEVEL}-${GKI_PATCH}-AnyKernel3.z
 BUILD_IF = "github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'"
 PREPARE_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译 SukiSU 安装包')"
 MANAGER_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '仅编译 SukiSU 安装包' || (inputs.operation == '编译内核' && inputs.kernelsu_variant == 'SukiSU'))"
-KERNEL_JOB_IF = "always() && !cancelled() && needs.prepare-matrix.result == 'success' && (inputs.kernelsu_variant != 'SukiSU' || needs.build-sukisu-manager.result == 'success') && (" + BUILD_IF + ")"
+KERNEL_JOB_IF = "always() && !cancelled() && needs.prepare-matrix.result == 'success' && (" + BUILD_IF + ")"
+
+# Cache dependency downloads and reusable Rust objects only. APKs, release
+# bundles and signing files live outside these explicitly enumerated paths.
+MANAGER_GRADLE_CACHE = '~/.gradle/caches/modules-2\n~/.gradle/wrapper\n'
+MANAGER_CARGO_CACHE = (
+    '~/.cargo/registry/index\n~/.cargo/registry/cache\n~/.cargo/registry/src\n~/.cargo/git/db\n'
+    'manager-source/target/*/release/deps\nmanager-source/target/*/release/build\n'
+    'manager-source/target/*/release/.fingerprint\nmanager-source/target/release/deps\n'
+    'manager-source/target/release/build\nmanager-source/target/release/.fingerprint\n'
+    '!manager-source/target/**/release/deps/ksud-*\n'
+    '!manager-source/target/**/release/deps/ksuinit-*\n'
+)
 
 
 def manager_job():
@@ -172,6 +184,12 @@ fi
                       'path': 'manager-source', 'fetch-depth': 0, 'persist-credentials': False}},
             {'name': '准备 Java 21', 'uses': 'actions/setup-java@v5',
              'with': {'distribution': 'temurin', 'java-version': '21'}},
+            {'name': '恢复管理器 Gradle 依赖', 'id': 'manager-gradle-cache',
+             'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 3,
+             'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
+             'with': {'path': MANAGER_GRADLE_CACHE,
+                      'key': "gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-${{ hashFiles('manager-source/manager/**/*.gradle.kts', 'manager-source/manager/**/gradle.properties', 'manager-source/manager/**/libs.versions.toml', 'manager-source/manager/gradle/wrapper/gradle-wrapper.properties') }}",
+                      'restore-keys': 'gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-'}},
             {'name': '准备 Android SDK 与 NDK',
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -184,7 +202,16 @@ echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 rustup default stable
 rustup target add aarch64-linux-android --toolchain stable
 '''},
+            {'name': '记录 Rust 编译器缓存版本', 'id': 'manager-rust-version',
+             'run': 'echo "version=$(rustc -vV | sha256sum | cut -c1-20)" >> "$GITHUB_OUTPUT"'},
+            {'name': '恢复管理器 Cargo 依赖', 'id': 'manager-cargo-cache',
+             'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 3,
+             'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
+             'with': {'path': MANAGER_CARGO_CACHE,
+                      'key': "gki-manager-cargo-v1-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh') }}",
+                      'restore-keys': 'gki-manager-cargo-v1-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-'}},
             {'name': '编译管理器与同版本 ksud',
+             'id': 'manager-build',
              'env': {'KSU_PACKAGE_NAME': 'com.cyzrqh.gki.sukisu',
                      'ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME': 'com.cyzrqh.gki.sukisu',
                      'ORG_GRADLE_PROJECT_KSU_NAME': 'SukiSU'},
@@ -205,11 +232,30 @@ bash tools/build_sukisu_manager.sh --source "$GITHUB_WORKSPACE/manager-source" -
                      'META_KSU_VERSION_NAME': '${{ steps.sign.outputs.manager_version_name }}',
                      'META_KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
                      'META_KSU_BRANCH': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
+                     'META_MANAGER_CERT_SIZE': '${{ steps.sign.outputs.manager_cert_size }}',
+                     'META_MANAGER_CERT_SHA256': '${{ steps.sign.outputs.manager_cert_sha256 }}',
+                     'META_APK_SHA256': '${{ steps.sign.outputs.apk_sha256 }}',
                      'META_ENABLE_SUSFS': '${{ inputs.enable_susfs }}'},
              'run': 'python3 tools/capture_manager_metadata.py --output manager-artifact/manager.json'},
+            {'name': '提供内核配对的公开签名信息', 'uses': 'actions/upload-artifact@v6',
+             'with': {'name': 'Manager-Identity-${{ needs.prepare-matrix.outputs.ksu_short }}',
+                      'path': 'manager-artifact/manager.json', 'if-no-files-found': 'error',
+                      'compression-level': 0, 'overwrite': True}},
             {'name': '上传 SukiSU 安装包', 'uses': 'actions/upload-artifact@v6',
              'with': {'name': 'Release-Manager-${{ needs.prepare-matrix.outputs.ksu_short }}',
                       'path': 'manager-artifact/*', 'if-no-files-found': 'error', 'compression-level': 0}},
+            # Publish APK identity before optional cache uploads, so dependent
+            # kernels can validate the signature without waiting for cache IO.
+            {'name': '保存管理器 Gradle 依赖', 'uses': 'actions/cache/save@v5',
+             'if': "always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key != '' && steps.manager-gradle-cache.outputs.cache-hit != 'true'",
+             'continue-on-error': True, 'timeout-minutes': 3,
+             'with': {'path': MANAGER_GRADLE_CACHE,
+                      'key': '${{ steps.manager-gradle-cache.outputs.cache-primary-key }}'}},
+            {'name': '保存管理器 Cargo 依赖', 'uses': 'actions/cache/save@v5',
+             'if': "always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'",
+             'continue-on-error': True, 'timeout-minutes': 3,
+             'with': {'path': MANAGER_CARGO_CACHE,
+                      'key': '${{ steps.manager-cargo-cache.outputs.cache-primary-key }}'}},
         ],
     }
 
@@ -361,11 +407,17 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
 ''',
     })
     steps.insert(steps.index(compile_step), {
+        'name': '编译前读取本次 APK 的实际签名信息', 'if': "inputs.ksu_variant == 'SukiSU'",
+        'env': {'GH_TOKEN': '${{ github.token }}',
+                'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
+                'KSU_SHORT': '${{ needs.prepare-matrix.outputs.ksu_short }}'},
+        'run': '''python3 "$GITHUB_WORKSPACE/tools/wait_manager_identity.py" \\
+  --expected-ref "$KSU_REF" --artifact-name "Manager-Identity-$KSU_SHORT" \\
+  --github-env "$GITHUB_ENV"
+''',
+    })
+    steps.insert(steps.index(compile_step), {
         'name': '配对管理器包名与签名', 'if': "inputs.ksu_variant == 'SukiSU'",
-        'env': {'MANAGER_PACKAGE': '${{ needs.build-sukisu-manager.outputs.manager_package }}',
-                'MANAGER_CERT_SIZE': '${{ needs.build-sukisu-manager.outputs.manager_cert_size }}',
-                'MANAGER_CERT_SHA256': '${{ needs.build-sukisu-manager.outputs.manager_cert_sha256 }}',
-                'MANAGER_VERSION_CODE': '${{ needs.build-sukisu-manager.outputs.manager_version_code }}'},
         'run': '''python3 "$GITHUB_WORKSPACE/tools/set_manager_signature.py" \\
   --kernel-root "$KERNEL_ROOT" --package "$MANAGER_PACKAGE" \\
   --cert-size "$MANAGER_CERT_SIZE" --cert-sha256 "$MANAGER_CERT_SHA256" \\
@@ -409,8 +461,8 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
                  'META_KSU_VARIANT': '${{ inputs.ksu_variant }}',
                  'META_KSU_BRANCH': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
                  'META_KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
-                 'META_KSU_VERSION_CODE': "${{ inputs.ksu_variant == 'SukiSU' && needs.build-sukisu-manager.outputs.manager_version_code || env.KSU_VERSION }}",
-                 'META_KSU_VERSION_NAME': "${{ inputs.ksu_variant == 'SukiSU' && needs.build-sukisu-manager.outputs.manager_version_name || '' }}",
+                 'META_KSU_VERSION_CODE': "${{ inputs.ksu_variant == 'SukiSU' && env.MANAGER_VERSION_CODE || env.KSU_VERSION }}",
+                 'META_KSU_VERSION_NAME': "${{ inputs.ksu_variant == 'SukiSU' && env.MANAGER_VERSION_NAME || '' }}",
                  'META_ENABLE_SUSFS': '${{ inputs.enable_susfs }}',
                  'META_EXPECTED_SUSFS_VERSION': '${{ env.SUSFS_COMPAT_VERSION }}',
                  'ARTIFACT_MODE': '${{ inputs.artifact_mode }}'},
@@ -455,9 +507,9 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
     summary['run'] = re.sub(r'^echo "管理器包名[^\n]+$',
                             'echo "管理器包名    : ${GKI_MANAGER_PACKAGE:-由所选 KernelSU 决定}"',
                             summary['run'], count=1, flags=re.M)
-    job['env']['GKI_MANAGER_PACKAGE'] = '${{ needs.build-sukisu-manager.outputs.manager_package }}'
     job['if'] = KERNEL_JOB_IF
-    job['needs'] = ['prepare-matrix', 'build-sukisu-manager']
+    job['needs'] = ['prepare-matrix']
+    job['permissions'] = {'contents': 'read', 'actions': 'read'}
     job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
                        'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'}
     job['runs-on'] = job['runs-on'].replace("'ubuntu-latest'", "'ubuntu-24.04'")

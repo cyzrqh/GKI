@@ -241,6 +241,8 @@ job:
       echo "内核选项覆盖  : ${{ inputs.custom_kernel_options != '' }}"
       echo "Stock Config  : 自动检测 config/stock_defconfig"
       echo "========================================"
+  - name: 检出代码仓库
+    uses: actions/checkout@v6
   - name: 校验自定义内核版本组合
     if: inputs.source_mode != 'custom_git'
     shell: bash
@@ -440,8 +442,6 @@ job:
       rm_cmd: rmz
       rmz_version: 3.1.1
       testing: false
-  - name: 检出代码仓库
-    uses: actions/checkout@v6
   - name: 校验类 LineageOS 源码构建参数
     if: inputs.source_mode == 'custom_git'
     env:
@@ -6092,7 +6092,32 @@ job:
       if not changed:
           print("SukiSU/BakaSU android16-6.12 专项兼容修复无需修改。")
       PY
+  - name: 配置 Bazel 磁盘缓存
+    id: bazel-cache-config
+    run: |
+      set -euo pipefail
+      # build.sh kernels retain their ccache path; cache only Bazel action results.
+      if [ ! -f "$KERNEL_ROOT/build/build.sh" ]; then
+        cache_dir="$RUNNER_TEMP/gki-bazel-${{ inputs.android_version }}-${{ inputs.kernel_version }}"
+        mkdir -p "$cache_dir"
+        echo "BAZEL_DISK_CACHE=$cache_dir" >> "$GITHUB_ENV"
+        echo 'enabled=true' >> "$GITHUB_OUTPUT"
+      fi
+  - name: 恢复 Bazel 磁盘缓存
+    id: bazel-cache
+    if: steps.bazel-cache-config.outputs.enabled == 'true'
+    uses: actions/cache/restore@v5
+    continue-on-error: true
+    timeout-minutes: 3
+    env:
+      SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
+    with:
+      path: ${{ env.BAZEL_DISK_CACHE }}
+      key: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
+      restore-keys: |
+        gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-
   - name: 编译内核
+    id: compile-kernel
     uses: nick-fields/retry@v4
     with:
       timeout_minutes: 30
@@ -6335,7 +6360,7 @@ job:
           if [ "${{ inputs.kernel_version }}" = "6.12" ]; then
             LTO_FLAG="--lto=none"
           fi
-          BAZEL_DISK_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/bazel-disk"
+          : "${BAZEL_DISK_CACHE:?Bazel disk cache must be configured before compiling}"
           mkdir -p "$BAZEL_DISK_CACHE"
           tools/bazel build --disk_cache="$BAZEL_DISK_CACHE" --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
           strings ./bazel-bin/common/kernel_aarch64/Image | grep 'Linux version'
@@ -6344,6 +6369,57 @@ job:
         echo "当前 KSU 最新提交日期: ${KSU_LATEST_COMMIT_DATE}"
         echo "当前 SUSFS 最新提交日期: ${SUSFS_LATEST_COMMIT_DATE}"
         echo "如果日期不同或相差过远则补丁失效、编译失败"
+  - name: 限制 Bazel 缓存上传体积
+    id: bazel-cache-trim
+    if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome != 'skipped'
+    continue-on-error: true
+    timeout-minutes: 2
+    env:
+      BAZEL_CACHE_MAX_BYTES: '2147483648'
+    run: |
+      set -euo pipefail
+      # Stop idle Bazel writes before pruning; never cache its output tree.
+      (cd "$KERNEL_ROOT" && timeout 20s tools/bazel shutdown) || true
+      python3 - <<'PY'
+      import os
+      import stat
+      from pathlib import Path
+
+      root = Path(os.environ['BAZEL_DISK_CACHE'])
+      temporary = Path(os.environ['RUNNER_TEMP']).resolve()
+      if root.is_symlink() or root.resolve().parent != temporary or not root.name.startswith('gki-bazel-'):
+          raise SystemExit('Refusing to prune a cache outside the dedicated runner temporary directory')
+      limit = int(os.environ['BAZEL_CACHE_MAX_BYTES'])
+      if limit <= 0:
+          raise SystemExit('Bazel cache byte limit must be positive')
+      files = []
+      for directory, _, names in os.walk(root, followlinks=False):
+          for name in names:
+              path = Path(directory) / name
+              info = path.lstat()
+              if stat.S_ISREG(info.st_mode):
+                  files.append((max(info.st_atime_ns, info.st_mtime_ns), info.st_size, path))
+      total = sum(size for _, size, _ in files)
+      original = total
+      # Disk cache AC/CAS entries are disposable; absent blobs become action misses.
+      # Keep the most recently used entries without relying on newer Bazel GC flags.
+      for _, size, path in sorted(files):
+          if total <= limit:
+              break
+          path.unlink()
+          total -= size
+      with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8') as output:
+          output.write(f'ready={str(total > 0).lower()}\n')
+      print(f'Bazel cache upload: {total / 1024**2:.1f} MiB (before trimming: {original / 1024**2:.1f} MiB)')
+      PY
+  - name: 保存 Bazel 磁盘缓存
+    if: always() && !cancelled() && steps.bazel-cache-trim.outputs.ready == 'true' && steps.bazel-cache.outputs.cache-primary-key != '' && steps.bazel-cache.outputs.cache-hit != 'true'
+    uses: actions/cache/save@v5
+    continue-on-error: true
+    timeout-minutes: 3
+    with:
+      path: ${{ env.BAZEL_DISK_CACHE }}
+      key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
   - name: 应用 KPM 补丁 (SukiSU/BakaSU)
     if: inputs.use_kpm && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU')
     env:

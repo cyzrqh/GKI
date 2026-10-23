@@ -26,6 +26,7 @@ def makefile(family="6.1", sublevel=999):
 class FakeProvider:
     def __init__(self):
         self.repositories = {"manifest": {}, "common": {}}
+        self.tag_refs = {}
         self.makefiles = {}
         self.reads = []
 
@@ -47,6 +48,10 @@ class FakeProvider:
     def makefile(self, commit):
         self.reads.append(("makefile", commit))
         return self.makefiles[commit]
+
+    def tags(self):
+        self.reads.append(("tags", "common"))
+        return self.tag_refs
 
 
 class KernelCatalogTests(unittest.TestCase):
@@ -219,8 +224,95 @@ class KernelCatalogTests(unittest.TestCase):
                 catalog.apply_candidates(self.root, candidates)
         self.assertEqual(self.path.read_bytes(), self.original)
 
+    def test_incremental_snapshot_reuses_unchanged_commit_without_losing_unmerged_candidates(self):
+        snapshot = self.root / "cache/refs.json"
+        provider = FakeProvider().branch()
+        first = catalog.update_catalog(self.root, provider, snapshot_file=snapshot)
+        self.assertEqual(first["added"], 1)
+        self.assertEqual(json.loads(snapshot.read_text())["versions"], {"a" * 40: "6.1.999"})
+        provider.reads.clear()
+        second = catalog.update_catalog(self.root, provider, snapshot_file=snapshot)
+        self.assertEqual(second, first)
+        self.assertEqual(provider.reads, [("refs", "manifest"), ("refs", "common")])
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_same_month_changed_head_is_verified_and_new_sublevel_remains_a_choice(self):
+        snapshot = self.root / "refs.json"
+        provider = FakeProvider().branch(month="2025-08", sublevel=145)
+        self.assertFalse(catalog.update_catalog(self.root, provider, snapshot_file=snapshot)["has_updates"])
+        provider.branch(month="2025-08", sublevel=999, commit="b" * 40)
+        provider.reads.clear()
+        report = catalog.update_catalog(self.root, provider, snapshot_file=snapshot, write=True)
+        self.assertEqual(report["added"], 1)
+        self.assertEqual([item for item in provider.reads if item[0] == "makefile"], [("makefile", "b" * 40)])
+        self.assertEqual(len(matrix.build_matrix(self.root, targets="6.1.145@2025-08,6.1.999@2025-08")), 2)
+
+    def test_rate_limit_keeps_only_verified_reads_and_next_probe_resumes_without_bursting_again(self):
+        snapshot = self.root / "refs.json"
+        provider = FakeProvider().branch().branch(month="2027-01", sublevel=1000, commit="b" * 40)
+        read = provider.makefile
+
+        def limited(commit):
+            if commit == "b" * 40:
+                raise catalog.CatalogError("HTTP 429")
+            return read(commit)
+
+        with patch.object(provider, "makefile", side_effect=limited), self.assertRaisesRegex(catalog.CatalogError, "429"):
+            catalog.update_catalog(self.root, provider, snapshot_file=snapshot)
+        self.assertEqual(json.loads(snapshot.read_text())["versions"], {"a" * 40: "6.1.999"})
+        self.assertEqual(self.path.read_bytes(), self.original)
+        provider.reads.clear()
+        report = catalog.update_catalog(self.root, provider, snapshot_file=snapshot)
+        self.assertEqual(report["added"], 2)
+        self.assertEqual([item for item in provider.reads if item[0] == "makefile"], [("makefile", "b" * 40)])
+
+    def test_catalog_fixed_commit_and_exact_official_tag_can_seed_snapshot(self):
+        for ref in ("a" * 40, "refs/tags/android14-release"):
+            with self.subTest(ref=ref):
+                document = json.loads(self.original)
+                document["entries"].append({"android_version": "android14", "kernel_version": "6.1",
+                                            "kernel": "6.1.999", "date": "2026-12", "ref": ref, "revision": "r1"})
+                self.path.write_text(json.dumps(document))
+                provider = FakeProvider().branch()
+                provider.tag_refs["refs/tags/android14-release"] = "a" * 40
+                snapshot = self.root / ("refs-" + uuid.uuid4().hex + ".json")
+                report = catalog.update_catalog(self.root, provider, snapshot_file=snapshot)
+                self.assertFalse(report["has_updates"])
+                self.assertNotIn(("makefile", "a" * 40), provider.reads)
+                self.assertEqual(json.loads(snapshot.read_text())["versions"], {"a" * 40: "6.1.999"})
+
+    def test_invalid_snapshot_fails_before_network_or_catalog_changes(self):
+        snapshot = self.root / "refs.json"
+        invalid = [{"schema_version": 1, "versions": {"main": "6.1.999"}},
+                   {"schema_version": 1, "versions": {"a" * 40: "6.18.1"}},
+                   {"schema_version": True, "versions": {}}, {"schema_version": 2, "versions": {}}]
+        for value in invalid:
+            with self.subTest(value=value):
+                snapshot.write_text(json.dumps(value))
+                provider = FakeProvider().branch()
+                with self.assertRaises(ValueError):
+                    catalog.update_catalog(self.root, provider, snapshot_file=snapshot)
+                self.assertEqual(provider.reads, [])
+        self.assertEqual(self.path.read_bytes(), self.original)
+
+    def test_check_cli_can_persist_only_the_explicit_snapshot(self):
+        snapshot = self.root / "cache/refs.json"
+        with redirect_stdout(io.StringIO()):
+            status = catalog.main(["--root", str(self.root), "--check", "--snapshot-file", str(snapshot)],
+                                  provider=FakeProvider().branch())
+        self.assertEqual(status, 0)
+        self.assertTrue(snapshot.is_file())
+        self.assertEqual(self.path.read_bytes(), self.original)
+
 
 class OfficialProviderTests(unittest.TestCase):
+    def test_annotated_official_tag_uses_peeled_commit(self):
+        provider = catalog.OfficialProvider()
+        value = {"android14-release": {"value": "a" * 40, "peeled": "B" * 40}}
+        with patch.object(provider, "get", return_value=(")]}'\n" + json.dumps(value)).encode()) as get:
+            self.assertEqual(provider.tags(), {"refs/tags/android14-release": "b" * 40})
+        get.assert_called_once_with("common/+refs/tags?format=JSON")
+
     def test_gitiles_refs_and_base64_makefile_responses(self):
         provider = catalog.OfficialProvider()
         refs = {"android14-6.1-2026-12": {"value": "A" * 40}}

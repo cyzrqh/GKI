@@ -57,13 +57,19 @@ class OfficialProvider:
         raise CatalogError("Cannot read the official Android kernel source")
 
     def refs(self, repository: str) -> dict[str, str]:
+        return self._refs(repository, "heads")
+
+    def tags(self) -> dict[str, str]:
+        return self._refs("common", "tags")
+
+    def _refs(self, repository: str, namespace: str) -> dict[str, str]:
         if repository not in ("manifest", "common"):
             raise CatalogError("Only official manifest/common repositories are supported")
         # The common repository's full refs include Gerrit change refs
         # and can exceed the response limit or be truncated.
         # Gitiles returns only branch names, relative to refs/heads/, for
         # this namespace endpoint (including deprecated/... branches).
-        response = self.get(repository + "/+refs/heads?format=JSON")
+        response = self.get(repository + "/+refs/" + namespace + "?format=JSON")
         try:
             raw = response.decode("utf-8")
             if raw.startswith(")]}'\n"):
@@ -80,13 +86,20 @@ class OfficialProvider:
             commit = value.get("value") if isinstance(value, dict) else None
             if not isinstance(commit, str) or not SHA.fullmatch(commit):
                 raise CatalogError("Official Android refs contain an invalid commit ID")
-            ref = "refs/heads/" + branch
+            if namespace == "tags" and "peeled" in value:
+                commit = value["peeled"]
+                if not isinstance(commit, str) or not SHA.fullmatch(commit):
+                    raise CatalogError("Official Android tag contains an invalid peeled commit ID")
+            ref = "refs/" + namespace + "/" + branch
             refs[ref] = commit.lower()
         return refs
 
     def makefile(self, commit: str) -> str:
         if not isinstance(commit, str) or not SHA.fullmatch(commit):
             raise CatalogError("Makefile reads require a full official commit ID")
+        # A cold snapshot may need historical versions once. Pace those reads
+        # instead of bursting through every monthly branch in a minute.
+        time.sleep(1)
         raw = self.get("common/+/" + commit.lower() + "/Makefile?format=TEXT")
         try:
             return base64.b64decode(b"".join(raw.split()), validate=True).decode("utf-8")
@@ -133,8 +146,49 @@ def makefile_version(content: str, family: str) -> str:
     return _full_version(".".join(components), family, "Official kernel Makefile")
 
 
-def discover_updates(root: Path, provider=None) -> tuple[dict, list[dict]]:
+def load_snapshot(path: Path | None) -> dict[str, str]:
+    if path is None or not path.exists():
+        return {}
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 2 * 1024 * 1024:
+        raise CatalogError("Official ref snapshot must be a small regular JSON file")
+    try:
+        document = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as error:
+        raise CatalogError("Cannot read the official ref snapshot") from error
+    if (not isinstance(document, dict) or set(document) != {"schema_version", "versions"}
+            or type(document["schema_version"]) is not int or document["schema_version"] != 1
+            or not isinstance(document["versions"], dict) or len(document["versions"]) > 10000):
+        raise CatalogError("Unsupported official ref snapshot schema")
+    versions = {}
+    for commit, full in document["versions"].items():
+        if not isinstance(commit, str) or not SHA.fullmatch(commit) or commit != commit.lower():
+            raise CatalogError("Official ref snapshot contains an invalid commit ID")
+        family = full.rsplit(".", 1)[0] if isinstance(full, str) else ""
+        if family not in KERNELS:
+            raise CatalogError("Official ref snapshot contains an unsupported kernel family")
+        versions[commit] = _full_version(full, family, "Official ref snapshot")
+    return versions
+
+
+def save_snapshot(path: Path | None, versions: dict[str, str]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.is_symlink():
+        raise CatalogError("Official ref snapshot cannot be a symbolic link")
+    staged = path.with_name(".refs-" + uuid.uuid4().hex + ".json")
+    try:
+        with staged.open("x", encoding="utf-8", newline="\n") as stream:
+            json.dump({"schema_version": 1, "versions": versions}, stream, sort_keys=True, indent=2)
+            stream.write("\n")
+        os.replace(staged, path)
+    finally:
+        staged.unlink(missing_ok=True)
+
+
+def discover_updates(root: Path, provider=None, *, snapshot_file: Path | None = None) -> tuple[dict, list[dict]]:
     document = load_catalog(root)
+    versions = load_snapshot(snapshot_file)
     provider = provider or OfficialProvider()
     manifests = monthly_refs(provider.refs("manifest"), "manifest")
     common = monthly_refs(provider.refs("common"), "common")
@@ -143,13 +197,45 @@ def discover_updates(root: Path, provider=None) -> tuple[dict, list[dict]]:
         raise CatalogError("No matching monthly branches found in official manifest/common refs")
     known = {(entry["android_version"], entry["kernel_version"], entry["kernel"], entry["date"])
              for entry in document["entries"]}
-    makefiles = {}
+    # Full commit refs in the maintained catalog already bind their version to
+    # that exact source. Mutable branch names alone are never a cache proof.
+    fixed = {}
+    tagged = {}
+    for entry in document["entries"]:
+        if entry["date"] == "lts":
+            continue
+        ref = entry.get("ref", "")
+        if SHA.fullmatch(ref):
+            commit = ref.lower()
+            if commit in fixed and fixed[commit] != entry["kernel"]:
+                raise CatalogError("The catalog assigns different kernel versions to one fixed commit")
+            fixed[commit] = entry["kernel"]
+        elif ref.startswith("refs/tags/"):
+            key = entry["android_version"], entry["kernel_version"], entry["date"]
+            tagged.setdefault(key, []).append(entry)
+    tags = None
     added = []
     for android, family, date in candidates:
         _, commit = common[(android, family, date)]
-        if commit not in makefiles:
-            makefiles[commit] = provider.makefile(commit)
-        full = makefile_version(makefiles[commit], family)
+        full = versions.get(commit) or fixed.get(commit)
+        if full is None and (android, family, date) in tagged:
+            if tags is None:
+                tags = provider.tags()
+            matches = {entry["kernel"] for entry in tagged[(android, family, date)]
+                       if tags.get(entry["ref"]) == commit}
+            if len(matches) > 1:
+                raise CatalogError("Official tags assign different kernel versions to one commit")
+            if matches:
+                full = matches.pop()
+        if full is None:
+            full = makefile_version(provider.makefile(commit), family)
+        full = _full_version(full, family, "Official ref snapshot")
+        if commit not in versions:
+            versions[commit] = full
+            # Preserve each independently verified read, even if a later
+            # request is rate limited. Candidates are recomputed against the
+            # catalog on the next run, so unmerged versions are not lost.
+            save_snapshot(snapshot_file, versions)
         identity = android, family, full, date
         if identity in known:
             continue
@@ -202,8 +288,8 @@ def save_catalog(root: Path, document: dict, added: list[dict], *, write: bool) 
             "candidates_json": json.dumps(added, ensure_ascii=False, separators=(",", ":"))}
 
 
-def update_catalog(root: Path, provider=None, *, write: bool = False) -> dict:
-    document, added = discover_updates(root, provider)
+def update_catalog(root: Path, provider=None, *, write: bool = False, snapshot_file: Path | None = None) -> dict:
+    document, added = discover_updates(root, provider, snapshot_file=snapshot_file)
     return save_catalog(root, document, added, write=write)
 
 
@@ -215,6 +301,8 @@ def main(argv=None, *, provider=None) -> int:
     mode.add_argument("--update", action="store_true", help="Append verified official rows to data/kernels.json")
     parser.add_argument("--apply-candidates-json", help="Apply previously probed monthly rows offline (implies writing)")
     parser.add_argument("--github-output", nargs="?", const="")
+    parser.add_argument("--snapshot-file", type=Path,
+                        help="Persist verified commit/version reads for incremental checks (also in --check mode)")
     args = parser.parse_args(argv)
     try:
         if args.apply_candidates_json is not None:
@@ -226,7 +314,7 @@ def main(argv=None, *, provider=None) -> int:
                 raise CatalogError("Offline catalog candidates are not valid JSON") from error
             report = apply_candidates(args.root, candidates)
         else:
-            report = update_catalog(args.root, provider, write=args.update)
+            report = update_catalog(args.root, provider, write=args.update, snapshot_file=args.snapshot_file)
         if args.github_output is not None:
             output = args.github_output or os.environ.get("GITHUB_OUTPUT")
             if not output:

@@ -1,0 +1,319 @@
+#!/usr/bin/env python3
+"""Wait for this workflow run's signed SukiSU APK public identity."""
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+import io
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import time
+from typing import Callable
+import zipfile
+
+
+MAX_ARCHIVE_BYTES = 64 * 1024
+MAX_METADATA_BYTES = 16 * 1024
+SHA40 = re.compile(r"[0-9a-f]{40}\Z")
+SHA256 = re.compile(r"[0-9a-f]{64}\Z")
+PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+\Z")
+APK_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.+-]*\.apk\Z")
+DEFAULT_MANAGER_JOB = "编译配套 SukiSU 管理器 APK"
+
+
+class IdentityError(RuntimeError):
+    """Fail before compiling a kernel with an unverified manager identity."""
+
+
+class StaleIdentity(IdentityError):
+    """An earlier attempt's artifact is waiting to be replaced by the manager."""
+
+
+def positive_integer(value, label: str, maximum: int = 2**63 - 1) -> int:
+    if (isinstance(value, bool) or not isinstance(value, (str, int))
+            or not re.fullmatch(r"[0-9]+", str(value))
+            or not 1 <= int(value) <= maximum):
+        raise IdentityError(f"Invalid {label}")
+    return int(value)
+
+
+def validate_repository(value: str) -> str:
+    if (not isinstance(value, str) or not re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}", value)
+            or value.split("/")[1] in (".", "..")):
+        raise IdentityError("Invalid workflow repository")
+    return value
+
+
+@dataclass(frozen=True)
+class Expected:
+    repository: str
+    run_id: int
+    run_attempt: int
+    head_sha: str
+    ksu_ref: str
+    artifact_name: str
+    manager_job: str = DEFAULT_MANAGER_JOB
+
+    def validate(self):
+        validate_repository(self.repository)
+        positive_integer(self.run_id, "workflow run ID")
+        positive_integer(self.run_attempt, "workflow run attempt")
+        if not SHA40.fullmatch(self.head_sha) or not SHA40.fullmatch(self.ksu_ref):
+            raise IdentityError("Workflow and KernelSU references must be full commit hashes")
+        if (self.artifact_name != "Manager-Identity-" + self.ksu_ref[:7]
+                or not self.manager_job or any(ord(c) < 32 for c in self.manager_job)):
+            raise IdentityError("Invalid manager identity artifact or job name")
+
+
+def _no_duplicate_keys(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise IdentityError("Duplicate manager metadata key")
+        result[key] = value
+    return result
+
+
+def _check_strings(value):
+    if isinstance(value, str) and any(ord(c) < 32 or ord(c) == 127 for c in value):
+        raise IdentityError("Manager metadata contains a control character")
+    if isinstance(value, dict):
+        for key, child in value.items():
+            _check_strings(key)
+            _check_strings(child)
+    elif isinstance(value, list):
+        for child in value:
+            _check_strings(child)
+
+
+def validate_metadata(metadata: dict, expected: Expected, *,
+                      reusable_attempt: int | None = None) -> dict[str, str]:
+    """Return only verified public values that are safe for GITHUB_ENV."""
+    if not isinstance(metadata, dict):
+        raise IdentityError("Manager metadata must be an object")
+    _check_strings(metadata)
+    required = ("package", "file", "ksu_variant", "ksu_ref", "ksu_version_code",
+                "ksu_version_name", "manager_cert_size", "manager_cert_sha256", "apk_sha256",
+                "producer_repository", "producer_run_id", "producer_run_attempt", "producer_head_sha")
+    if any(key not in metadata for key in required):
+        raise IdentityError("Signed manager metadata is incomplete")
+    if (not isinstance(metadata["producer_repository"], str)
+            or metadata["producer_repository"].lower() != expected.repository.lower()
+            or positive_integer(metadata["producer_run_id"], "producer run ID") != expected.run_id
+            or metadata["producer_head_sha"] != expected.head_sha):
+        raise IdentityError("Manager identity belongs to a different repository, run or workflow commit")
+    if metadata["ksu_variant"] != "SukiSU" or metadata["ksu_ref"] != expected.ksu_ref:
+        raise IdentityError("Manager and kernel KernelSU source commits differ")
+    attempt = positive_integer(metadata["producer_run_attempt"], "producer run attempt")
+    if attempt < expected.run_attempt and attempt != reusable_attempt:
+        raise StaleIdentity("Waiting for this attempt's signed manager identity")
+    if attempt > expected.run_attempt:
+        raise IdentityError("Manager identity belongs to a different workflow attempt")
+    package, filename = metadata["package"], metadata["file"]
+    if not isinstance(package, str) or len(package) > 255 or not PACKAGE.fullmatch(package):
+        raise IdentityError("Invalid signed manager Android package ID")
+    if not isinstance(filename, str) or len(filename) > 240 or not APK_NAME.fullmatch(filename):
+        raise IdentityError("Invalid signed manager APK filename")
+    size = positive_integer(metadata["manager_cert_size"], "manager certificate size", 4096)
+    if size < 64:
+        raise IdentityError("Invalid manager certificate size")
+    for key in ("manager_cert_sha256", "apk_sha256"):
+        if not isinstance(metadata[key], str) or not SHA256.fullmatch(metadata[key]):
+            raise IdentityError("Invalid public manager SHA256 metadata")
+    code = positive_integer(metadata["ksu_version_code"], "manager version code", 2_100_000_000)
+    version = metadata["ksu_version_name"]
+    if not isinstance(version, str) or not version.strip() or len(version) > 128:
+        raise IdentityError("Invalid manager version name")
+    return {"MANAGER_PACKAGE": package, "MANAGER_CERT_SIZE": str(size),
+            "MANAGER_CERT_SHA256": metadata["manager_cert_sha256"],
+            "MANAGER_VERSION_CODE": str(code), "MANAGER_VERSION_NAME": version,
+            "MANAGER_APK_FILENAME": filename, "MANAGER_APK_SHA256": metadata["apk_sha256"],
+            "GKI_MANAGER_PACKAGE": package}
+
+
+def read_identity_archive(archive: bytes, expected: Expected, *,
+                          reusable_attempt: int | None = None) -> dict[str, str]:
+    if not archive or len(archive) > MAX_ARCHIVE_BYTES:
+        raise IdentityError("Manager identity ZIP exceeds the 64 KiB limit")
+    try:
+        with zipfile.ZipFile(io.BytesIO(archive)) as bundle:
+            members = bundle.infolist()
+            if len(members) != 1 or members[0].filename != "manager.json":
+                raise IdentityError("Manager identity ZIP must contain only manager.json")
+            member = members[0]
+            if (member.is_dir() or member.flag_bits & 1 or member.file_size > MAX_METADATA_BYTES
+                    or stat.S_ISLNK(member.external_attr >> 16)):
+                raise IdentityError("Unsafe manager identity ZIP member")
+            with bundle.open(member) as source:
+                raw = source.read(MAX_METADATA_BYTES + 1)
+            if len(raw) > MAX_METADATA_BYTES:
+                raise IdentityError("Manager metadata exceeds the size limit")
+            metadata = json.loads(raw.decode("utf-8"), object_pairs_hook=_no_duplicate_keys)
+    except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, UnicodeError,
+            json.JSONDecodeError, OSError, NotImplementedError):
+        raise IdentityError("Could not read a valid manager identity ZIP") from None
+    return validate_metadata(metadata, expected, reusable_attempt=reusable_attempt)
+
+
+class GitHubReader:
+    """Use runner-provided gh credentials only for this repository's read APIs."""
+    def __init__(self, repository: str):
+        self.repository = validate_repository(repository)
+
+    def get(self, suffix: str, *, binary: bool = False):
+        if not re.fullmatch(r"actions/[A-Za-z0-9_/?=&.-]+", suffix) or ".." in suffix:
+            raise IdentityError("Invalid workflow API path")
+        endpoint = f"repos/{self.repository}/{suffix}"
+        # No token is put in command arguments, and gh errors are not echoed.
+        # Only public metadata leaves this process; signing secrets are absent.
+        environment = {key: value for key, value in os.environ.items()
+                       if key not in ("SUKISU_APK_KEYSTORE", "SUKISU_APK_PASSWORD")}
+        try:
+            response = subprocess.run(
+                ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint],
+                capture_output=True, timeout=60, env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            raise IdentityError("GitHub could not read this workflow's manager identity") from None
+        if response.returncode:
+            raise IdentityError("GitHub could not read this workflow's manager identity")
+        if binary:
+            if len(response.stdout) > MAX_ARCHIVE_BYTES:
+                raise IdentityError("Manager identity ZIP exceeds the 64 KiB limit")
+            return response.stdout
+        try:
+            return json.loads(response.stdout)
+        except (ValueError, UnicodeError):
+            raise IdentityError("Invalid workflow API response") from None
+
+
+def _pages(reader, suffix: str, key: str):
+    # Avoid silently missing the identity in a large matrix's artifact list.
+    for page in range(1, 101):
+        separator = "&" if "?" in suffix else "?"
+        data = reader.get(f"{suffix}{separator}per_page=100&page={page}")
+        if not isinstance(data, dict) or not isinstance(data.get(key), list):
+            raise IdentityError("Invalid workflow API listing")
+        values = data[key]
+        yield from values
+        if len(values) < 100:
+            return
+    raise IdentityError("Workflow API listing is unexpectedly large")
+
+
+def _check_run(reader, expected: Expected):
+    run = reader.get(f"actions/runs/{expected.run_id}/attempts/{expected.run_attempt}")
+    if (not isinstance(run, dict) or run.get("id") != expected.run_id
+            or run.get("head_sha") != expected.head_sha
+            or run.get("run_attempt") != expected.run_attempt
+            or not isinstance(run.get("repository"), dict)
+            or str(run["repository"].get("full_name", "")).lower() != expected.repository.lower()):
+        raise IdentityError("Workflow API returned a different repository, run, attempt or commit")
+    return run
+
+
+def _check_manager_job(reader, expected: Expected):
+    jobs = list(_pages(reader, f"actions/runs/{expected.run_id}/attempts/{expected.run_attempt}/jobs", "jobs"))
+    matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == expected.manager_job]
+    if not matches:
+        # Rerun failed jobs retains a successful producer from the previous
+        # attempt. Only explicit success from the latest manager job permits
+        # reusing that exact attempt's already signed identity.
+        jobs = list(_pages(reader, f"actions/runs/{expected.run_id}/jobs?filter=latest", "jobs"))
+        matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == expected.manager_job]
+    if len(matches) > 1:
+        raise IdentityError("More than one manager producer job was found")
+    if matches and matches[0].get("status") == "completed" and matches[0].get("conclusion") != "success":
+        raise IdentityError("The SukiSU APK job failed or was cancelled; no identity can be accepted")
+    return matches[0] if matches else None
+
+
+def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, interval: float = 15,
+                      monotonic: Callable[[], float] = time.monotonic,
+                      sleep: Callable[[float], None] = time.sleep) -> dict[str, str]:
+    expected.validate()
+    if not 0 < timeout <= 1200 or not 0 < interval <= 60:
+        raise IdentityError("Manager wait must be at most 20 minutes with a positive poll interval")
+    deadline = monotonic() + timeout
+    stale_archives = {}
+    _check_run(reader, expected)
+    while True:
+        manager = _check_manager_job(reader, expected)
+        reusable_attempt = None
+        if manager and manager.get("status") == "completed" and manager.get("conclusion") == "success":
+            attempt = positive_integer(manager.get("run_attempt"), "manager job attempt")
+            if attempt < expected.run_attempt:
+                reusable_attempt = attempt
+        artifacts = list(_pages(reader, f"actions/runs/{expected.run_id}/artifacts", "artifacts"))
+        matches = [item for item in artifacts if isinstance(item, dict)
+                   and item.get("name") == expected.artifact_name and not item.get("expired")]
+        if len(matches) > 1:
+            raise IdentityError("More than one manager identity artifact was found")
+        if matches:
+            artifact = matches[0]
+            producer = artifact.get("workflow_run")
+            if (not isinstance(producer, dict) or producer.get("id") != expected.run_id
+                    or producer.get("head_sha") != expected.head_sha):
+                raise IdentityError("Identity artifact belongs to a different workflow run or commit")
+            positive_integer(artifact.get("size_in_bytes"), "identity artifact size", MAX_ARCHIVE_BYTES)
+            artifact_id = positive_integer(artifact.get("id"), "identity artifact ID")
+            raw = stale_archives.get(artifact_id)
+            if raw is None:
+                raw = reader.get(f"actions/artifacts/{artifact_id}/zip", binary=True)
+            try:
+                return read_identity_archive(raw, expected, reusable_attempt=reusable_attempt)
+            except StaleIdentity:
+                stale_archives[artifact_id] = raw
+        remaining = deadline - monotonic()
+        if remaining <= 0:
+            raise IdentityError("Timed out waiting for this run's signed SukiSU manager identity")
+        sleep(min(interval, remaining))
+
+
+def write_environment(path: Path, values: dict[str, str]):
+    # These values have already passed strict single-line validation. Do not
+    # append any requested (as opposed to signed and verified) identity values.
+    with path.open("a", encoding="utf-8", newline="\n") as output:
+        for key, value in values.items():
+            output.write(f"{key}={value}\n")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--expected-ref", required=True)
+    parser.add_argument("--artifact-name", required=True)
+    parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
+    parser.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""))
+    parser.add_argument("--head-sha", default=os.environ.get("GITHUB_SHA", ""))
+    parser.add_argument("--manager-job-name", default=DEFAULT_MANAGER_JOB)
+    parser.add_argument("--github-env", type=Path, default=os.environ.get("GITHUB_ENV"))
+    parser.add_argument("--timeout", type=float, default=1200)
+    parser.add_argument("--interval", type=float, default=15)
+    args = parser.parse_args()
+    try:
+        if args.github_env is None:
+            raise IdentityError("GITHUB_ENV or --github-env is required")
+        expected = Expected(args.repo, positive_integer(args.run_id, "run ID"),
+                            positive_integer(args.run_attempt, "run attempt"), args.head_sha,
+                            args.expected_ref, args.artifact_name, args.manager_job_name)
+        values = wait_for_identity(expected, GitHubReader(expected.repository),
+                                   timeout=args.timeout, interval=args.interval)
+        write_environment(args.github_env, values)
+    except (IdentityError, OSError, TypeError, AttributeError, KeyError, ValueError) as error:
+        # A malformed remote value must not echo arbitrary payloads or credentials.
+        message = str(error) if isinstance(error, IdentityError) else "Invalid signed manager identity data"
+        print(f"Manager identity verification failed: {message}", file=sys.stderr)
+        return 1
+    print("Verified this run's signed SukiSU APK identity; kernel compilation can proceed.")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

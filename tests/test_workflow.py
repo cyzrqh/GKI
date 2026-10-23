@@ -1,7 +1,12 @@
 import copy
+import json
+import os
+import shutil
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -27,8 +32,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow['jobs']['build-kernel']['if'], generator.KERNEL_JOB_IF)
         self.assertIn(generator.BUILD_IF, generator.KERNEL_JOB_IF)
         self.assertIn("needs.prepare-matrix.result == 'success'", generator.KERNEL_JOB_IF)
-        self.assertIn("needs.build-sukisu-manager.result == 'success'", generator.KERNEL_JOB_IF)
-        self.assertIn("inputs.kernelsu_variant != 'SukiSU'", generator.KERNEL_JOB_IF)
+        self.assertNotIn('needs.build-sukisu-manager', generator.KERNEL_JOB_IF)
         self.assertIn("github.event_name == 'workflow_dispatch'", generator.BUILD_IF)
         self.assertIn("inputs.operation == '编译内核'", generator.BUILD_IF)
         self.assertEqual(self.workflow['on']['schedule'], [{'cron': '17 0 * * *'}])
@@ -78,6 +82,66 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("pull-request-operation == 'updated'", step['if'])
         self.assertIn('issues/$PR_NUMBER/comments', step['run'])
 
+    def test_catalog_cache_survives_partial_failures_and_final_status_is_explicit(self):
+        steps = self.workflow['jobs']['check-upstream']['steps']
+        catalog = next(step for step in steps if step.get('id') == 'catalog')
+        official = next(step for step in steps if step.get('id') == 'official')
+        self.assertIs(catalog['continue-on-error'], True)
+        self.assertIs(official['continue-on-error'], True)
+        self.assertIn('--snapshot-file "$RUNNER_TEMP/gki-kernel-catalog/refs.json"', catalog['run'])
+        restore = next(step for step in steps if step.get('uses') == 'actions/cache/restore@v5')
+        save = next(step for step in steps if step.get('uses') == 'actions/cache/save@v5')
+        self.assertEqual(restore['with']['path'], save['with']['path'])
+        self.assertEqual(restore['with']['key'], save['with']['key'])
+        self.assertEqual(save['if'], 'always() && !cancelled()')
+        self.assertIn('restore-keys', restore['with'])
+        final = steps[-1]
+        self.assertIn("steps.catalog.outcome == 'failure'", final['if'])
+        self.assertIn("steps.official.outcome == 'failure'", final['if'])
+        self.assertIn('exit 1', final['run'])
+        self.assertGreater(steps.index(final), next(i for i, step in enumerate(steps) if step.get('id') == 'pr'))
+
+    def test_partial_probe_keeps_successful_source_candidates_and_defaults_failed_source(self):
+        steps = self.workflow['jobs']['check-upstream']['steps']
+        probe = next(step for step in steps if step.get('id') == 'probe')
+        code = probe['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        directory = ROOT / 'tests' / ('.workflow-probe-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        for official, catalog, changed in (('success', 'failure', True), ('failure', 'success', True),
+                                           ('failure', 'failure', False), ('success', 'success', False)):
+            with self.subTest(official=official, catalog=catalog, changed=changed):
+                output = directory / uuid.uuid4().hex
+                environment = {'GITHUB_OUTPUT': str(output), 'OFFICIAL_RESULT': official, 'CATALOG_RESULT': catalog,
+                               'OFFICIAL_CHANGED': str(changed).lower(), 'CATALOG_CHANGED': str(changed).lower(),
+                               'OFFICIAL_CANDIDATES': '{}' if official == 'success' else '',
+                               'CATALOG_CANDIDATES': '[]' if catalog == 'success' else ''}
+                with patch.dict(os.environ, environment):
+                    exec(compile(code, '<official probe>', 'exec'), {})
+                values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+                self.assertEqual(values['has_updates'], str(changed).lower())
+                self.assertEqual(values['partial_failure'], str(official != 'success' or catalog != 'success').lower())
+                self.assertRegex(values['heads_marker'], r'^<!-- gki-official-heads:sha256=[0-9a-f]{64} -->$')
+
+    def test_partial_prepare_body_reports_failed_catalog_without_parsing_empty_json(self):
+        step = next(step for step in self.workflow['jobs']['check-upstream']['steps'] if step.get('id') == 'update')
+        self.assertIn('if [ "$OFFICIAL_RESULT" = success ]; then', step['run'])
+        self.assertIn('if [ "$CATALOG_RESULT" = success ]; then', step['run'])
+        code = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        directory = ROOT / 'tests' / ('.workflow-partial-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        output = directory / 'output'
+        environment = {'RUNNER_TEMP': str(directory), 'GITHUB_OUTPUT': str(output),
+                       'OFFICIAL_RESULT': 'success', 'CATALOG_RESULT': 'failure',
+                       'HEADS_MARKER': '<!-- gki-official-heads:sha256=' + 'a' * 64 + ' -->',
+                       'OFFICIAL_CANDIDATES': '{}', 'CATALOG_CANDIDATES': ''}
+        with patch.dict(os.environ, environment):
+            exec(compile(code, '<official update body>', 'exec'), {})
+        body = (directory / 'official-update.md').read_text(encoding='utf-8')
+        self.assertIn('Android GKI：检查失败，未确认有无更新', body)
+        self.assertIn('不能视为全部官方源已检查', body)
+
     def test_custom_ksu_ref_remains_available_through_repository_variable(self):
         sources = next(step for step in self.workflow['jobs']['prepare-matrix']['steps'] if step.get('id') == 'sources')
         self.assertEqual(sources['env']['CUSTOM_REF'], '${{ vars.KSU_CUSTOM_REF }}')
@@ -103,18 +167,30 @@ class WorkflowTests(unittest.TestCase):
         sign = next(step for step in manager['steps'] if step.get('id') == 'sign')
         self.assertIn('secrets.SUKISU_APK_KEYSTORE', sign['env']['SUKISU_APK_KEYSTORE'])
         kernel = self.workflow['jobs']['build-kernel']
-        self.assertEqual(kernel['needs'], ['prepare-matrix', 'build-sukisu-manager'])
+        self.assertEqual(kernel['needs'], ['prepare-matrix'])
+        self.assertEqual(kernel['permissions'], {'contents': 'read', 'actions': 'read'})
+        wait = self.find('编译前读取本次 APK 的实际签名信息')
+        self.assertEqual(wait['if'], "inputs.kernelsu_variant == 'SukiSU'")
+        self.assertIn('wait_manager_identity.py', wait['run'])
+        self.assertIn('--expected-ref "$KSU_REF"', wait['run'])
+        self.assertIn('--github-env "$GITHUB_ENV"', wait['run'])
+        identity = next(step for step in manager['steps'] if step['name'] == '提供内核配对的公开签名信息')
+        self.assertEqual(identity['with']['path'], 'manager-artifact/manager.json')
+        self.assertTrue(identity['with']['overwrite'])
         signature = self.find('配对管理器包名与签名')
-        for key in ('MANAGER_PACKAGE', 'MANAGER_CERT_SIZE', 'MANAGER_CERT_SHA256'):
-            self.assertIn('needs.build-sukisu-manager.outputs.', signature['env'][key])
+        self.assertNotIn('env', signature)  # Use the verified previous step's GITHUB_ENV values.
         self.assertIn('--package "$MANAGER_PACKAGE"', signature['run'])
         names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index('初始化并同步内核源码'), names.index(wait['name']))
+        self.assertLess(names.index(wait['name']), names.index(signature['name']))
         self.assertLess(names.index(signature['name']), names.index('编译内核'))
+        self.assertNotIn('needs.build-sukisu-manager', str(kernel))
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']
         self.assertEqual(release['permissions'], {'contents': 'write'})
         self.assertIn("needs.build-kernel.result == 'success'", release['if'])
+        self.assertIn("needs.build-sukisu-manager.result == 'success'", release['if'])
         self.assertIn("inputs.operation == '仅编译 SukiSU 安装包'", release['if'])
         self.assertNotIn('schedule', release['if'])
         self.assertIn("github.event_name == 'workflow_dispatch'", release['if'])
@@ -124,6 +200,97 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(publish['run'].index('gh release upload'), publish['run'].index('--draft=false'))
         self.assertIn('CONFIG_IKCONFIG=y', self.find('在内核中记录实际构建配置')['run'])
         self.assertIn('capture_build_metadata.py', self.find('记录内核实际配置')['run'])
+
+    def test_manager_caches_match_real_cargo_target_and_exclude_signing_outputs(self):
+        steps = self.workflow['jobs']['build-sukisu-manager']['steps']
+        source = (ROOT / 'tools/build_sukisu_manager.sh').read_text(encoding='utf-8')
+        self.assertIn('export CARGO_TARGET_DIR="$source_dir/target"', source)
+        self.assertIn('"$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"', source)
+        sign = next(i for i, step in enumerate(steps) if step.get('id') == 'sign')
+        upload = next(i for i, step in enumerate(steps) if step.get('name') == '上传 SukiSU 安装包')
+        for label in ('Gradle', 'Cargo'):
+            restore = next(step for step in steps if step.get('name') == f'恢复管理器 {label} 依赖')
+            save = next(step for step in steps if step.get('name') == f'保存管理器 {label} 依赖')
+            self.assertEqual(restore['uses'], 'actions/cache/restore@v5')
+            self.assertEqual(save['uses'], 'actions/cache/save@v5')
+            self.assertEqual(restore['with']['path'], save['with']['path'])
+            self.assertIn('always() && !cancelled()', save['if'])
+            self.assertGreater(steps.index(save), sign)
+            self.assertGreater(steps.index(save), upload)
+            for cache in (restore, save):
+                self.assertTrue(cache['continue-on-error'])
+                self.assertLessEqual(cache['timeout-minutes'], 3)
+                self.assertNotIn('secrets.', str(cache))
+                for forbidden in ('manager-artifact', 'manager-build', 'RUNNER_TEMP',
+                                  '.p12', '.jks', '.keystore', '*.apk', 'build/outputs'):
+                    self.assertNotIn(forbidden, cache['with']['path'])
+        self.assertEqual(generator.MANAGER_GRADLE_CACHE,
+                         '~/.gradle/caches/modules-2\n~/.gradle/wrapper\n')
+        self.assertIn('manager-source/target/*/release/deps', generator.MANAGER_CARGO_CACHE)
+        self.assertIn('!manager-source/target/**/release/deps/ksud-*', generator.MANAGER_CARGO_CACHE)
+        cargo = next(step for step in steps if step.get('id') == 'manager-cargo-cache')
+        self.assertIn('steps.manager-rust-version.outputs.version', cargo['with']['key'])
+        self.assertIn('ndk29', cargo['with']['key'])
+        self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-rust-version'),
+                        steps.index(cargo))
+
+    def test_bazel_cache_is_scoped_bounded_and_saved_even_on_compile_failure(self):
+        restore = self.find('恢复 Bazel 磁盘缓存')
+        save = self.find('保存 Bazel 磁盘缓存')
+        trim = self.find('限制 Bazel 缓存上传体积')
+        compile_step = self.find('编译内核')
+        self.assertEqual(restore['with']['path'], '${{ env.BAZEL_DISK_CACHE }}')
+        self.assertEqual(save['with']['path'], restore['with']['path'])
+        for axis in ('matrix.android_version', 'matrix.kernel_version', 'matrix.sub_level',
+                     'matrix.os_patch_level', 'github.run_id', 'github.run_attempt'):
+            self.assertIn(axis, restore['with']['key'])
+        self.assertNotIn('matrix.sub_level', restore['with']['restore-keys'])
+        self.assertIn('--disk_cache="$BAZEL_DISK_CACHE"', compile_step['with']['command'])
+        self.assertNotIn('bazel-bin', restore['with']['path'])
+        self.assertIn('always() && !cancelled()', trim['if'])
+        self.assertIn('always() && !cancelled()', save['if'])
+        self.assertEqual(int(trim['env']['BAZEL_CACHE_MAX_BYTES']), 2 * 1024**3)
+        self.assertLess(self.steps.index(restore), self.steps.index(compile_step))
+        self.assertLess(self.steps.index(compile_step), self.steps.index(trim))
+        self.assertLess(self.steps.index(trim), self.steps.index(save))
+
+    def test_bazel_cache_trim_preserves_newest_entries_and_never_prunes_other_roots(self):
+        import contextlib
+        import io
+        step = self.find('限制 Bazel 缓存上传体积')
+        script = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        directory = ROOT / 'tests' / ('.bazel-cache-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        cache = directory / 'gki-bazel-fixture'
+        cache.mkdir()
+        files = []
+        for index in range(3):
+            entry = cache / str(index)
+            entry.write_bytes(bytes([index]) * 4)
+            os.utime(entry, ns=(1_000_000_000 * (index + 1),) * 2)
+            files.append(entry)
+        environment = {'BAZEL_DISK_CACHE': str(cache), 'RUNNER_TEMP': str(directory),
+                       'BAZEL_CACHE_MAX_BYTES': '8', 'GITHUB_OUTPUT': str(directory / 'output')}
+        with patch.dict(os.environ, environment), contextlib.redirect_stdout(io.StringIO()):
+            exec(compile(script, '<bazel cache trim>', 'exec'), {})
+        self.assertFalse(files[0].exists())
+        self.assertTrue(files[1].is_file())
+        self.assertTrue(files[2].is_file())
+        self.assertEqual((directory / 'output').read_text().strip(), 'ready=true')
+        # A path with the expected name is still refused when its parent is not
+        # the dedicated runner temp directory.
+        outside = directory / 'another-root'
+        outside.mkdir()
+        environment['RUNNER_TEMP'] = str(outside)
+        with patch.dict(os.environ, environment), self.assertRaisesRegex(SystemExit, 'outside'):
+            exec(compile(script, '<bazel cache trim>', 'exec'), {})
+        self.assertTrue(files[1].is_file())
+        environment['RUNNER_TEMP'] = str(directory)
+        environment['BAZEL_CACHE_MAX_BYTES'] = '0'
+        with patch.dict(os.environ, environment), self.assertRaisesRegex(SystemExit, 'positive'):
+            exec(compile(script, '<bazel cache trim>', 'exec'), {})
+        self.assertTrue(files[1].is_file())
 
     def test_runtime_has_no_abk_network_or_app_dependency(self):
         text = str(self.workflow)
@@ -183,6 +350,13 @@ class WorkflowTests(unittest.TestCase):
         step = self.find('初始化并同步内核源码')
         self.assertEqual(step['env']['GKI_KERNEL_REF'], '${{ matrix.kernel_ref }}')
         self.assertLess(step['run'].index('tools/set_kernel_ref.py'), step['run'].index('"$REPO" sync'))
+
+    def test_catalog_guard_runs_after_checkout_before_slow_disk_cleanup(self):
+        names = [step.get('name') for step in self.steps]
+        self.assertLess(names.index('检出代码仓库'), names.index('校验自定义内核版本组合'))
+        self.assertLess(names.index('校验自定义内核版本组合'), names.index('清理磁盘空间'))
+        checkout = self.find('检出代码仓库')
+        self.assertEqual(checkout['uses'], 'actions/checkout@v6')
 
     def test_whitelist_reads_new_catalog_versions_without_workflow_regeneration(self):
         import contextlib

@@ -1318,37 +1318,8 @@ job:
           cd ..
           ;;
         "SukiSU")
-          echo "添加 SukiSU..."
-          requested_ref="$BRANCH"
-          if [ -z "$requested_ref" ]; then
-            echo "::error::SukiSU 请求 ref 为空"
-            exit 1
-          fi
-
-          setup_script="$(mktemp)"
-          curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" -o "$setup_script"
-          if grep -qF 'git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"' "$setup_script"; then
-            sed -i '/git checkout "\$1" && echo /c\        git checkout "$1" && echo "[-] Checked out $1."' "$setup_script"
-          fi
-          bash "$setup_script" "$requested_ref"
-          rm -f "$setup_script"
-
-          if [ ! -d KernelSU/.git ]; then
-            echo "::error::SukiSU setup 完成后未找到 KernelSU Git 仓库"
-            exit 1
-          fi
-          requested_head="$(git -C KernelSU rev-parse "${requested_ref}^{commit}" 2>/dev/null)" || {
-            echo "::error::SukiSU 无法解析请求 ref: $requested_ref"
-            exit 1
-          }
-          resolved_head="$(git -C KernelSU rev-parse HEAD)"
-          echo "SukiSU 请求 ref: $requested_ref"
-          echo "SukiSU 请求 HEAD: $requested_head"
-          echo "SukiSU 最终 HEAD: $resolved_head"
-          if [ "$requested_head" != "$resolved_head" ]; then
-            echo "::error::SukiSU setup 静默回退或检出错误: 请求 $requested_head，实际 $resolved_head"
-            exit 1
-          fi
+          echo "添加本次固定的 SukiSU 源码..."
+          python3 "$GITHUB_WORKSPACE/tools/integrate_sukisu.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"
           ;;
         "BakaSU")
           echo "添加 BakaSU..."

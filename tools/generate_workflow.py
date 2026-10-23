@@ -95,7 +95,7 @@ def feature_inputs(source):
         'include_lts': {'description': '包含 LTS（默认关闭）', 'required': False, 'type': 'boolean', 'default': False},
         'artifact_mode': {'description': '产物模式', 'required': True, 'type': 'choice',
                           'options': ['仅 AK3', 'AK3 + boot 镜像'], 'default': '仅 AK3'},
-        'max_parallel': {'description': '同时构建数量（1–20）', 'required': True, 'type': 'number', 'default': 5},
+        'max_parallel': {'description': '同时构建数量（1–20）', 'required': True, 'type': 'number', 'default': 20},
     }
     result = {**selection, **fields}
     if len(result) > 25:
@@ -185,9 +185,14 @@ def manager_job():
   exit 1
 fi
 '''},
-            {'name': '检出同一版本的 SukiSU 源码', 'uses': 'actions/checkout@v6',
-             'with': {'repository': 'SukiSU-Ultra/SukiSU-Ultra', 'ref': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
-                      'path': 'manager-source', 'fetch-depth': 0, 'persist-credentials': False}},
+            {'name': '下载本次固定的 SukiSU 源码快照', 'uses': 'actions/download-artifact@v8',
+             'with': {'name': 'Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}',
+                      'path': 'ksu-source-bundle'}},
+            {'name': '检出同一版本的 SukiSU 源码',
+             'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
+             'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
+  --output "$GITHUB_WORKSPACE/manager-source" --expected-ref "$KSU_REF"
+'''},
             {'name': '准备 Java 21', 'uses': 'actions/setup-java@v5',
              'with': {'distribution': 'temurin', 'java-version': '21'}},
             {'name': '恢复管理器 Gradle 依赖', 'id': 'manager-gradle-cache',
@@ -351,6 +356,21 @@ PY
     step = step_named(steps, '添加一加 8E 处理器支持')
     if 'cp "$GITHUB_WORKSPACE/hmbird_patch.c" ./hmbird_patch.c' not in step['run']:
         raise ValueError('OnePlus support must use the locally maintained source file')
+
+    # Fetch SukiSU once before the matrix expands. Every kernel receives the
+    # same full-history bundle; a later upstream rebase cannot change its HEAD.
+    source_sync_index = steps.index(step_named(steps, '初始化并同步内核源码'))
+    steps[source_sync_index:source_sync_index] = [
+        {'name': '下载本次固定的 SukiSU 源码快照', 'if': "inputs.ksu_variant == 'SukiSU'",
+         'uses': 'actions/download-artifact@v8',
+         'with': {'name': 'Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}',
+                  'path': 'ksu-source-bundle'}},
+        {'name': '检出内核配套的 SukiSU 快照', 'if': "inputs.ksu_variant == 'SukiSU'",
+         'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
+         'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
+  --output "$KERNEL_ROOT/KernelSU" --expected-ref "$KSU_REF"
+'''},
+    ]
 
     # Resolve mutable refs once, so all kernels and the APK share one commit.
     branch = step_named(steps, '确定 KernelSU 分支')
@@ -557,6 +577,8 @@ if not value.is_integer() or not 1 <= value <= 20:
     raise SystemExit('同时构建数量必须是 1–20 的整数')
 with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
     output.write(f'max_parallel={int(value)}\\n')
+with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+    summary.write(f'- 同时构建上限：{int(value)}（实际调度取决于 GitHub 账号额度与可用机器）\\n')
 PY
 python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \\
   --include-lts "$INCLUDE_LTS" --github-output --summary
@@ -569,6 +591,23 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
              'run': '''python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \\
   --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
 '''},
+            {'name': '仅下载一次官方 SukiSU 源码', 'uses': 'actions/checkout@v6',
+             'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
+             'with': {'repository': 'SukiSU-Ultra/SukiSU-Ultra', 'ref': '${{ steps.sources.outputs.ksu_ref }}',
+                      'path': 'ksu-snapshot-source', 'fetch-depth': 0, 'persist-credentials': False}},
+            {'name': '展开矩阵前验证并固定源码快照',
+             'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
+             'env': {'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}',
+                     'KSU_TIER': '${{ steps.sources.outputs.effective_ksu_branch }}',
+                     'ENABLE_SUSFS': "${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}"},
+             'run': '''python3 tools/snapshot_ksu_source.py --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \\
+  --output "$RUNNER_TEMP/ksu-source" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \\
+  --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+'''},
+            {'name': '分发本次不可变源码快照', 'uses': 'actions/upload-artifact@v6',
+             'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
+             'with': {'name': 'Source-SukiSU-${{ steps.sources.outputs.ksu_short }}',
+                      'path': '${{ runner.temp }}/ksu-source/*', 'compression-level': 0, 'if-no-files-found': 'error'}},
         ],
     }
     workflow = {

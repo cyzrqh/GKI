@@ -43,7 +43,7 @@ run-name: ${{ (github.event_name == 'schedule' || inputs.operation == '检查上
         description: 同时构建数量（1–20）
         required: true
         type: number
-        default: 5
+        default: 20
       kernelsu_variant:
         description: KernelSU 变体
         required: true
@@ -198,6 +198,8 @@ jobs:
             raise SystemExit('同时构建数量必须是 1–20 的整数')
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
             output.write(f'max_parallel={int(value)}\n')
+        with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:
+            summary.write(f'- 同时构建上限：{int(value)}（实际调度取决于 GitHub 账号额度与可用机器）\n')
         PY
         python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \
           --include-lts "$INCLUDE_LTS" --github-output --summary
@@ -212,6 +214,33 @@ jobs:
       run: |
         python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \
           --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
+    - name: 仅下载一次官方 SukiSU 源码
+      uses: actions/checkout@v6
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
+      with:
+        repository: SukiSU-Ultra/SukiSU-Ultra
+        ref: ${{ steps.sources.outputs.ksu_ref }}
+        path: ksu-snapshot-source
+        fetch-depth: 0
+        persist-credentials: false
+    - name: 展开矩阵前验证并固定源码快照
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
+      env:
+        KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
+        KSU_TIER: ${{ steps.sources.outputs.effective_ksu_branch }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
+      run: |
+        python3 tools/snapshot_ksu_source.py --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \
+          --output "$RUNNER_TEMP/ksu-source" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \
+          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+    - name: 分发本次不可变源码快照
+      uses: actions/upload-artifact@v6
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
+      with:
+        name: Source-SukiSU-${{ steps.sources.outputs.ksu_short }}
+        path: ${{ runner.temp }}/ksu-source/*
+        compression-level: 0
+        if-no-files-found: error
   build-sukisu-manager:
     name: 编译配套 SukiSU 管理器 APK
     if: github.event_name == 'workflow_dispatch' && (inputs.operation == '仅编译 SukiSU 安装包' || (inputs.operation == '编译内核' &&
@@ -240,14 +269,17 @@ jobs:
           echo '::error::请先按 README 配置 SUKISU_APK_KEYSTORE 和 SUKISU_APK_PASSWORD。签名密钥应长期保持不变。'
           exit 1
         fi
-    - name: 检出同一版本的 SukiSU 源码
-      uses: actions/checkout@v6
+    - name: 下载本次固定的 SukiSU 源码快照
+      uses: actions/download-artifact@v8
       with:
-        repository: SukiSU-Ultra/SukiSU-Ultra
-        ref: ${{ needs.prepare-matrix.outputs.ksu_ref }}
-        path: manager-source
-        fetch-depth: 0
-        persist-credentials: false
+        name: Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}
+        path: ksu-source-bundle
+    - name: 检出同一版本的 SukiSU 源码
+      env:
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+      run: |
+        python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --output "$GITHUB_WORKSPACE/manager-source" --expected-ref "$KSU_REF"
     - name: 准备 Java 21
       uses: actions/setup-java@v5
       with:
@@ -961,6 +993,19 @@ jobs:
           echo "自定义外部模块清单:"
           cut -f1,3 "$manifest"
         fi
+    - name: 下载本次固定的 SukiSU 源码快照
+      if: inputs.kernelsu_variant == 'SukiSU'
+      uses: actions/download-artifact@v8
+      with:
+        name: Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}
+        path: ksu-source-bundle
+    - name: 检出内核配套的 SukiSU 快照
+      if: inputs.kernelsu_variant == 'SukiSU'
+      env:
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+      run: |
+        python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --output "$KERNEL_ROOT/KernelSU" --expected-ref "$KSU_REF"
     - name: 初始化并同步内核源码
       working-directory: ${{ env.KERNEL_ROOT }}
       env:
@@ -1092,37 +1137,8 @@ jobs:
             cd ..
             ;;
           "SukiSU")
-            echo "添加 SukiSU..."
-            requested_ref="$BRANCH"
-            if [ -z "$requested_ref" ]; then
-              echo "::error::SukiSU 请求 ref 为空"
-              exit 1
-            fi
-
-            setup_script="$(mktemp)"
-            curl -fLSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" -o "$setup_script"
-            if grep -qF 'git checkout "$1" && echo "[-] Checked out $1." || echo "[-] Checkout default branch"' "$setup_script"; then
-              sed -i '/git checkout "\$1" && echo /c\        git checkout "$1" && echo "[-] Checked out $1."' "$setup_script"
-            fi
-            bash "$setup_script" "$requested_ref"
-            rm -f "$setup_script"
-
-            if [ ! -d KernelSU/.git ]; then
-              echo "::error::SukiSU setup 完成后未找到 KernelSU Git 仓库"
-              exit 1
-            fi
-            requested_head="$(git -C KernelSU rev-parse "${requested_ref}^{commit}" 2>/dev/null)" || {
-              echo "::error::SukiSU 无法解析请求 ref: $requested_ref"
-              exit 1
-            }
-            resolved_head="$(git -C KernelSU rev-parse HEAD)"
-            echo "SukiSU 请求 ref: $requested_ref"
-            echo "SukiSU 请求 HEAD: $requested_head"
-            echo "SukiSU 最终 HEAD: $resolved_head"
-            if [ "$requested_head" != "$resolved_head" ]; then
-              echo "::error::SukiSU setup 静默回退或检出错误: 请求 $requested_head，实际 $resolved_head"
-              exit 1
-            fi
+            echo "添加本次固定的 SukiSU 源码..."
+            python3 "$GITHUB_WORKSPACE/tools/integrate_sukisu.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"
             ;;
           "BakaSU")
             echo "添加 BakaSU..."

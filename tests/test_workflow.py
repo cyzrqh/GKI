@@ -179,9 +179,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('strategy', manager)
         self.assertEqual(manager['if'], generator.MANAGER_IF)
         checkout = next(step for step in manager['steps'] if step['name'] == '检出同一版本的 SukiSU 源码')
-        self.assertEqual(checkout['with']['ref'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
-        self.assertEqual(checkout['with']['fetch-depth'], 0)
-        self.assertIs(checkout['with']['persist-credentials'], False)
+        self.assertIn('checkout_ksu_snapshot.py', checkout['run'])
+        self.assertEqual(checkout['env']['KSU_REF'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
+        self.assertNotIn('uses', checkout)
+        snapshot = next(step for step in manager['steps'] if step['name'] == '下载本次固定的 SukiSU 源码快照')
+        self.assertEqual(snapshot['with']['name'], 'Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}')
         build = next(step for step in manager['steps'] if step['name'] == '编译管理器与同版本 ksud')
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], build['env']['ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME'])
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], 'com.cyzrqh.gki.sukisu')
@@ -217,6 +219,26 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(names.index(wait['name']), names.index(signature['name']))
         self.assertLess(names.index(signature['name']), names.index('编译内核'))
         self.assertNotIn('needs.build-sukisu-manager', str(kernel))
+
+    def test_sukisu_source_is_frozen_and_checked_before_any_kernel_sync(self):
+        prepare = self.workflow['jobs']['prepare-matrix']['steps']
+        checkout = next(step for step in prepare if step['name'] == '仅下载一次官方 SukiSU 源码')
+        self.assertEqual(checkout['with']['ref'], '${{ steps.sources.outputs.ksu_ref }}')
+        self.assertEqual(checkout['with']['fetch-depth'], 0)
+        self.assertIs(checkout['with']['persist-credentials'], False)
+        check = next(step for step in prepare if step['name'] == '展开矩阵前验证并固定源码快照')
+        publish = next(step for step in prepare if step['name'] == '分发本次不可变源码快照')
+        self.assertIn('snapshot_ksu_source.py', check['run'])
+        self.assertLess(prepare.index(checkout), prepare.index(check))
+        self.assertLess(prepare.index(check), prepare.index(publish))
+        self.assertEqual(publish['with']['name'], 'Source-SukiSU-${{ steps.sources.outputs.ksu_short }}')
+        names = [step['name'] for step in self.steps]
+        self.assertLess(names.index('检出内核配套的 SukiSU 快照'), names.index('初始化并同步内核源码'))
+        setup = self.find('添加 KernelSU')['run']
+        suki = setup.split('"SukiSU")', 1)[1].split('"BakaSU")', 1)[0]
+        self.assertIn('integrate_sukisu.py', suki)
+        for unstable in ('git clone', 'git pull', 'curl ', 'setup.sh'):
+            self.assertNotIn(unstable, suki)
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']
@@ -477,6 +499,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('--os_patch_level "${{ matrix.os_patch_level }}"', step['run'])
 
     def test_parallel_limit_uses_normalized_integer_job_output(self):
+        parallel = self.workflow['on']['workflow_dispatch']['inputs']['max_parallel']
+        self.assertEqual(parallel['default'], 20)
         job = self.workflow['jobs']['build-kernel']
         self.assertEqual(job['strategy']['max-parallel'], '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}')
         prepare = self.workflow['jobs']['prepare-matrix']

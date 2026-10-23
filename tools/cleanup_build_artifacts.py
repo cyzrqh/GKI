@@ -101,7 +101,7 @@ def cleanup(run_id: str, release_tag: str | None = None, source_sha: str | None 
                 or matches[0].get('size_in_bytes') != asset['size']):
             raise CleanupError(f'Original artifact does not match the public Release: {name}; staging preserved')
     staging = [item for item in artifacts if isinstance(item.get('name'), str) and
-               item['name'].startswith(('Release-', 'Manager-Identity-', 'AnyKernel3-', 'SukiSU_kernel-'))]
+               item['name'].startswith(('Release-', 'Manager-Identity-', 'Source-SukiSU-', 'AnyKernel3-', 'SukiSU_kernel-'))]
     ids = [item.get('id') for item in staging]
     if any(type(value) is not int or value <= 0 for value in ids) or len(ids) != len(set(ids)):
         raise CleanupError('Staging artifact IDs are invalid; no files deleted')

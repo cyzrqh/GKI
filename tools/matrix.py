@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime
+from itertools import zip_longest
 import json
 import os
 from pathlib import Path
@@ -194,16 +195,19 @@ def build_matrix(
         raise ValueError("the selected kernels and targets produce an empty build matrix")
     if len(output) > 256:
         raise ValueError(f"matrix has {len(output)} jobs; GitHub Actions allows at most 256 per matrix; narrow kernel versions or targets")
-    return sorted(
-        output.values(),
+    # Offer the newest target from every selected family before its older
+    # history. This only changes scheduling order: all exact version/month
+    # identities above remain present, including explicitly requested LTS.
+    families = [sorted(
+        (row for row in output.values() if row["kernel_version"] == family),
         key=lambda row: (
-            int(row["android_version"].removeprefix("android")),
-            tuple(map(int, row["kernel_version"].split("."))),
-            row["sub_level"] == "X",
+            row["sub_level"] != "X",
             int(row["sub_level"]) if row["sub_level"] != "X" else 0,
             row["os_patch_level"],
         ),
-    )
+        reverse=True,
+    ) for family in KERNELS]
+    return [row for turn in zip_longest(*families) for row in turn if row is not None]
 
 
 def _boolean(value: str) -> bool:
@@ -246,7 +250,11 @@ def main(argv: list[str] | None = None) -> int:
                 stream.write("## GKI 全属性内核构建矩阵\n\n")
                 stream.write(f"- 构建任务：{len(matrix)}\n")
                 stream.write(f"- 包含 LTS：{'是' if args.include_lts else '否'}\n")
-                stream.write("- 保留每个内核小版本的所有安全补丁月份。\n\n")
+                if args.targets.strip():
+                    stream.write(f"- 选择范围：指定版本（{args.targets}）。\n")
+                else:
+                    stream.write("- 选择范围：所选系列的全部历史版本与补丁月份。\n")
+                stream.write("- 调度顺序：按所选内核系列轮转，每系列优先较新版本和补丁月份；目标数量不变。\n\n")
                 for kernel in KERNELS:
                     if counts[kernel]:
                         stream.write(f"- {kernel}：{counts[kernel]}\n")

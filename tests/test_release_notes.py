@@ -31,6 +31,7 @@ KERNEL = {
                  "custom_modules": "drivers/example", "kernel_config": "CONFIG_EXAMPLE=y",
                  "zram_algorithm": "zstd"},
     "built_at_utc": "2026-10-22T06:00:00+00:00",
+    "config_source": "Image / IKCONFIG",
 }
 
 
@@ -71,10 +72,16 @@ class ReleaseNotesTests(unittest.TestCase):
         second["features"].update(mount="overlayfs", hook="manual", kpm=False)
         body = self.render(kernels=[KERNEL, second])
         self.assertIn("本次包含 2 个内核目标", body)
-        self.assertIn("## 内核 2：android15 / 6.6.99 / 2026-01", body)
-        self.assertIn("| 挂载方式 | overlayfs |", body)
-        self.assertIn("| Hook 方式 | manual |", body)
-        self.assertIn("| KPM | 关闭 |", body)
+        self.assertNotIn("## 内核", body)
+        self.assertEqual(body.count("## 构建配置\n"), 1)
+        self.assertEqual(body.count("| KernelSU 变体 |"), 1)
+        self.assertEqual(body.count("| LTO | thin |"), 1)
+        self.assertIn("| 构建范围 | Android 14 / 6.1、Android 15 / 6.6 |", body)
+        self.assertIn("| 实际内核目标数 | 2 |", body)
+        self.assertIn("| 配置来源 | Image / IKCONFIG |", body)
+        self.assertIn("| 挂载方式 | 未知（Android 14 / 6.1）；overlayfs（Android 15 / 6.6） |", body)
+        self.assertIn("| Hook 方式 | inline（Android 14 / 6.1）；manual（Android 15 / 6.6） |", body)
+        self.assertIn("| KPM | 启用（Android 14 / 6.1）；关闭（Android 15 / 6.6） |", body)
 
     def test_missing_values_are_unknown_without_inventing_defaults(self):
         body = self.render(manager={}, kernels=[{}])
@@ -93,6 +100,9 @@ class ReleaseNotesTests(unittest.TestCase):
         apk_only = self.render(kernels=[])
         self.assertIn("本次包含 0 个内核目标", apk_only)
         self.assertIn("本次仅发布管理器安装包", apk_only)
+        self.assertIn("无内核（仅管理器 APK）", apk_only)
+        self.assertNotIn("## 构建配置", apk_only)
+        self.assertNotIn("| SUSFS |", apk_only)
         kernel_only = self.render(manager=None)
         self.assertIn("| KernelSU 变体 | SukiSU |", kernel_only)
         self.assertIn("| 管理器 APK | 未知 |", kernel_only)
@@ -104,8 +114,70 @@ class ReleaseNotesTests(unittest.TestCase):
         other = copy.deepcopy(KERNEL)
         other["ksu_version_code"] = 50000
         body = self.render(manager=None, kernels=[KERNEL, other])
-        self.assertIn("多个值（详见内核配置）", body)
+        self.assertNotIn("多个值", body)
+        self.assertIn("版本号 40321", body)
         self.assertIn("版本号 50000", body)
+        self.assertIn("目标 1", body)
+        self.assertIn("目标 2", body)
+
+    def test_mixed_lto_and_lz4kd_are_grouped_in_one_table_without_losing_disabled_states(self):
+        kernels = []
+        for android, series, sublevel in (("android13", "5.15", "194"),
+                                         ("android14", "6.1", "145"),
+                                         ("android15", "6.6", "143"),
+                                         ("android16", "6.12", "92")):
+            kernel = copy.deepcopy(KERNEL)
+            kernel.update(android_version=android, kernel_version=series, sub_level=sublevel,
+                          file=f"{android}-{series}.{sublevel}-AnyKernel3.zip")
+            kernel["features"].update(lto="none" if series == "6.12" else "thin",
+                                      lz4kd=series != "6.12")
+            kernels.append(kernel)
+        body = self.render(kernels=kernels)
+        labels = "Android 13 / 5.15、Android 14 / 6.1、Android 15 / 6.6"
+        self.assertIn(f"| LTO | thin（{labels}）；none（Android 16 / 6.12） |", body)
+        self.assertIn(f"| LZ4KD | 启用（{labels}）；关闭（Android 16 / 6.12） |", body)
+        self.assertEqual(body.count("| SUSFS | 启用（v2.3.0） |"), 1)
+        self.assertEqual(body.count("| Re-Kernel | 关闭 |"), 1)
+        self.assertEqual(body.count("## 构建配置\n"), 1)
+        self.assertNotIn("## 内核", body)
+
+    def test_same_series_conflicting_versions_use_full_targets_only_for_conflicting_rows(self):
+        other = copy.deepcopy(KERNEL)
+        other.update(sub_level="146", os_patch_level="2025-09", file="android14-6.1.146-2025-09-AnyKernel3.zip")
+        other["features"].update(lto="full", lz4kd=True)
+        body = self.render(kernels=[KERNEL, other])
+        self.assertIn("| 构建范围 | Android 14 / 6.1 |", body)
+        self.assertIn("| LTO | thin（android14 / 6.1.145 / 2025-08）；full（android14 / 6.1.146 / 2025-09） |", body)
+        self.assertIn("| LZ4KD | 关闭（android14 / 6.1.145 / 2025-08）；启用（android14 / 6.1.146 / 2025-09） |", body)
+        self.assertIn("| Hook 方式 | inline |", body)
+        self.assertEqual(body.count("| 配置来源 | Image / IKCONFIG |"), 1)
+
+    def test_same_series_same_version_different_months_are_disambiguated_when_configs_differ(self):
+        other = copy.deepcopy(KERNEL)
+        other.update(os_patch_level="2025-09", file="android14-6.1.145-2025-09-AnyKernel3.zip")
+        other["features"].update(lz4kd=True)
+        body = self.render(kernels=[KERNEL, other])
+        self.assertIn("| LTO | thin |", body)
+        self.assertIn("| LZ4KD | 关闭（android14 / 6.1.145 / 2025-08）；启用（android14 / 6.1.145 / 2025-09） |", body)
+        self.assertIn("2025-09-AnyKernel3.zip", body)
+
+    def test_optional_unknown_features_are_omitted_but_known_disabled_values_are_kept(self):
+        other = copy.deepcopy(KERNEL)
+        other["features"] = {"susfs": True, "kpm": False, "re_kernel": False, "ddk": None,
+                             "custom_optional": None}
+        body = self.render(kernels=[other])
+        self.assertIn("| Re-Kernel | 关闭 |", body)
+        self.assertIn("| KPM | 关闭 |", body)
+        self.assertNotIn("| DDK |", body)
+        self.assertNotIn("custom\\_optional", body)
+        self.assertIn("| Hook 方式 | 未知 |", body)
+
+    def test_unknown_config_for_one_series_is_not_hidden_by_other_series(self):
+        other = copy.deepcopy(KERNEL)
+        other.update(android_version="android16", kernel_version="6.12", sub_level="92")
+        other["features"].pop("lz4kd")
+        body = self.render(kernels=[KERNEL, other])
+        self.assertIn("| LZ4KD | 关闭（Android 14 / 6.1）；未知（Android 16 / 6.12） |", body)
 
     def test_dispatch_aliases_and_boolean_strings_are_supported(self):
         kernel = {"variant": "Official", "branch": "Custom", "target": "custom-target",

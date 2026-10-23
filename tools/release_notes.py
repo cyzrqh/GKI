@@ -131,57 +131,114 @@ def version(document: dict) -> str:
     return f"{name}（版本号 {code}）"
 
 
+def kernel_series(document: dict) -> str:
+    android = text(first(document, "android_version", "android"))
+    kernel = text(first(document, "kernel_version", "kernel"))
+    if android == UNKNOWN or kernel == UNKNOWN:
+        return kernel_target(document)
+    match = re.fullmatch(r"android\s*(\d+)", android, re.I)
+    if match:
+        android = "Android " + match.group(1)
+    match = re.fullmatch(r"(\d+\.\d+)(?:\.\d+)?", kernel)
+    if match:
+        kernel = match.group(1)
+    return f"{android} / {kernel}"
+
+
+def grouped_value(kernels: list[dict], values: list) -> str:
+    """Show a shared value once, refining conflicting series to exact targets."""
+    normalized = [text(value) for value in values]
+    if not normalized:
+        return UNKNOWN
+    if len(set(normalized)) == 1:
+        return escape(normalized[0])
+    series = [kernel_series(document) for document in kernels]
+    targets = [kernel_target(document) for document in kernels]
+    series_values = {}
+    groups = {}
+    for label, value in zip(series, normalized):
+        series_values.setdefault(label, set()).add(value)
+    for index, (label, target, value) in enumerate(zip(series, targets, normalized), 1):
+        # A series label is accurate only when every target in that series has
+        # the same value for this row. Conflicting builds keep their full target.
+        if len(series_values[label]) > 1:
+            label = target
+            if targets.count(target) > 1:
+                label += f"（目标 {index}）"
+        labels = groups.setdefault(value, [])
+        if label not in labels:
+            labels.append(label)
+    return "；".join(f"{escape(value)}（{'、'.join(escape(label) for label in labels)}）"
+                    for value, labels in groups.items())
+
+
 def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: datetime | None = None) -> str:
     if (manager is not None and not isinstance(manager, dict)) or any(not isinstance(item, dict) for item in kernels):
         raise ReleaseNotesError("Each metadata file must contain one JSON object")
     manager = {} if manager is None else manager
-    summary = manager.copy()
-    if not manager and kernels:
-        for field in ("ksu_variant", "ksu_branch", "ksu_ref", "ksu_version_code", "ksu_version_name", "susfs_version"):
-            values = [item.get(field) for item in kernels]
-            summary[field] = values[0] if all(item == values[0] for item in values) else "多个值（详见内核配置）"
     manager_assets = asset_names(manager, manager=True)
     kernel_assets = [asset_names(item) for item in kernels]
+    features = [feature_values(document) for document in kernels]
     instant = generated_at or datetime.now(timezone.utc)
     if instant.tzinfo is None:
         raise ReleaseNotesError("Release time must include a timezone")
     timestamp = instant.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S UTC")
-    variant = first(summary, "ksu_variant", "variant")
+    scope = "、".join(dict.fromkeys(kernel_series(document) for document in kernels))
+    if not scope:
+        scope = "无内核（仅管理器 APK）" if manager_assets else "未记录"
     lines = ["# GKI Kernel Release", "", "| 发布信息 | 实际值 |", "| --- | --- |",
              "| 发布类型 | Release |", f"| 发布时间 | {timestamp} |",
-             f"| KernelSU 变体 | {escape(variant)} |",
-             f"| KernelSU 分支 | {escape(first(summary, 'ksu_branch', 'tier', 'branch'))} |",
-             f"| KernelSU 版本 | {escape(version(summary))} |",
-             f"| SUSFS 版本 | {escape(first(summary, 'susfs_version'))} |",
-             f"| 源码提交 | {escape(first(summary, 'ksu_ref', 'source_ref'))} |",
+             f"| 构建范围 | {escape(scope)} |",
+             f"| 实际内核目标数 | {len(kernels)} |",
              f"| 管理器包名 | {escape(first(manager, 'package', 'manager_package'))} |",
              f"| 管理器 APK | {escape('、'.join(manager_assets) or None)} |",
-             f"| 管理器构建时间（UTC） | {escape(first(manager, 'built_at_utc'))} |", "",
-             "## 本次构建范围", "", f"本次包含 {len(kernels)} 个内核目标。", ""]
+             f"| 管理器版本 | {escape(version(manager))} |",
+             f"| 管理器源码提交 | {escape(first(manager, 'ksu_ref', 'source_ref'))} |",
+             f"| 管理器构建时间（UTC） | {escape(first(manager, 'built_at_utc'))} |", ""]
     if kernels:
-        lines.extend(("| 内核目标 | 产物 |", "| --- | --- |"))
-        for document, names in zip(kernels, kernel_assets):
-            lines.append(f"| {escape(kernel_target(document))} | {escape('、'.join(names) or None)} |")
+        lines.extend(("## 构建配置", "", "| 项目 | 内容 |", "| --- | --- |"))
+        for label, aliases in (("KernelSU 变体", ("ksu_variant", "variant")),
+                               ("KernelSU 分支", ("ksu_branch", "tier", "branch")),
+                               ("SUSFS 版本", ("susfs_version",)),
+                               ("源码提交", ("ksu_ref", "source_ref")),
+                               ("配置来源", ("config_source",))):
+            values = [first(document, *aliases) for document in kernels]
+            lines.append(f"| {label} | {grouped_value(kernels, values)} |")
+        lines.append(f"| KernelSU 版本 | {grouped_value(kernels, [version(document) for document in kernels])} |")
+        for number, (label, aliases) in enumerate(FEATURES):
+            values = []
+            for document, actual in zip(kernels, features):
+                selected = feature(document, actual, aliases)
+                if label == "SUSFS" and text(selected) == "启用":
+                    selected = "启用（" + text(first(document, "susfs_version")) + "）"
+                values.append(selected)
+            # Core rows keep explicit unknowns; omit optional rows only when no
+            # target recorded a value. In particular, known 'off' is retained.
+            if number < 8 or any(text(value) != UNKNOWN for value in values):
+                lines.append(f"| {label} | {grouped_value(kernels, values)} |")
+        represented = {key for _, aliases in FEATURES for key in aliases}
+        extra = sorted({key for actual in features for key in actual
+                        if key not in represented and not PRIVATE_FEATURE.search(key)})
+        for key in extra:
+            values = [actual.get(key) for actual in features]
+            if any(text(value) != UNKNOWN for value in values):
+                lines.append(f"| {escape(key)} | {grouped_value(kernels, values)} |")
     else:
         lines.append("本次仅发布管理器安装包，没有内核构建。" if manager_assets else "未记录内核构建目标或管理器安装包。")
-    for number, document in enumerate(kernels, 1):
-        values = feature_values(document)
-        lines.extend(("", f"## 内核 {number}：{escape(kernel_target(document))}", "",
-                      "| 构建配置 | 实际值 |", "| --- | --- |",
-                      f"| KernelSU 变体 | {escape(first(document, 'ksu_variant', 'variant'))} |",
-                      f"| KernelSU 分支 | {escape(first(document, 'ksu_branch', 'tier', 'branch'))} |",
-                      f"| KernelSU 版本 | {escape(version(document))} |",
-                      f"| 源码提交 | {escape(first(document, 'ksu_ref', 'source_ref'))} |",
-                      f"| 构建时间（UTC） | {escape(first(document, 'built_at_utc'))} |"))
-        for label, aliases in FEATURES:
-            selected = feature(document, values, aliases)
-            if label == "SUSFS" and text(selected) == "启用":
-                selected = "启用（" + text(first(document, "susfs_version")) + "）"
-            lines.append(f"| {label} | {escape(selected)} |")
-        represented = {key for _, aliases in FEATURES for key in aliases}
-        for key in sorted(values):
-            if key not in represented and not PRIVATE_FEATURE.search(key):
-                lines.append(f"| {escape(key)} | {escape(values[key])} |")
+        if manager:
+            lines.extend(("", f"管理器：{escape(first(manager, 'ksu_variant', 'variant'))}，"
+                          f"分支 {escape(first(manager, 'ksu_branch', 'tier', 'branch'))}。"
+                          "内核功能配置不适用于本次 APK 发布。"))
+    lines.extend(("", "## 构建文件", "", f"本次包含 {len(kernels)} 个内核目标。", "",
+                  "| 内核目标 | 产物 | 构建时间（UTC） |", "| --- | --- | --- |"))
+    if manager_assets:
+        lines.append(f"| 管理器 APK | {escape('、'.join(manager_assets))} | {escape(first(manager, 'built_at_utc'))} |")
+    targets = [kernel_target(document) for document in kernels]
+    for number, (document, names, target) in enumerate(zip(kernels, kernel_assets, targets), 1):
+        if targets.count(target) > 1:
+            target += f"（目标 {number}）"
+        lines.append(f"| {escape(target)} | {escape('、'.join(names) or None)} | "
+                     f"{escape(first(document, 'built_at_utc'))} |")
     lines.extend(("", "未记录的配置明确标为“未知”；以上内容以本次产物元数据为准。", ""))
     return "\n".join(lines)
 

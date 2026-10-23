@@ -96,9 +96,9 @@ class DirectReleasePreparationTests(unittest.TestCase):
         self.output = self.root / 'public'
         self.addCleanup(shutil.rmtree, self.root)
 
-    def manager(self):
-        directory = self.source / 'Release-Manager'
-        directory.mkdir()
+    def manager(self, *, flat=False):
+        directory = self.source if flat else self.source / 'Release-Manager'
+        directory.mkdir(exist_ok=True)
         document = {'file': 'SukiSU_v4.2.1_41030-release.apk', 'ksu_variant': 'SukiSU',
                     'ksu_version_name': 'v4.2.1', 'ksu_version_code': '41030'}
         (directory / 'manager.json').write_text(json.dumps(document))
@@ -112,6 +112,54 @@ class DirectReleasePreparationTests(unittest.TestCase):
         self.assertEqual((self.output / 'assets' / document['file']).read_bytes(), b'verified APK')
         self.assertFalse(list((self.output / 'assets').glob('*.zip')))
         self.assertIn('v4.2.1', (self.output / 'release.md').read_text(encoding='utf-8'))
+
+    def test_single_artifact_download_flat_manager_layout_is_supported(self):
+        _, document = self.manager(flat=True)
+        report = prepare_release.prepare(self.source, self.output)
+        self.assertEqual(report, {'assets': 1, 'kernels': 0, 'manager': True})
+        self.assertEqual((self.output / 'assets' / document['file']).read_bytes(), b'verified APK')
+        self.assertIn('没有内核构建', (self.output / 'release.md').read_text(encoding='utf-8'))
+        self.assertEqual(list((self.output / 'assets').glob('*.zip')), [])
+
+    def kernel(self, *, flat=False):
+        directory = self.source if flat else self.source / 'Release-SukiSU-android14-6.1-145-2025-09'
+        directory.mkdir(exist_ok=True)
+        document = {'file': 'android14-6.1.145-2025-09-AnyKernel3.zip',
+                    'files': ['android14-6.1.145-2025-09-AnyKernel3.zip'],
+                    'android_version': 'android14', 'kernel_version': '6.1', 'sub_level': '145',
+                    'os_patch_level': '2025-09', 'ksu_variant': 'SukiSU', 'susfs_version': 'v2.3.0',
+                    'features': {'susfs': True, 'lto': 'thin', 'kpm': True}}
+        (directory / 'kernel.json').write_text(json.dumps(document), encoding='utf-8')
+        (directory / document['file']).write_bytes(b'verified kernel asset')
+        return directory, document
+
+    def test_single_kernel_artifact_flat_layout_retains_actual_configuration(self):
+        _, document = self.kernel(flat=True)
+        report = prepare_release.prepare(self.source, self.output)
+        self.assertEqual(report, {'assets': 1, 'kernels': 1, 'manager': False})
+        self.assertEqual((self.output / 'assets' / document['file']).read_bytes(), b'verified kernel asset')
+        notes = (self.output / 'release.md').read_text(encoding='utf-8')
+        self.assertIn('| LTO | thin |', notes)
+        self.assertIn('| KPM | 启用 |', notes)
+        self.assertIn('v2.3.0', notes)
+
+    def test_multiple_artifact_named_directories_keep_manager_and_kernel_separate(self):
+        _, manager = self.manager()
+        _, kernel = self.kernel()
+        report = prepare_release.prepare(self.source, self.output)
+        self.assertEqual(report, {'assets': 2, 'kernels': 1, 'manager': True})
+        self.assertEqual({path.name for path in (self.output / 'assets').iterdir()},
+                         {manager['file'], kernel['file'], 'SHA256SUMS.txt'})
+        checksums = (self.output / 'assets' / 'SHA256SUMS.txt').read_text(encoding='utf-8')
+        self.assertIn(manager['file'], checksums)
+        self.assertIn(kernel['file'], checksums)
+
+    def test_flat_and_named_manager_metadata_cannot_hide_duplicate_managers(self):
+        self.manager(flat=True)
+        self.manager()
+        with self.assertRaisesRegex(ValueError, 'at most one manager'):
+            prepare_release.prepare(self.source, self.output)
+        self.assertFalse(self.output.exists())
 
     def test_missing_asset_or_multiple_managers_is_rejected_before_output(self):
         directory, document = self.manager()

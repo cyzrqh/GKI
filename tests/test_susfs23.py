@@ -216,5 +216,47 @@ class ModuleBlacklistLifecycleTests(unittest.TestCase):
             susfs.verify_blacklist_lifecycle(self.CORE, runtime)
 
 
+class PreinitDescriptorCleanupTests(unittest.TestCase):
+    PREINIT = '''#include "util.h"
+int setup(void) {
+    if (kern_path(fd_path, LOOKUP_FOLLOW, &path)) {
+        ksu_close_fd(fd);
+        return -EINVAL;
+    }
+    return fd;
+}
+int post_exec(void) {
+    if (*retval && *preinit_fd > 0) {
+        ksu_close_fd(*preinit_fd);
+        return -EINVAL;
+    }
+    return 0;
+}
+'''
+    UTIL = '#define ksu_close_fd(fd) ({ ksyscall(close, fd); })\n'
+
+    def test_native_close_wrapper_cleans_both_preinit_error_paths(self):
+        susfs.verify_preinit_fd_cleanup(self.PREINIT, self.UTIL)
+
+    def test_direct_close_fd_regression_is_rejected_even_when_post_exec_uses_wrapper(self):
+        bad = self.PREINIT.replace('ksu_close_fd(fd);', 'close_fd(fd);', 1)
+        with self.assertRaisesRegex(ValueError, 'unavailable on GKI 5.10'):
+            susfs.verify_preinit_fd_cleanup(bad, self.UTIL)
+
+    def test_removing_either_cleanup_path_is_rejected(self):
+        for call in ('ksu_close_fd(fd);', 'ksu_close_fd(*preinit_fd);'):
+            with self.subTest(call=call), self.assertRaisesRegex(ValueError, 'both real descriptor cleanup paths'):
+                susfs.verify_preinit_fd_cleanup(self.PREINIT.replace(call, ''), self.UTIL)
+
+    def test_stub_and_commented_out_syscall_helpers_are_rejected(self):
+        for util in ('#define ksu_close_fd(fd) ((void)0)\n', '/*\n' + self.UTIL + '*/\n'):
+            with self.subTest(util=util), self.assertRaisesRegex(ValueError, 'native close syscall implementation'):
+                susfs.verify_preinit_fd_cleanup(self.PREINIT, util)
+
+    def test_missing_native_helper_include_is_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'include its native descriptor cleanup helper'):
+            susfs.verify_preinit_fd_cleanup(self.PREINIT.replace('#include "util.h"', ''), self.UTIL)
+
+
 if __name__ == "__main__":
     unittest.main()

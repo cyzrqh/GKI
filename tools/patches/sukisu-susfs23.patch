@@ -1856,7 +1856,7 @@ index e393607832f9641d5095afc0a2373c07d206afdd..50d1891ce050190d922329209b851fbf
  typedef int (*ksu_feature_get_t)(u64 *value);
  typedef int (*ksu_feature_set_t)(u64 value);
 diff --git a/kernel/preinit/preinit.c b/kernel/preinit/preinit.c
-index 5bf94f141de6f47770fa9b4de3d6798fae14bc29..997783d5838e35be91c0174908a67c0d4c2dc5b0 100644
+index 5bf94f141de6f47770fa9b4de3d6798fae14bc29..ca37cfb4cc83cc4f15e2aeebf48e927eed2877f2 100644
 --- a/kernel/preinit/preinit.c
 +++ b/kernel/preinit/preinit.c
 @@ -12,7 +12,7 @@
@@ -1946,9 +1946,8 @@ index 5bf94f141de6f47770fa9b4de3d6798fae14bc29..997783d5838e35be91c0174908a67c0d
 -    if (kern_path(fd_path, LOOKUP_FOLLOW, &p)) {
 +    if (kern_path(fd_path, LOOKUP_FOLLOW, &path)) {
          pr_err("preinit: %s not reachable, booting without preinit\n", fd_path);
--        ksu_close_fd(fd);
+         ksu_close_fd(fd);
 -        return false;
-+        close_fd(fd);
 +        return -EINVAL;
      }
 -    path_put(&p);

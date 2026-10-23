@@ -124,6 +124,24 @@ def verify_blacklist_lifecycle(core: str, runtime: str) -> None:
         raise ValueError("SukiSU module blacklist must apply exactly once after second-stage setup")
 
 
+def verify_preinit_fd_cleanup(preinit: str, util: str) -> None:
+    """Use SukiSU's real close syscall wrapper on every supported GKI series."""
+    code = strip_comments_and_literals(preinit)
+    if re.search(r"\bclose_fd\s*\(", code):
+        raise ValueError("SukiSU preinit must use ksu_close_fd; close_fd is unavailable on GKI 5.10")
+    for argument in (r"fd", r"\*\s*preinit_fd"):
+        if not re.search(r"\bksu_close_fd\s*\(\s*" + argument + r"\s*\)\s*;", code):
+            raise ValueError("SukiSU preinit must retain both real descriptor cleanup paths")
+    if not re.search(r'(?m)^\s*#\s*include\s+"util\.h"', preinit):
+        raise ValueError("SukiSU preinit must include its native descriptor cleanup helper")
+    # util.h is also checked against HEAD below. Confirm that this helper invokes
+    # the real close syscall rather than accepting a stub with the same name.
+    util_code = re.sub(r"/\*.*?\*/|//[^\n]*", "", util, flags=re.S)
+    if not re.search(r"(?m)^\s*#\s*define\s+ksu_close_fd\s*\(fd\)\s*"
+                     r"\(\{\s*ksyscall\s*\(close,\s*fd\)\s*;\s*\}\)\s*$", util_code):
+        raise ValueError("SukiSU ksu_close_fd must retain its native close syscall implementation")
+
+
 def verify_integration(repository: Path) -> None:
     source = repository / "kernel"
     verify_patch_memory_sources(repository)
@@ -134,6 +152,11 @@ def verify_integration(repository: Path) -> None:
                              "kernel/feature/module_blacklist.c", "kernel/feature/module_blacklist.h")
     if original_blacklist.returncode:
         raise ValueError("SukiSU module blacklist provider must retain its pinned, real implementation")
+    original_util = git(repository, "diff", "--quiet", "HEAD", "--", "kernel/include/util.h")
+    if original_util.returncode:
+        raise ValueError("SukiSU descriptor cleanup helper differs from the pinned implementation")
+    verify_preinit_fd_cleanup((source / "preinit/preinit.c").read_text(encoding="utf-8"),
+                              (source / "include/util.h").read_text(encoding="utf-8"))
     definitions = []
     for relative in ("preinit/preinit.c", "feature/selinux_hide.c"):
         path = source / relative

@@ -13,8 +13,10 @@ from release_notes import asset_names, load_metadata, render_notes
 
 
 def prepare(source: Path, output: Path) -> dict:
-    managers = sorted(source.glob('*/manager.json'))
-    kernels = sorted(source.glob('*/kernel.json'))
+    # download-artifact puts a single matching artifact directly in `path`,
+    # even with merge-multiple=false. Multiple artifacts get named folders.
+    managers = sorted([*source.glob('manager.json'), *source.glob('*/manager.json')])
+    kernels = sorted([*source.glob('kernel.json'), *source.glob('*/kernel.json')])
     if len(managers) > 1 or not (managers or kernels):
         raise ValueError('Expected at most one manager and at least one release artifact')
     manager = load_metadata(managers[0]) if managers else None

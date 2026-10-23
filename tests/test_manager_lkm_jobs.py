@@ -125,7 +125,8 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertFalse(job['strategy']['fail-fast'])
         self.assertEqual('${{ fromJSON(needs.prepare-matrix.outputs.ddk_matrix) }}', job['strategy']['matrix'])
         steps = job['steps']
-        caches = [step for step in steps if step.get('uses', '').startswith('actions/cache/')]
+        caches = [step for step in steps if step.get('uses', '').startswith('actions/cache/')
+                  and step.get('with', {}).get('path', '').startswith('manager-lkm/')]
         self.assertEqual(['actions/cache/restore@v5', 'actions/cache/save@v5', 'actions/cache/restore@v5'],
                          [step['uses'] for step in caches])
         for step in caches:
@@ -144,6 +145,18 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertIn("cache-hit != 'true'", caches[1]['if'])
         self.assertLess(steps.index(hit), steps.index(build))
         self.assertLess(steps.index(build), steps.index(caches[1]))
+
+    def test_source_uses_exact_prepared_cache_key_and_never_downloads_an_artifact(self):
+        steps = jobs.manager_lkm_job('true')['steps']
+        source = next(step for step in steps if step.get('with', {}).get('path') == jobs.SOURCE_BUNDLE_PATH)
+        self.assertEqual('actions/cache/restore@v5', source['uses'])
+        self.assertEqual('${{ needs.prepare-matrix.outputs.source_cache_key }}', source['with']['key'])
+        self.assertTrue(source['with']['fail-on-cache-miss'])
+        self.assertNotIn('restore-keys', source['with'])
+        self.assertNotIn('continue-on-error', source)
+        self.assertNotIn('actions/download-artifact', json.dumps(steps))
+        checkout = next(step for step in steps if 'checkout_ksu_snapshot.py' in step.get('run', ''))
+        self.assertLess(steps.index(source), steps.index(checkout))
 
     def test_docker_runs_offline_in_native_ddk_context_and_receives_only_public_build_values(self):
         job = jobs.manager_lkm_job('true')

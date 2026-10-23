@@ -195,8 +195,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('checkout_ksu_snapshot.py', checkout['run'])
         self.assertEqual(checkout['env']['KSU_REF'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
         self.assertNotIn('uses', checkout)
-        snapshot = next(step for step in manager['steps'] if step['name'] == '下载本次固定的 SukiSU 源码快照')
-        self.assertEqual(snapshot['with']['name'], 'Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}')
+        snapshot = next(step for step in manager['steps']
+                        if step.get('with', {}).get('path') == 'ksu-source-bundle')
+        self.assertEqual(snapshot['uses'], 'actions/cache/restore@v5')
+        self.assertEqual(snapshot['with']['key'], '${{ needs.prepare-matrix.outputs.source_cache_key }}')
+        self.assertTrue(snapshot['with']['fail-on-cache-miss'])
         build = next(step for step in manager['steps'] if step['name'] == '编译管理器与同版本 ksud')
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], build['env']['ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME'])
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], 'com.cyzrqh.gki.sukisu')
@@ -283,11 +286,14 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(checkout['with']['fetch-depth'], 0)
         self.assertIs(checkout['with']['persist-credentials'], False)
         check = next(step for step in prepare if step['name'] == '展开矩阵前验证并固定源码快照')
-        publish = next(step for step in prepare if step['name'] == '分发本次不可变源码快照')
+        publish = next(step for step in prepare if step['name'] == '保存本次不可变源码缓存')
         self.assertIn('snapshot_ksu_source.py', check['run'])
         self.assertLess(prepare.index(checkout), prepare.index(check))
         self.assertLess(prepare.index(check), prepare.index(publish))
-        self.assertEqual(publish['with']['name'], 'Source-SukiSU-${{ steps.sources.outputs.ksu_short }}')
+        self.assertEqual(publish['uses'], 'actions/cache/save@v5')
+        self.assertEqual(publish['with']['path'], 'ksu-source-bundle')
+        self.assertEqual(publish['with']['key'], '${{ steps.source-snapshot.outputs.source_cache_key }}')
+        self.assertIn('--output "$GITHUB_WORKSPACE/ksu-source-bundle"', check['run'])
         names = [step['name'] for step in self.steps]
         self.assertLess(names.index('检出内核配套的 SukiSU 快照'), names.index('初始化并同步内核源码'))
         setup = self.find('添加 KernelSU')['run']
@@ -301,7 +307,14 @@ class WorkflowTests(unittest.TestCase):
             for step in job.get('steps', []):
                 if not step.get('uses', '').startswith('actions/upload-artifact@'):
                     continue
-                self.assertFalse(str(step.get('with', {}).get('name', '')).startswith(('Release-', 'Manager-Identity-')))
+                self.assertFalse(str(step.get('with', {}).get('name', '')).startswith(
+                    ('Source-', 'Release-', 'Manager-Identity-')))
+                if step['name'] == '上传补丁冲突文件':
+                    self.assertIn('failure()', step['if'])
+                    self.assertEqual('patch-rejects/', step['with']['path'])
+                else:
+                    self.assertIs(step['with'].get('archive'), False,
+                                  'Only final raw files and explicit reject diagnostics may be uploaded')
         self.assertNotIn('actions/upload-artifact', str(self.workflow['jobs']['build-sukisu-lkm']))
         manager = self.workflow['jobs']['build-sukisu-manager']
         public = [step for step in manager['steps'] if step.get('uses', '').startswith('actions/upload-artifact@')]
@@ -312,6 +325,51 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('build-sukisu-lkm', manager['needs'])
         self.assertIn('build-sukisu-lkm', self.workflow['jobs']['build-kernel']['needs'])
         self.assertNotIn('build-kernel', modules['needs'])
+
+    def test_source_cache_producer_and_all_consumers_share_exact_path_and_prepared_key(self):
+        prepare = self.workflow['jobs']['prepare-matrix']
+        snapshot = next(step for step in prepare['steps'] if step.get('id') == 'source-snapshot')
+        save = next(step for step in prepare['steps'] if step['name'] == '保存本次不可变源码缓存')
+        lookup = next(step for step in prepare['steps'] if step['name'] == '确认所有构建可读取本次源码缓存')
+        self.assertEqual('${{ steps.source-snapshot.outputs.source_cache_key }}', prepare['outputs']['source_cache_key'])
+        self.assertLess(prepare['steps'].index(snapshot), prepare['steps'].index(save))
+        self.assertLess(prepare['steps'].index(save), prepare['steps'].index(lookup))
+        self.assertEqual(save['with']['key'], lookup['with']['key'])
+        self.assertTrue(lookup['with']['lookup-only'])
+        self.assertTrue(lookup['with']['fail-on-cache-miss'])
+        for name in ('build-sukisu-lkm', 'build-sukisu-manager', 'build-kernel'):
+            consumers = [step for step in self.workflow['jobs'][name]['steps']
+                         if step.get('with', {}).get('path') == 'ksu-source-bundle']
+            self.assertEqual(1, len(consumers), name)
+            consumer = consumers[0]
+            self.assertEqual('actions/cache/restore@v5', consumer['uses'])
+            self.assertEqual('${{ needs.prepare-matrix.outputs.source_cache_key }}', consumer['with']['key'])
+            self.assertTrue(consumer['with']['fail-on-cache-miss'])
+            self.assertNotIn('restore-keys', consumer['with'])
+            self.assertNotIn('continue-on-error', consumer)
+            self.assertNotIn('github.run_attempt', str(consumer['with']))
+        for step in (save, lookup):
+            self.assertEqual('ksu-source-bundle', step['with']['path'])
+            self.assertNotIn('continue-on-error', step)
+        self.assertNotIn('Source-SukiSU-', str(self.workflow))
+
+    def test_source_cache_key_is_stored_by_prepare_with_its_original_run_attempt(self):
+        snapshot = next(step for step in self.workflow['jobs']['prepare-matrix']['steps']
+                        if step.get('id') == 'source-snapshot')
+        code = snapshot['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        directory = ROOT / 'tests' / ('.source-cache-key-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        keys = []
+        environment = {'RUNNER_OS': 'Linux', 'RUNNER_ARCH': 'X64', 'GITHUB_RUN_ID': '123',
+                       'GITHUB_RUN_ATTEMPT': '1', 'KSU_REF': 'a' * 40}
+        for changes in ({}, {'GITHUB_RUN_ATTEMPT': '2'}, {'GITHUB_RUN_ID': '124'}, {'KSU_REF': 'b' * 40}):
+            output = directory / uuid.uuid4().hex
+            with patch.dict(os.environ, {**environment, **changes, 'GITHUB_OUTPUT': str(output)}):
+                exec(compile(code, '<source-cache-key>', 'exec'), {})
+            keys.append(dict(line.split('=', 1) for line in output.read_text().splitlines())['source_cache_key'])
+        self.assertEqual(4, len(set(keys)))
+        self.assertEqual('gki-source-v1-Linux-X64-123-1-' + 'a' * 40, keys[0])
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']

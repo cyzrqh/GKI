@@ -170,6 +170,7 @@ jobs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
+      source_cache_key: ${{ steps.source-snapshot.outputs.source_cache_key }}
       ddk_matrix: ${{ steps.lkm-matrix.outputs.matrix }}
       manager_package: ${{ steps.certificate.outputs.package }}
       manager_cert_size: ${{ steps.certificate.outputs.cert_size }}
@@ -249,23 +250,43 @@ jobs:
         fetch-depth: 0
         persist-credentials: false
     - name: 展开矩阵前验证并固定源码快照
+      id: source-snapshot
       if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
       env:
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
         KSU_TIER: ${{ steps.sources.outputs.effective_ksu_branch }}
         ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
+        set -euo pipefail
         python3 tools/snapshot_ksu_source.py --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \
-          --output "$RUNNER_TEMP/ksu-source" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \
           --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
-    - name: 分发本次不可变源码快照
-      uses: actions/upload-artifact@v6
+        python3 - <<'PY'
+        import os,sys
+        sys.path.insert(0,'tools')
+        from snapshot_ksu_source import expected_commit
+        reference = expected_commit(os.environ['KSU_REF'])
+        key = '-'.join(('gki-source-v1', os.environ['RUNNER_OS'], os.environ['RUNNER_ARCH'],
+                        os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], reference))
+        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
+            output.write('source_cache_key='+key+'\n')
+        PY
+    - name: 保存本次不可变源码缓存
+      uses: actions/cache/save@v5
+      timeout-minutes: 3
       if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
       with:
-        name: Source-SukiSU-${{ steps.sources.outputs.ksu_short }}
-        path: ${{ runner.temp }}/ksu-source/*
-        compression-level: 0
-        if-no-files-found: error
+        path: ksu-source-bundle
+        key: ${{ steps.source-snapshot.outputs.source_cache_key }}
+    - name: 确认所有构建可读取本次源码缓存
+      uses: actions/cache/restore@v5
+      timeout-minutes: 3
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
+      with:
+        path: ksu-source-bundle
+        key: ${{ steps.source-snapshot.outputs.source_cache_key }}
+        lookup-only: true
+        fail-on-cache-miss: true
   build-sukisu-lkm:
     name: SukiSU 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
@@ -287,11 +308,15 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: 下载本次固定的 SukiSU 源码
-      uses: actions/download-artifact@v8
+    - name: 还原本次固定源码缓存（缺失请重跑全部任务）
+      uses: actions/cache/restore@v5
+      timeout-minutes: 3
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
-        name: Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}
         path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+        fail-on-cache-miss: true
     - name: 还原并核实 SukiSU 源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -419,11 +444,15 @@ jobs:
           echo '::error::请先按 README 配置 SUKISU_APK_KEYSTORE 和 SUKISU_APK_PASSWORD。签名密钥应长期保持不变。'
           exit 1
         fi
-    - name: 下载本次固定的 SukiSU 源码快照
-      uses: actions/download-artifact@v8
+    - name: 还原本次固定源码缓存（缺失请重跑全部任务）
+      uses: actions/cache/restore@v5
+      timeout-minutes: 3
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
-        name: Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}
         path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+        fail-on-cache-miss: true
     - name: 检出同一版本的 SukiSU 源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -1238,12 +1267,16 @@ jobs:
           echo "自定义外部模块清单:"
           cut -f1,3 "$manifest"
         fi
-    - name: 下载本次固定的 SukiSU 源码快照
-      if: inputs.kernelsu_variant == 'SukiSU'
-      uses: actions/download-artifact@v8
+    - name: 还原本次固定源码缓存（缺失请重跑全部任务）
+      uses: actions/cache/restore@v5
+      timeout-minutes: 3
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
-        name: Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}
         path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+        fail-on-cache-miss: true
+      if: inputs.kernelsu_variant == 'SukiSU'
     - name: 检出内核配套的 SukiSU 快照
       if: inputs.kernelsu_variant == 'SukiSU'
       env:

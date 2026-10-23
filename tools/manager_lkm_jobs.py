@@ -11,6 +11,21 @@ KMIS = (
     'android14-6.1', 'android15-6.6', 'android16-6.12', 'android17-6.18',
 )
 DDK_IMAGE = re.compile(r'ghcr\.io/ylarod/ddk-min(?::[A-Za-z0-9._-]+)?@sha256:([0-9a-f]{64})\Z')
+SOURCE_BUNDLE_PATH = 'ksu-source-bundle'
+SOURCE_CACHE_KEY = '${{ needs.prepare-matrix.outputs.source_cache_key }}'
+
+
+def source_cache_restore(*, condition: str | None = None) -> dict:
+    """Use the successful prepare job's exact key, including on failed-job reruns."""
+    step = {
+        'name': '还原本次固定源码缓存（缺失请重跑全部任务）',
+        'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
+        'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
+        'with': {'path': SOURCE_BUNDLE_PATH, 'key': SOURCE_CACHE_KEY, 'fail-on-cache-miss': True},
+    }
+    if condition is not None:
+        step['if'] = condition
+    return step
 
 
 def load_ddk_matrix(root: Path) -> list[dict[str, str]]:
@@ -78,9 +93,7 @@ def manager_lkm_job(condition: str) -> dict:
         'steps': [
             {'name': '检出构建工具', 'uses': 'actions/checkout@v6',
              'with': {'persist-credentials': False}},
-            {'name': '下载本次固定的 SukiSU 源码', 'uses': 'actions/download-artifact@v8',
-             'with': {'name': 'Source-SukiSU-${{ needs.prepare-matrix.outputs.ksu_short }}',
-                      'path': 'ksu-source-bundle'}},
+            source_cache_restore(),
             {'name': '还原并核实 SukiSU 源码',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''set -euo pipefail

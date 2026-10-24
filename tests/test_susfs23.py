@@ -228,6 +228,99 @@ class Susfs23ApplicationTests(unittest.TestCase):
             susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
         self.assertEqual(before, self.state())
 
+    def three_way_fixture(self, *, conflicting=False):
+        original = ('void kernel_init(void) {\n'
+                    '    native_before();\n'
+                    '    unchanged_gap();\n'
+                    '    port_target();\n'
+                    '    native_after();\n'
+                    '}\n')
+        self.core.write_text(original, encoding='utf-8', newline='\n')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'original port preimage')
+        self.core.write_text(original.replace('port_target();', 'complete_port();'), encoding='utf-8', newline='\n')
+        self.patch.write_text(self.run_git('diff', '--full-index').stdout, encoding='utf-8', newline='\n')
+        self.run_git('restore', '.')
+        updated = (original.replace('port_target();', 'upstream_replacement();') if conflicting
+                   else original.replace('native_before();', 'native_before_updated();'))
+        self.core.write_text(updated, encoding='utf-8', newline='\n')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'new official source context')
+        self.assertNotEqual(susfs.git(self.repository, 'apply', '--check', str(self.patch)).returncode, 0)
+        return updated
+
+    def test_clean_three_way_merge_preserves_upstream_edit_and_reverifies(self):
+        updated = self.three_way_fixture()
+        with mock.patch.object(susfs, 'verify_integration') as verify:
+            self.assertTrue(susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True))
+            self.assertEqual(self.core.read_text(), updated.replace('port_target();', 'complete_port();'))
+            self.assertFalse(susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True))
+            self.assertEqual(verify.call_count, 4)
+
+    def test_three_way_check_success_cannot_authorize_a_real_conflict(self):
+        updated = self.three_way_fixture(conflicting=True)
+        check = susfs.git(self.repository, 'apply', '--3way', '--check', str(self.patch))
+        self.assertEqual(check.returncode, 0)
+        with mock.patch.object(susfs, 'verify_integration') as verify, \
+                self.assertRaisesRegex(ValueError, 'Complete SUSFS 2.3 patch does not apply'):
+            susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True)
+        verify.assert_not_called()
+        self.assertEqual(self.core.read_text(), updated)
+        self.assertEqual(self.run_git('status', '--porcelain').stdout, '')
+
+    def test_clean_three_way_merge_missing_native_interface_never_changes_source(self):
+        updated = self.three_way_fixture()
+        with mock.patch.object(susfs, 'verify_integration', side_effect=ValueError('required interface missing')), \
+                self.assertRaisesRegex(ValueError, 'Complete SUSFS 2.3 patch does not apply'):
+            susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True)
+        self.assertEqual(self.core.read_text(), updated)
+        self.assertEqual(self.run_git('status', '--porcelain').stdout, '')
+
+    def test_three_way_materialization_never_overwrites_local_edits(self):
+        self.three_way_fixture()
+        edited = self.core.read_text().replace('native_after();', 'local_custom_change();')
+        self.core.write_text(edited, encoding='utf-8', newline='\n')
+        with mock.patch.object(susfs, 'verify_integration'), \
+                self.assertRaisesRegex(ValueError, 'differ from the pinned source'):
+            susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True)
+        self.assertEqual(self.core.read_text(), edited)
+
+    def test_native_rcu_allowlist_lookup_and_decisions_survive_the_port(self):
+        policy = self.repository / 'kernel/policy'
+        policy.mkdir()
+        allowlist = policy / 'allowlist.c'
+        native = '''bool ksu_uid_should_umount(uid_t uid) {
+    if (likely(ksu_is_manager_appid_valid()) && unlikely(ksu_get_manager_appid() == uid % PER_USER_RANGE)) {
+        // Original manager exemption removed by the SUSFS direct-hook port.
+        return false;
+    }
+    struct perm_data *p;
+    bool res;
+    rcu_read_lock();
+    res = default_non_root_profile.umount_modules;
+    hash_for_each_possible_rcu (allow_list, p, list, uid) {
+        if (p->profile.curr_uid != uid) continue;
+        if (p->profile.allow_su) res = false;
+        else if (!p->profile.nrp_config.use_default) res = p->profile.nrp_config.profile.umount_modules;
+        break;
+    }
+    rcu_read_unlock();
+    return res;
+}
+'''
+        allowlist.write_text(native, encoding='utf-8')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'new native RCU lookup')
+        ported = native[native.index('    struct perm_data'):]
+        ported = 'bool ksu_uid_should_umount(uid_t uid) {\n' + ported
+        allowlist.write_text(ported, encoding='utf-8')
+        susfs.verify_native_rcu_allowlist(self.repository)
+        for broken in (ported.replace('return res;', 'return !res;'),
+                       ported.replace('hash_for_each_possible_rcu', 'old_profile_lookup')):
+            allowlist.write_text(broken, encoding='utf-8')
+            with self.assertRaisesRegex(ValueError, 'native RCU allowlist'):
+                susfs.verify_native_rcu_allowlist(self.repository)
+
     def test_local_uapi_drift_and_staged_drift_are_rejected(self):
         for staged in (False, True):
             with self.subTest(staged=staged):

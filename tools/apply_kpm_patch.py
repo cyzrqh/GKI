@@ -65,7 +65,7 @@ def image_entry(data: bytes) -> dict:
             r'ARM64 Image exceeds the [0-9]+-byte size limit',
             r'Image has no ARM64 magic at header offset 56; expected a raw ARM64 Image',
             r'Big-endian ARM64 Image is unsupported; this build requires little endian',
-            r'Unsupported ARM64 boot entry: code0=0x[0-9a-f]+, code1=0x[0-9a-f]+; expected B or EFI MZ ADD/NOP followed by B',
+            r'Unsupported ARM64 boot entry: code0=0x[0-9a-f]+, code1=0x[0-9a-f]+; expected B or EFI MZ ADD/CCMP/NOP followed by B',
             r'ARM64 entry branch target 0x-?[0-9a-f]+ is unaligned',
             r'ARM64 entry branch at 0x[0-9a-f]+ targets 0x-?[0-9a-f]+, before executable payload \(64-byte header\)',
             r'ARM64 entry branch at 0x[0-9a-f]+ targets 0x-?[0-9a-f]+ outside Image file \(size 0x[0-9a-f]+\); target needs four bytes',
@@ -77,7 +77,7 @@ def image_entry(data: bytes) -> dict:
         raise KPMValidationError(message) from None
 
 
-def tool_failure_class(stderr: bytes) -> str:
+def tool_failure_class(*streams: bytes) -> str:
     # Never return any part of stdout/stderr. The fixed official tool can log
     # passwords; only locally written category names may leave this function.
     markers = (
@@ -90,11 +90,12 @@ def tool_failure_class(stderr: bytes) -> str:
         (b'get_kernel_info error', 'kernel-header'),
         (b'parse kernel image error', 'kernel-header'),
     )
-    if isinstance(stderr, bytes):
-        lowered = stderr.lower()
-        for marker, category in markers:
-            if marker in lowered:
-                return category
+    for stream in streams:
+        if isinstance(stream, bytes):
+            lowered = stream.lower()
+            for marker, category in markers:
+                if marker in lowered:
+                    return category
     return 'unclassified'
 
 
@@ -264,7 +265,10 @@ def verify_patched(before: bytes, after: bytes, payload: bytes) -> dict:
     if (kimg_size != len(before) or kpimg_size != len(payload) or kernel_size != original['image_size']
             or setup_offset != offset or start_offset != expected_start or extra_size != EXTRA_SIZE
             or page_shift not in (12, 14, 16) or map_offset % 16 or not 0 < map_max_size <= 0xa00
-            or map_offset < 64 or map_offset + map_max_size * 2 > len(before)
+            # Official symbol.c requires a page in the original file after
+            # the usable anchor; floor-aligning that anchor cannot reduce it.
+            # patch.c clamps its optional doubled sync window at EOF.
+            or map_offset < 64 or map_offset + PAGE > len(before)
             or after[setup + 160:setup + 168] != before[:8]):
         raise KPMValidationError('Patched KPM preset does not describe the original Image and valid layout')
     return {'payload_offset': offset, 'payload_size': kpimg_size, 'extra_offset': end,
@@ -313,7 +317,7 @@ def patch(image: Path, cache_dir: Path, report: Path | None = None) -> dict:
         # Tool output can contain a caller's password. Never print it or propagate it in errors.
         if completed.returncode != 0:
             code = completed.returncode if type(completed.returncode) is int else 'unknown'
-            category = tool_failure_class(completed.stderr)
+            category = tool_failure_class(completed.stderr, completed.stdout)
             raise KPMError('run-tool', f'Official KPM tool failed (exit={code}, class={category}); original Image is unchanged')
         after = checked('read-output', _read_regular, output, MAX_IMAGE_SIZE)
         layout = checked('verify-layout', verify_patched, before, after, assets['kpimg'])

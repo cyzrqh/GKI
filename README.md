@@ -92,7 +92,7 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 
 历史 5.10/5.15 的 fdinfo 会先适配旧源码上下文，再应用完整 SUSFS 2.3 补丁，并保留原生事件掩码的行为。编译前核对实际 KSTAT 与挂载隐藏功能代码，防止用旧版补丁补了一部分功能后误报成功。
 
-启用 KPM 时，直接使用 SukiSU 官方 KernelPatch **0.13.9** 发布的 `kptools-linux` 与独立 `kpimg`，完整提交、大小和 SHA256 固定在 `config/kpm-release.json`。编译前核验工具与真实 ARM64 载荷，编译后通过标准输入传递超级密码，再核对补丁入口、完整载荷与原始 Image 信息；任何检查失败都保留原始 Image 并停止发布。
+启用 KPM 时，直接使用 SukiSU 官方 KernelPatch **0.13.9** 发布的 `kptools-linux` 与独立 `kpimg`，完整提交、大小和 SHA256 固定在 `config/kpm-release.json`。编译前核验工具与真实 ARM64 载荷，编译后通过标准输入传递超级密码，再核对补丁入口、完整载荷与原始 Image 信息；任何检查失败都保留原始 Image 并停止发布。入口检查同时识别旧版 EFI ADD 与新版标准 EFI CCMP 指令，后者见[Android 官方内核的 efi_signature_nop](https://android.googlesource.com/kernel/common/+/refs/heads/android-mainline/arch/arm64/kernel/efi-header.S)；两种格式都必须紧接有效跳转，目标不得位于文件外、头部或空指令。KPM 错误报告会注明安全的处理阶段及校验原因，不输出超级密码或工具原始日志。
 
 旧构建使用的嵌入式 KPM 包装器可能携带空占位载荷并返回成功；来自[旧运行 40062459370](https://github.com/cyzrqh/gki/actions/runs/40062459370) 的 `android12-5.10.236-2025-05-AnyKernel3.zip` 实际把入口指向文件之外。该旧运行的文件不能继续用于刷机，需重新编译，不能仅修改跳转来修复。现在所有最终 Image 在打包与发布时都检查 ARM64 启动入口，但静态检查通过仍不等同于实机启动验证。
 
@@ -129,7 +129,7 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 - **Android GKI 目录：** 直接读取 `android.googlesource.com/kernel/manifest` 与 `kernel/common` 的 Gitiles refs，只纳入上述五组 Android/内核配对的月度分支，核对官方 Makefile 的完整版本，新增行固定为读取时的完整源码 SHA。历史月份、已有 refs 与 LTS 保留在 `data/kernels.json`。
 - **SukiSU / SUSFS：** 直接检测 SukiSU 官方提交与发布、SUSFS 官方各 GKI 分支，将新候选自动记录到 `data/upstream-candidates.json`。SukiSU 构建每次实时解析所选官方来源。SUSFS 的候选记录用于追踪更新，固定配对和内核适配基线的变更仍需接口适配和真实编译验证。
 
-SukiSU 普通更新不再因为整个源码目录的指纹变化而被拒绝。展开构建矩阵前，会在隔离副本上选择能够完整应用的 SUSFS 2.3 适配补丁，实际应用、反向验证并检查必要接口和原生功能；全部通过后才导出固定源码快照。正式版与包含 AVC 功能的新版均有适配，管理器与内核使用同一次选定的官方提交。真正的补丁冲突、接口缺失或原生实现被改变仍会停止构建并报告原因；通过预检不代表所有内核组合均已编译或实机验证。
+SukiSU 普通更新不再因为整个源码目录的指纹变化而被拒绝。展开构建矩阵前，会在隔离副本上选择能够完整应用的 SUSFS 2.3 适配补丁；仅上下文变化时也可尝试三方合并，要求实际合并无冲突、必要接口和原生功能完整，并且实际逆向操作能够恢复原始源码。全部通过后才导出固定源码快照。正式版、AVC 功能及新的 RCU 查找逻辑均有适配，管理器与内核使用同一次选定的官方提交。真正的补丁冲突、接口缺失或原生实现被改变仍会停止构建并报告原因；通过预检不代表所有内核组合均已编译或实机验证。
 
 发现变化时自动创建或更新数据 PR，并在归属、修改范围及数据内容校验通过后立即合并，无需手动点 Merge。相同候选已有待处理 PR 时，直接验证并同步该 PR。自动合并只允许 `data/kernels.json` 和 `data/upstream-candidates.json`；保留已有内核记录，新增版本必须固定完整源码 SHA，不修改构建脚本、SUSFS 配对或签名。GitHub 分支规则或合并冲突阻止同步时，运行会报错并保留 PR，供处理后重试。
 

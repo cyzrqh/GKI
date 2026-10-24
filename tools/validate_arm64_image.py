@@ -16,6 +16,7 @@ HEADER_SIZE = 64
 MAX_IMAGE_SIZE = 256 * 1024 * 1024
 ARM64_MAGIC = b'ARM\x64'
 EFI_MZ_ADD = 0x91005A4D  # add x13, x18, #0x16; its first bytes spell MZ.
+EFI_SIGNATURE_NOP = 0xFA405A4D  # ccmp x18, #0, #0xd, pl; Linux's current MZ signature.
 NOP = 0xD503201F
 
 
@@ -35,7 +36,7 @@ def _branch_displacement(instruction: int) -> int:
 def validate_image(data: bytes) -> dict:
     """Return public header/entry details, or raise ValueError on an invalid Image.
 
-    Linux normally starts with B, or its EFI MZ ADD followed by B. A NOP
+    Linux normally starts with B, or its exact EFI MZ ADD/CCMP followed by B. A NOP
     followed by B also has unambiguous fall-through semantics. Do not scan for
     an arbitrary branch after an unknown or control-flow-changing code0.
     image_size describes memory requirements and need not equal the file size;
@@ -56,12 +57,12 @@ def validate_image(data: bytes) -> dict:
 
     if _is_branch(code0):
         branch_offset, branch_instruction = 0, code0
-    elif code0 in (EFI_MZ_ADD, NOP) and _is_branch(code1):
+    elif code0 in (EFI_MZ_ADD, EFI_SIGNATURE_NOP, NOP) and _is_branch(code1):
         branch_offset, branch_instruction = 4, code1
     else:
         raise ValueError(
             f'Unsupported ARM64 boot entry: code0=0x{code0:08x}, code1=0x{code1:08x}; '
-            'expected B or EFI MZ ADD/NOP followed by B'
+            'expected B or EFI MZ ADD/CCMP/NOP followed by B'
         )
 
     branch_displacement = _branch_displacement(branch_instruction)

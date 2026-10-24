@@ -42,6 +42,43 @@ class Arm64ImageTests(unittest.TestCase):
         self.assertEqual(details['file_size'], 256)
         self.assertEqual(details['target_instruction'], 0xD503201F)
 
+    def test_linux_ccmp_efi_signature_falls_through_to_the_real_branch(self):
+        data = bytearray(image())
+        # Exact Linux efi_signature_nop: ccmp x18, #0, #0xd, pl.
+        struct.pack_into('<I', data, 0, 0xFA405A4D)
+        details = arm64.validate_image(bytes(data))
+        self.assertEqual(details['code0'], 0xFA405A4D)
+        self.assertEqual(details['branch_offset'], 4)
+        self.assertEqual(details['branch_target'], 128)
+        self.assertEqual(details['target_instruction'], 0xD503201F)
+
+    def test_ccmp_efi_signature_still_requires_a_valid_unconditional_branch(self):
+        for instruction in (0, 0xD503201F, 0x9400001F, 0xD61F0000):
+            data = bytearray(image())
+            struct.pack_into('<II', data, 0, 0xFA405A4D, instruction)
+            with self.subTest(instruction=instruction), self.assertRaisesRegex(ValueError, 'Unsupported ARM64 boot entry'):
+                arm64.validate_image(bytes(data))
+        for target, reason in ((4, '64-byte header'), (256, 'outside Image'), (-4, '64-byte header')):
+            data = bytearray(image(target=target))
+            struct.pack_into('<I', data, 0, 0xFA405A4D)
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, reason):
+                arm64.validate_image(bytes(data))
+        for instruction in (0, 0xFFFFFFFF):
+            data = bytearray(image())
+            struct.pack_into('<I', data, 0, 0xFA405A4D)
+            struct.pack_into('<I', data, 128, instruction)
+            with self.subTest(target_instruction=instruction), self.assertRaisesRegex(ValueError, 'empty/erased'):
+                arm64.validate_image(bytes(data))
+
+    def test_efi_signature_is_an_exact_instruction_allowlist_not_arbitrary_mz(self):
+        # Similar encodings, including other values starting with MZ, must not
+        # acquire fall-through semantics just because code1 is a valid branch.
+        for instruction in (0xFA415A4D, 0xFA005A4D, 0xFA405A4C, 0xF8405A4D, 0xD61F5A4D):
+            data = bytearray(image())
+            struct.pack_into('<I', data, 0, instruction)
+            with self.subTest(instruction=instruction), self.assertRaises(ValueError):
+                arm64.validate_image(bytes(data))
+
     def test_direct_code0_branch_takes_precedence_over_code1(self):
         data = bytearray(image(efi=False))
         struct.pack_into('<I', data, 4, branch(-4))

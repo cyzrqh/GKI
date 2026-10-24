@@ -343,6 +343,34 @@ class KsuSourceSnapshotTests(unittest.TestCase):
         self.restore()
         self.assertEqual((self.destination / 'kernel/Kbuild').read_text(), 'original kernel\n')
 
+    def test_checked_patch_prepare_materializes_clean_merge_and_exports_native_source(self):
+        import apply_susfs23
+        profile, patch = self.checked_patch_fixture()
+        core = self.source / 'kernel/core/init.c'
+        core.parent.mkdir()
+        native = ('void init(void) {\n    native_before();\n    unchanged_gap();\n'
+                  '    port_target();\n    native_after();\n}\n')
+        core.write_text(native, encoding='utf-8', newline='\n')
+        self.commit('port preimage')
+        core.write_text(native.replace('port_target();', 'complete_port();'), encoding='utf-8', newline='\n')
+        patch.write_text(self.git(self.source, 'diff', '--full-index') + '\n', encoding='utf-8', newline='\n')
+        self.git(self.source, 'restore', '.')
+        updated = native.replace('native_before();', 'native_before_updated();')
+        core.write_text(updated, encoding='utf-8', newline='\n')
+        self.commit('new upstream context')
+        self.reference = self.git(self.source, 'rev-parse', 'HEAD')
+        def verify_port(directory):
+            self.assertEqual((directory / 'kernel/core/init.c').read_text(),
+                             updated.replace('port_target();', 'complete_port();'))
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                mock.patch.object(apply_susfs23, 'verify_integration', side_effect=verify_port) as verify:
+            self.create(susfs=True, tier='Latest(最新)')
+            self.assertEqual(verify.call_count, 2)
+        self.assertEqual(core.read_text(), updated)
+        self.assertEqual(self.git(self.source, 'status', '--porcelain'), '')
+        self.restore()
+        self.assertEqual((self.destination / 'kernel/core/init.c').read_text(), updated)
+
 
 if __name__ == "__main__":
     unittest.main()

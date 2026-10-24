@@ -205,11 +205,45 @@ def verify_native_avc(repository: Path) -> None:
                          (source / "runtime/boot_event.c").read_text(encoding="utf-8"))
 
 
+def allowlist_umount_body(content: str) -> str:
+    code = strip_comments_and_literals(content)
+    signature = re.search(r"\bbool\s+ksu_uid_should_umount\s*\(\s*uid_t\s+uid\s*\)\s*\{", code)
+    if signature is None:
+        raise ValueError("Selected SukiSU allowlist umount function is missing")
+    depth = 1
+    for offset in range(signature.end(), len(code)):
+        depth += (code[offset] == "{") - (code[offset] == "}")
+        if depth == 0:
+            return code[signature.end():offset]
+    raise ValueError("Selected SukiSU allowlist umount function is incomplete")
+
+
+def verify_native_rcu_allowlist(repository: Path) -> None:
+    selected = git(repository, "show", "HEAD:kernel/policy/allowlist.c")
+    if selected.returncode or "hash_for_each_possible_rcu" not in selected.stdout:
+        return
+    original = allowlist_umount_body(selected.stdout)
+    if "hash_for_each_possible_rcu" not in original:
+        return
+    # The SUSFS direct-hook port removes the manager exemption; the selected
+    # upstream's complete RCU lookup and decision logic must otherwise survive.
+    guard = (r"if\s*\(\s*likely\s*\(\s*ksu_is_manager_appid_valid\s*\(\s*\)\s*\)\s*&&\s*"
+             r"unlikely\s*\(\s*ksu_get_manager_appid\s*\(\s*\)\s*==\s*uid\s*%\s*PER_USER_RANGE\s*\)\s*\)"
+             r"\s*\{\s*return\s+false\s*;\s*\}")
+    expected, count = re.subn(guard, "", original)
+    if count > 1:
+        raise ValueError("Selected SukiSU allowlist has an ambiguous manager exemption")
+    actual = allowlist_umount_body((repository / "kernel/policy/allowlist.c").read_text(encoding="utf-8"))
+    if re.sub(r"\s+", "", expected) != re.sub(r"\s+", "", actual):
+        raise ValueError("SukiSU native RCU allowlist lookup and decisions must retain the selected implementation")
+
+
 def verify_integration(repository: Path) -> None:
     source = repository / "kernel"
     verify_patch_memory_sources(repository)
     verify_patch_memory_build((source / "Kbuild").read_text(encoding="utf-8"))
     verify_native_avc(repository)
+    verify_native_rcu_allowlist(repository)
     verify_blacklist_lifecycle((source / "core/init.c").read_text(encoding="utf-8"),
                                (source / "runtime/ksud_integration.c").read_text(encoding="utf-8"))
     original_blacklist = git(repository, "diff", "--quiet", "HEAD", "--",
@@ -251,6 +285,50 @@ def verify_integration(repository: Path) -> None:
                 raise ValueError(f"Incomplete SUSFS 2.3 integration: {relative} lacks {marker!r}")
 
 
+def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | None:
+    """Accept only an actual conflict-free, reversible merge in a separate clone."""
+    from snapshot_ksu_source import temporary_directory
+    reference = git(repository, "rev-parse", "HEAD")
+    if reference.returncode:
+        return None
+    with temporary_directory(repository.parent, ".gki-susfs-merge-") as temporary:
+        checked = temporary / "source"
+        bundle = temporary / "source.bundle"
+        if git(repository, "bundle", "create", str(bundle), "HEAD", "--tags").returncode:
+            return None
+        cloned = git(temporary, "clone", "--quiet", "--no-checkout",
+                     "--config", "core.autocrlf=false", str(bundle), str(checked))
+        if cloned.returncode:
+            return None
+        for candidate in candidates:
+            if git(checked, "reset", "--hard", "--quiet", reference.stdout.strip()).returncode:
+                return None
+            merged = git(checked, "apply", "--3way", str(candidate))
+            if merged.returncode or git(checked, "ls-files", "--unmerged").stdout.strip():
+                continue
+            if git(checked, "diff", "--quiet", "HEAD", "--", "uapi").returncode:
+                continue
+            try:
+                verify_integration(checked)
+            except (OSError, ValueError):
+                continue
+            materialized = git(checked, "diff", "--binary", "--full-index", "HEAD", "--", "kernel")
+            if materialized.returncode or not materialized.stdout.strip():
+                continue
+            # --3way --check can return success while reporting conflicts.
+            # Require a real reverse operation and a completely restored source.
+            reversed_port = git(checked, "apply", "--reverse", "--3way", str(candidate))
+            if (reversed_port.returncode or git(checked, "ls-files", "--unmerged").stdout.strip()
+                    or git(checked, "diff", "--quiet", "HEAD", "--", "kernel", "uapi").returncode):
+                continue
+            prepared = temporary / "verified-merge.patch"
+            prepared.write_text(materialized.stdout, encoding="utf-8", newline="\n")
+            # The materialized patch is based on this exact HEAD. Applying it
+            # uses the ordinary clean-source, reverse and native checks again.
+            return apply_reviewed_port(repository, prepared)
+    return None
+
+
 def apply_reviewed_port(repository: Path, patch: Path, *, allow_variants: bool = False) -> bool:
     """Prove and apply the real port, for prepare clones and kernel jobs alike.
 
@@ -260,9 +338,11 @@ def apply_reviewed_port(repository: Path, patch: Path, *, allow_variants: bool =
     verify_patch_memory_sources(repository)
     patch = patch.resolve(strict=True)
     candidates = [patch]
-    variant = patch.with_name("sukisu-susfs23-avc.patch")
-    if allow_variants and variant.is_file():
-        candidates.append(variant.resolve(strict=True))
+    if allow_variants:
+        for name in ("sukisu-susfs23-avc.patch", "sukisu-susfs23-avc-rcu.patch"):
+            variant = patch.with_name(name)
+            if variant.is_file() and variant.resolve() not in candidates:
+                candidates.append(variant.resolve(strict=True))
     paths = tuple(dict.fromkeys(path for candidate in candidates for path in patch_files(candidate)))
     if git(repository, "diff", "--quiet", "HEAD", "--", "uapi").returncode:
         raise ValueError("SukiSU UAPI files differ from the selected source")
@@ -274,15 +354,20 @@ def apply_reviewed_port(repository: Path, patch: Path, *, allow_variants: bool =
             return False
     # Refuse partial application or other local edits, including staged changes.
     clean = git(repository, "diff", "--quiet", "HEAD", "--", *paths)
-    if clean.returncode:
-        raise ValueError("SukiSU integration files differ from the pinned source; refusing a partial or conflicting patch")
     selected = None
-    for candidate in candidates:
-        checked = git(repository, "apply", "--check", str(candidate))
-        if checked.returncode == 0:
-            selected = candidate
-            break
+    if clean.returncode == 0:
+        for candidate in candidates:
+            checked = git(repository, "apply", "--check", str(candidate))
+            if checked.returncode == 0:
+                selected = candidate
+                break
     if selected is None:
+        if allow_variants:
+            merged = apply_three_way_port(repository, candidates)
+            if merged is not None:
+                return merged
+        if clean.returncode:
+            raise ValueError("SukiSU integration files differ from the pinned source; refusing a partial or conflicting patch")
         raise ValueError("Complete SUSFS 2.3 patch does not apply; no source was changed. " + checked.stderr.strip())
     applied = git(repository, "apply", str(selected))
     if applied.returncode:

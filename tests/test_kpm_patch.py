@@ -193,6 +193,19 @@ class KpmPatchTests(unittest.TestCase):
         self.assertEqual(result['post_entry']['branch_target'], 12288)
         self.assertFalse(list(self.directory.glob('.kpm-patch-*')))
 
+    def test_linux_ccmp_efi_signature_survives_verified_kpm_patching(self):
+        before = bytearray(self.before)
+        struct.pack_into('<I', before, 0, 0xFA405A4D)
+        self.before = bytes(before)
+        self.image.write_bytes(self.before)
+        with mock.patch.object(kpm.subprocess, 'run', side_effect=self.run_tool):
+            result = kpm.patch(self.image, self.cache)
+        self.assertEqual(result['pre_entry']['code0'], 0xFA405A4D)
+        self.assertEqual(result['post_entry']['code0'], 0xFA405A4D)
+        self.assertEqual(result['post_entry']['branch_target'], result['layout']['payload_offset'] + kpm.PAGE)
+        self.assertEqual(self.image.read_bytes()[8:64], self.before[8:64])
+        self.assertEqual(self.image.read_bytes(), patched_fixture(self.before, self.payload))
+
     def test_custom_password_only_stdin_never_logs_or_report(self):
         secret = 'test-secret-private-value'
         output = io.StringIO()
@@ -270,17 +283,20 @@ class KpmPatchTests(unittest.TestCase):
 
     def test_failed_tool_reports_only_exit_code_and_fixed_category_never_its_streams(self):
         secret = 'private-password-only-in-tool-streams'
-        failure = subprocess.CompletedProcess([], 7, secret.encode(),
-                                               (secret + '\nanalyze_kallsym_info error\n' + secret).encode())
-        with mock.patch.dict(os.environ, {'KPM_PASSWORD': secret}), \
-                mock.patch.object(kpm.subprocess, 'run', return_value=failure):
-            status, message = self.diagnostic()
-        self.assertEqual(status, 1)
-        self.assertIn('[run-tool]', message)
-        self.assertIn('exit=7, class=kernel-symbols', message)
-        self.assertNotIn(secret, message)
-        self.assertNotIn('analyze_kallsym_info error', message)
-        self.assertEqual(self.image.read_bytes(), self.before)
+        for error_stream in ('stdout', 'stderr'):
+            streams = {'stdout': secret.encode(), 'stderr': secret.encode()}
+            streams[error_stream] = (secret + '\nanalyze_kallsym_info error\n' + secret).encode()
+            failure = subprocess.CompletedProcess([], 7, **streams)
+            with self.subTest(error_stream=error_stream), \
+                    mock.patch.dict(os.environ, {'KPM_PASSWORD': secret}), \
+                    mock.patch.object(kpm.subprocess, 'run', return_value=failure):
+                status, message = self.diagnostic()
+            self.assertEqual(status, 1)
+            self.assertIn('[run-tool]', message)
+            self.assertIn('exit=7, class=kernel-symbols', message)
+            self.assertNotIn(secret, message)
+            self.assertNotIn('analyze_kallsym_info error', message)
+            self.assertEqual(self.image.read_bytes(), self.before)
 
     def test_external_exception_and_unknown_validation_text_are_never_published(self):
         secret = 'private-password-in-exception'
@@ -323,6 +339,48 @@ class KpmPatchTests(unittest.TestCase):
             bad[position] ^= 1
             with self.subTest(position=position), self.assertRaises(ValueError):
                 kpm.verify_patched(self.before, bytes(bad), self.payload)
+
+    def map_fixture(self, remaining):
+        # The native selector floor-aligns a usable text anchor to 16 bytes.
+        # Choose a fixed aligned anchor, with EOF 0x1000..0x13ff bytes later.
+        anchor = 0x1000
+        before = bytearray(self.before[:anchor] + bytes(remaining))
+        struct.pack_into('<Q', before, 16, len(before))
+        after = bytearray(patched_fixture(bytes(before), self.payload))
+        setup = ((len(before) + kpm.PAGE - 1) // kpm.PAGE * kpm.PAGE) + 64
+        struct.pack_into('<QQ', after, setup + 64, anchor, 0xa00)
+        # Model official patch.c's min(2 * map_max_size, filelen-map_start)
+        # sync without extending the kernel into padding or the KPM payload.
+        sync_size = min(0x1400, len(before) - anchor)
+        after[anchor:anchor + sync_size] = b'\x1f\x20\x03\xd5' * (sync_size // 4) + \
+            b'\x1f\x20\x03\xd5'[:sync_size % 4]
+        return bytes(before), bytes(after)
+
+    def test_official_mapping_tail_accepts_clamped_sync_but_stays_inside_original_file(self):
+        for remaining in (0x1000, 0x1001, 0x13f0, 0x13ff):
+            before, after = self.map_fixture(remaining)
+            with self.subTest(remaining=remaining):
+                layout = kpm.verify_patched(before, after, self.payload)
+                self.assertEqual(layout['map_offset'], 0x1000)
+                self.assertEqual(layout['map_max_size'], 0xa00)
+                self.assertLessEqual(layout['map_offset'] + kpm.PAGE, len(before))
+                self.assertGreater(layout['map_offset'] + 2 * layout['map_max_size'], len(before))
+        for remaining in (0xff0, 0xfff):
+            before, after = self.map_fixture(remaining)
+            with self.subTest(rejected_remaining=remaining), self.assertRaisesRegex(ValueError, 'preset'):
+                kpm.verify_patched(before, after, self.payload)
+
+    def test_out_of_bounds_mapping_from_tool_never_replaces_original_image(self):
+        before, invalid = self.map_fixture(0xff0)
+        self.image.write_bytes(before)
+        def invalid_map(argv, **kwargs):
+            Path(argv[argv.index('-o') + 1]).write_bytes(invalid)
+            return subprocess.CompletedProcess(argv, 0, b'', b'')
+        with mock.patch.object(kpm.subprocess, 'run', side_effect=invalid_map):
+            status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[verify-layout]', message)
+        self.assertEqual(self.image.read_bytes(), before)
 
     def test_out_of_file_branch_and_fake_16byte_payload_are_rejected(self):
         bad = bytearray(self.before + b'\xaa' + bytes(143))

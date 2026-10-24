@@ -87,6 +87,8 @@ def feature_inputs(source):
         fields.pop(key)
     fields['build_time']['default'] = ''
     fields['build_time']['description'] = '构建时间（留空使用当前 UTC）'
+    for option in ('use_bbg', 'use_ddk', 'use_ntsync', 'use_networking'):
+        fields[option]['default'] = False
     selection = {
         'operation': {'description': '操作', 'required': True, 'type': 'choice',
                       'options': ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'], 'default': '编译内核'},

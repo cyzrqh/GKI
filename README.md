@@ -90,7 +90,7 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 
 启用 KPM 时，直接使用 SukiSU 官方 KernelPatch **0.13.9** 发布的 `kptools-linux` 与独立 `kpimg`，完整提交、大小和 SHA256 固定在 `config/kpm-release.json`。编译前核验工具与真实 ARM64 载荷，编译后通过标准输入传递超级密码，再核对补丁入口、完整载荷与原始 Image 信息；任何检查失败都保留原始 Image 并停止发布。
 
-旧构建使用的嵌入式 KPM 包装器可能携带空占位载荷并返回成功；已收到的 `android12-5.10.236-2025-05-AnyKernel3.zip` 实际把入口指向文件之外。该文件不能继续用于刷机，需重新编译，不能仅修改跳转来修复。现在所有最终 Image 在打包与发布时都检查 ARM64 启动入口，但静态检查通过仍不等同于实机启动验证。
+旧构建使用的嵌入式 KPM 包装器可能携带空占位载荷并返回成功；来自[旧运行 40062459370](https://github.com/cyzrqh/gki/actions/runs/40062459370) 的 `android12-5.10.236-2025-05-AnyKernel3.zip` 实际把入口指向文件之外。该旧运行的文件不能继续用于刷机，需重新编译，不能仅修改跳转来修复。现在所有最终 Image 在打包与发布时都检查 ARM64 启动入口，但静态检查通过仍不等同于实机启动验证。
 
 **验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 修复后也已[单独补测成功](https://github.com/cyzrqh/gki/actions/runs/39901348783)，包含内核编译、产物校验和 Release 发布。此前的 `SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
 

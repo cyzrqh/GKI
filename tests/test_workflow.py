@@ -634,6 +634,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('patch_linux', patch['run'])
         self.assertNotIn('./patch', patch['run'])
         self.assertIn('--cache-dir "$KPM_CACHE_DIR"', patch['run'])
+        # Match the compiler's selected build system, including older trees
+        # that may still carry build.sh regardless of their Android label.
+        condition = 'if [ -f "$KERNEL_ROOT/build/build.sh" ]; then'
+        self.assertIn(condition, patch['run'])
+        self.assertIn(condition, self.find('准备 AK3 内核文件')['run'])
+        self.assertIn('target="$(realpath -e "$target")"', patch['run'])
         self.assertNotIn('if', entry)
         self.assertIn('tools/validate_arm64_image.py', entry['run'])
         self.assertLess(names.index('准备 AK3 内核文件'), names.index(entry['name']))

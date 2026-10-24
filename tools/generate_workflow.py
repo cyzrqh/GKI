@@ -127,7 +127,7 @@ exit 1
 '''
 
 PREPARE_IMAGE = '''set -euo pipefail
-if [ "$GKI_ANDROID" = android12 ] || [ "$GKI_ANDROID" = android13 ]; then
+if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
   src="$KERNEL_ROOT/out/${GKI_ANDROID}-${GKI_KERNEL}/dist"
 else
   src="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64"
@@ -513,10 +513,11 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
     kpm['env'] = {'KPM_PASSWORD': '${{ inputs.kpm_password }}',
                   'GKI_ANDROID': '${{ matrix.android_version }}', 'GKI_KERNEL': '${{ matrix.kernel_version }}'}
     kpm['run'] = '''set -euo pipefail
-case "$GKI_ANDROID" in
-  android12|android13) target="$KERNEL_ROOT/out/$GKI_ANDROID-$GKI_KERNEL/dist" ;;
-  *) target="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64" ;;
-esac
+if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
+  target="$KERNEL_ROOT/out/$GKI_ANDROID-$GKI_KERNEL/dist"
+else
+  target="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64"
+fi
 target="$(realpath -e "$target")"
 python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" patch \\
   --image "$target/Image" --cache-dir "$KPM_CACHE_DIR" --report "$target/gki-kpm-patch.json"

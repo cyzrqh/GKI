@@ -6,7 +6,6 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 from datetime import datetime
-from itertools import zip_longest
 import json
 import os
 from pathlib import Path
@@ -195,9 +194,9 @@ def build_matrix(
         raise ValueError("the selected kernels and targets produce an empty build matrix")
     if len(output) > 256:
         raise ValueError(f"matrix has {len(output)} jobs; GitHub Actions allows at most 256 per matrix; narrow kernel versions or targets")
-    # Offer the newest target from every selected family before its older
-    # history. This only changes scheduling order: all exact version/month
-    # identities above remain present, including explicitly requested LTS.
+    # Keep each family together in the Actions task list, newest first within
+    # each family. All exact version/month identities remain present, including
+    # explicitly requested LTS. Concurrent execution is configured separately.
     families = [sorted(
         (row for row in output.values() if row["kernel_version"] == family),
         key=lambda row: (
@@ -207,7 +206,7 @@ def build_matrix(
         ),
         reverse=True,
     ) for family in KERNELS]
-    return [row for turn in zip_longest(*families) for row in turn if row is not None]
+    return [row for family in families for row in family]
 
 
 def _boolean(value: str) -> bool:
@@ -254,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                     stream.write(f"- 选择范围：指定版本（{args.targets}）。\n")
                 else:
                     stream.write("- 选择范围：所选系列的全部历史版本与补丁月份。\n")
-                stream.write("- 调度顺序：按所选内核系列轮转，每系列优先较新版本和补丁月份；目标数量不变。\n\n")
+                stream.write("- 任务排列：按 5.10、5.15、6.1、6.6、6.12 系列分组，组内版本及补丁月份从新到旧；实际任务仍并行执行。\n\n")
                 for kernel in KERNELS:
                     if counts[kernel]:
                         stream.write(f"- {kernel}：{counts[kernel]}\n")

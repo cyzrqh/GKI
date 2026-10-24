@@ -67,19 +67,22 @@ class MatrixTests(unittest.TestCase):
         self.assertTrue(by_month["2025-08"]["kernel_ref"].startswith("refs/tags/"))
         self.assertTrue(by_month["2025-09"]["kernel_ref"].startswith("refs/heads/"))
 
-    def test_all_starts_with_latest_target_from_each_family_and_keeps_history(self):
+    def test_all_groups_families_with_newest_target_first_and_keeps_history(self):
         rows = matrix.build_matrix(self.root)
         declared = expected_identities(self.root)
         families = ["5.10", "5.15", "6.1", "6.6", "6.12"]
-        self.assertEqual(families * 2, [row["kernel_version"] for row in rows[:10]])
-        for index, family in enumerate(families):
+        transitions = [row["kernel_version"] for index, row in enumerate(rows)
+                       if index == 0 or row["kernel_version"] != rows[index - 1]["kernel_version"]]
+        self.assertEqual(families, transitions)
+        for family in families:
             newest = max((identity for identity in declared if identity[1] == family),
                          key=lambda identity: (int(identity[2]), identity[3]))
-            self.assertEqual(newest, tuple(rows[index][field] for field in IDENTITY_FIELDS))
+            first = next(row for row in rows if row["kernel_version"] == family)
+            self.assertEqual(newest, tuple(first[field] for field in IDENTITY_FIELDS))
         self.assertEqual(declared, row_identities(rows))
         self.assertEqual(len(declared), len(rows))
 
-    def test_round_robin_drains_uneven_families_and_schedules_lts_after_monthly_history(self):
+    def test_grouped_families_keep_versions_months_and_lts_in_order(self):
         entries = []
         for family, sublevel, month in (
             ("5.10", "90", "2023-01"), ("5.10", "100", "2024-01"),
@@ -93,10 +96,10 @@ class MatrixTests(unittest.TestCase):
             json.dumps({"schema_version": 1, "entries": entries}), encoding="utf-8")
         rows = matrix.build_matrix(self.root, include_lts=True)
         self.assertEqual([
-            ("5.10", "100", "2024-02"), ("5.15", "21", "2023-01"),
-            ("6.1", "5", "2023-02"), ("5.10", "100", "2024-01"),
-            ("5.15", "20", "2023-09"), ("5.10", "90", "2023-01"),
-            ("5.10", "X", "lts"),
+            ("5.10", "100", "2024-02"), ("5.10", "100", "2024-01"),
+            ("5.10", "90", "2023-01"), ("5.10", "X", "lts"),
+            ("5.15", "21", "2023-01"), ("5.15", "20", "2023-09"),
+            ("6.1", "5", "2023-02"),
         ], [(row["kernel_version"], row["sub_level"], row["os_patch_level"]) for row in rows])
         monthly = matrix.build_matrix(self.root)
         self.assertEqual(expected_identities(self.root), row_identities(monthly))
@@ -236,7 +239,7 @@ class MatrixTests(unittest.TestCase):
         self.assertIn(f"count={expected_count}\n", output.read_text(encoding="utf-8"))
         self.assertIn("包含 LTS：否", summary.read_text(encoding="utf-8"))
         self.assertIn("所选系列的全部历史版本与补丁月份", summary.read_text(encoding="utf-8"))
-        self.assertIn("按所选内核系列轮转", summary.read_text(encoding="utf-8"))
+        self.assertIn("按 5.10、5.15、6.1、6.6、6.12 系列分组", summary.read_text(encoding="utf-8"))
 
     def test_cli_summary_distinguishes_explicit_targets_from_all_history(self):
         summary = self.root / "summary.md"

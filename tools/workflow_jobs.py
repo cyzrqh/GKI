@@ -3,7 +3,7 @@
 
 def updater_job():
     return {
-        'name': '检查官方源并准备更新 PR',
+        'name': '检查并自动同步官方更新',
         'if': "(github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
         'permissions': {'contents': 'read', 'pull-requests': 'write'},
@@ -79,7 +79,7 @@ if not (official_ok and catalog_ok):
 body = ('<!-- gki-upstream-sync:v1 -->\\n' + os.environ['HEADS_MARKER'] + '\\n\\n'
         '# 官方源更新\\n\\n本 PR 直接跟踪 SukiSU、SUSFS 和 Android GKI 官方源，不依赖其他构建仓库。\\n\\n'
         + status + '\\n\\n'
-        '新增 GKI 版本已核对官方 Makefile 并固定源码提交。SukiSU 构建实时解析所选官方来源，候选 PR 用于更新提示；新 APK 需要重新运行构建。SUSFS 固定配对和适配基线不会随候选记录改变，源码变化仍须通过接口检查和实际编译验证。\\n\\n'
+        '新增 GKI 版本已核对官方 Makefile 并固定源码提交。本 PR 通过数据范围和内容校验后自动合并，无需手动确认。SukiSU 构建实时解析所选官方来源；新 APK 需要重新运行构建。SUSFS 固定配对和适配基线不会随候选记录改变，源码变化仍须通过接口检查和实际编译验证。\\n\\n'
         '## 官方候选快照\\n```json\\n' + json.dumps(json.loads(os.environ['OFFICIAL_CANDIDATES']) if official_ok else None,ensure_ascii=False,indent=2) + '\\n```\\n\\n'
         '## 新增内核版本\\n```json\\n' + json.dumps(json.loads(os.environ['CATALOG_CANDIDATES']) if catalog_ok else [],ensure_ascii=False,indent=2) + '\\n```\\n')
 path.write_text(body,encoding='utf-8')
@@ -89,45 +89,51 @@ PY
 '''},
             {'name': '检查更新令牌', 'if': "steps.update.outputs.has_updates == 'true'",
              'env': {'SYNC_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN }}'},
-             'run': 'test -n "$SYNC_TOKEN" || { echo "::error::请配置 UPSTREAM_SYNC_TOKEN 以创建官方更新 PR"; exit 1; }'},
+             'run': 'test -n "$SYNC_TOKEN" || { echo "::error::请配置 UPSTREAM_SYNC_TOKEN 以自动同步官方更新"; exit 1; }'},
             {'name': '创建或更新官方源 PR', 'id': 'pr', 'if': "steps.update.outputs.has_updates == 'true'",
              'uses': 'peter-evans/create-pull-request@v8',
              'with': {'token': '${{ secrets.UPSTREAM_SYNC_TOKEN }}', 'branch': 'automation/upstream-sync',
                       'base': '${{ github.event.repository.default_branch }}',
                       'title': '${{ steps.update.outputs.title }}', 'body-path': '${{ steps.update.outputs.body_path }}',
                       'commit-message': 'Track official source updates and new GKI kernels',
-                      'assignees': '${{ github.repository_owner }}',
                       'add-paths': 'data/kernels.json\ndata/upstream-candidates.json\n'}},
-            {'name': '提醒所有者审核官方更新',
-             'if': "steps.pr.outputs.pull-request-operation == 'created' || steps.pr.outputs.pull-request-operation == 'updated'",
-             'env': {'GH_TOKEN': '${{ github.token }}', 'PR_NUMBER': '${{ steps.pr.outputs.pull-request-number }}',
-                     'REPOSITORY_OWNER': '${{ github.repository_owner }}'},
-             'run': '''gh api --method POST "repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \\
-  --raw-field body="@$REPOSITORY_OWNER 有新的官方源或 GKI 版本可审核，请查看本 PR 的适配说明。此次检查没有编译内核。"
+            {'name': '校验并自动合并官方数据更新', 'id': 'sync',
+             'if': "steps.probe.outputs.has_updates == 'true' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending == 'true')",
+             'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN }}',
+                     'CREATED_PR_NUMBER': '${{ steps.pr.outputs.pull-request-number }}',
+                     'EXISTING_PR_URL': '${{ steps.guard.outputs.pull_request_url }}',
+                     'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
+             'run': '''set -euo pipefail
+number="${CREATED_PR_NUMBER:-${EXISTING_PR_URL##*/}}"
+python3 tools/auto_merge_official_update.py --pull-request "$number" --base "$DEFAULT_BRANCH"
 '''},
             {'name': '记录检查结果',
              'if': 'always() && !cancelled()',
-             'env': {'PR_URL': '${{ steps.pr.outputs.pull-request-url }}',
+             'env': {'PR_URL': '${{ steps.sync.outputs.pull_request_url || steps.pr.outputs.pull-request-url }}',
+                     'SYNC_MERGED': '${{ steps.sync.outputs.merged }}',
+                     'SYNC_COMMIT': '${{ steps.sync.outputs.merge_commit }}',
                      'HAS_UPDATES': '${{ steps.probe.outputs.has_updates }}',
                      'EXISTING_PR': '${{ steps.guard.outputs.pull_request_url }}',
                      'OFFICIAL_RESULT': '${{ steps.official.outcome }}',
                      'CATALOG_RESULT': '${{ steps.catalog.outcome }}'},
-             'run': '''if [ -n "$PR_URL" ]; then
-  printf '已准备官方更新 PR：%s\\n' "$PR_URL" >> "$GITHUB_STEP_SUMMARY"
+             'run': '''if [ "$SYNC_MERGED" = true ]; then
+  printf '官方更新已自动同步：%s（提交 %s）。无需手动合并，本次没有编译。\\n' "$PR_URL" "$SYNC_COMMIT" >> "$GITHUB_STEP_SUMMARY"
+elif [ -n "$PR_URL" ]; then
+  printf '官方更新尚未自动同步，请查看校验或合并步骤：%s\\n' "$PR_URL" >> "$GITHUB_STEP_SUMMARY"
 elif [ -n "$EXISTING_PR" ]; then
-  printf '相同官方版本已有待审核 PR：%s\\n' "$EXISTING_PR" >> "$GITHUB_STEP_SUMMARY"
+  printf '官方更新仍待同步，请查看校验或合并步骤：%s\\n' "$EXISTING_PR" >> "$GITHUB_STEP_SUMMARY"
 elif [ "$OFFICIAL_RESULT" = success ] && [ "$CATALOG_RESULT" = success ] && [ "$HAS_UPDATES" = false ]; then
   echo '未发现新的官方源或 GKI 版本。' >> "$GITHUB_STEP_SUMMARY"
 elif [ "$HAS_UPDATES" = true ]; then
-  echo '已发现官方更新候选，但尚无可用 PR；请检查前面的分支归属、令牌或 PR 创建步骤。' >> "$GITHUB_STEP_SUMMARY"
+  echo '已发现官方更新，但未能完成自动同步；请检查分支归属、令牌及 PR 步骤。' >> "$GITHUB_STEP_SUMMARY"
 fi
 if [ "$OFFICIAL_RESULT" != success ] || [ "$CATALOG_RESULT" != success ]; then
-  printf '\\n部分官方检查未完成：SukiSU/SUSFS=%s，Android GKI=%s。已成功检测的候选可审核，失败部分须重试；不能确认全部官方源是否更新。\\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"
+  printf '\\n部分官方检查未完成：SukiSU/SUSFS=%s，Android GKI=%s。仅同步成功检查且通过校验的数据，失败部分须重试；不能确认全部官方源是否更新。\\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"
 fi
 '''},
             {'name': '提示未完成的官方检查',
              'if': "always() && !cancelled() && (steps.official.outcome == 'failure' || steps.catalog.outcome == 'failure')",
-             'run': '''echo '::error::部分官方源检查失败；请查看失败步骤的 HTTP 或数据错误并重试。成功部分的更新候选可能已创建 PR。'
+             'run': '''echo '::error::部分官方源检查失败；请查看失败步骤并重试。仅成功检查且通过校验的数据可能已自动同步。'
 exit 1
 '''},
         ],

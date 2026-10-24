@@ -687,7 +687,7 @@ PY
     }
     workflow = {
         'name': 'GKI 全属性内核构建矩阵',
-        'run-name': "${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '检查上游更新' || (inputs.operation == '仅编译 SukiSU 安装包' && '仅编译 SukiSU 安装包' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode)) }}",
+        'run-name': "${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '自动同步官方更新' || (inputs.operation == '仅编译 SukiSU 安装包' && '仅编译 SukiSU 安装包' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode)) }}",
         'on': {'workflow_dispatch': {'inputs': dispatch}, 'schedule': [{'cron': '17 0 * * *'}]},
         'permissions': {'contents': 'read'},
         'jobs': {'prepare-matrix': prepare, 'build-sukisu-lkm': manager_lkm_job(MANAGER_IF),

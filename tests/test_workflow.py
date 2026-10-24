@@ -101,7 +101,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('tools/', pr['with']['add-paths'])
         self.assertNotIn('tests/', pr['with']['add-paths'])
         self.assertEqual(pr['with']['add-paths'], 'data/kernels.json\ndata/upstream-candidates.json\n')
-        self.assertNotIn('auto-merge', str(steps))
+        sync = indexed['sync'][1]
+        self.assertLess(indexed['pr'][0], indexed['sync'][0])
+        self.assertIn('tools/auto_merge_official_update.py', sync['run'])
         update = indexed['update'][1]
         self.assertEqual(update['env']['OFFICIAL_CANDIDATES'], '${{ steps.official.outputs.candidates_json }}')
         self.assertEqual(update['env']['CATALOG_CANDIDATES'], '${{ steps.catalog.outputs.candidates_json }}')
@@ -110,13 +112,18 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('sync_upstream.py', str(steps))
         self.assertNotIn('xingguangcuican6666', str(steps))
 
-    def test_notification_comes_from_bot_only_when_pr_changed(self):
-        step = next(step for step in self.workflow['jobs']['check-upstream']['steps']
-                    if step['name'] == '提醒所有者审核官方更新')
-        self.assertEqual(step['env']['GH_TOKEN'], '${{ github.token }}')
-        self.assertIn("pull-request-operation == 'created'", step['if'])
-        self.assertIn("pull-request-operation == 'updated'", step['if'])
-        self.assertIn('issues/$PR_NUMBER/comments', step['run'])
+    def test_auto_sync_handles_pending_and_new_pr_without_manual_review_reminders(self):
+        steps = self.workflow['jobs']['check-upstream']['steps']
+        step = next(step for step in steps if step.get('id') == 'sync')
+        self.assertEqual(step['env']['GH_TOKEN'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
+        self.assertIn("steps.pr.outputs.pull-request-number != ''", step['if'])
+        self.assertIn("steps.guard.outputs.already_pending == 'true'", step['if'])
+        self.assertIn('--pull-request "$number" --base "$DEFAULT_BRANCH"', step['run'])
+        self.assertNotIn('issues/$PR_NUMBER/comments', str(steps))
+        self.assertNotIn('assignees', next(item for item in steps if item.get('id') == 'pr')['with'])
+        summary = next(item for item in steps if item['name'] == '记录检查结果')
+        self.assertEqual(summary['env']['SYNC_MERGED'], '${{ steps.sync.outputs.merged }}')
+        self.assertIn('无需手动合并', summary['run'])
 
     def test_catalog_cache_survives_partial_failures_and_final_status_is_explicit(self):
         steps = self.workflow['jobs']['check-upstream']['steps']

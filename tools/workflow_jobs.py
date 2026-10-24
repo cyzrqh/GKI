@@ -1,6 +1,26 @@
 """Official-source update and public release jobs for the single GKI workflow."""
 
 
+def cleanup_history_job():
+    return {
+        'name': '清理历史编译（保留5次）',
+        'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '清理历史编译（保留5次）' && github.ref_name == github.event.repository.default_branch",
+        'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
+        'permissions': {'contents': 'read', 'actions': 'write'},
+        'concurrency': {'group': '${{ github.repository }}-history-cleanup', 'cancel-in-progress': False},
+        'steps': [
+            {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
+             'with': {'ref': '${{ github.event.repository.default_branch }}', 'persist-credentials': False}},
+            {'name': '清理旧编译记录及其 Actions 产物',
+             'env': {'GH_TOKEN': '${{ github.token }}'},
+             'run': '''python3 tools/cleanup_workflow_runs.py \\
+  --repo "$GITHUB_REPOSITORY" --workflow kernel-full-feature-matrix.yml \\
+  --keep 5 --execute --summary "$GITHUB_STEP_SUMMARY"
+'''},
+        ],
+    }
+
+
 def updater_job():
     return {
         'name': '检查并自动同步官方更新',

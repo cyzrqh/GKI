@@ -4,7 +4,7 @@
 
 构建逻辑由本仓库的 `templates/`、`tools/` 和 `config/` 维护，内核版本来自自包含的 `data/kernels.json`。新增 GKI 版本直接核对 Android 官方源码，SukiSU 与 SUSFS 也直接检查各自官方源。
 
-Actions 只有一个入口：**GKI 全属性内核构建矩阵**，提供 **编译内核**、**仅编译 SukiSU 安装包** 和 **检查上游更新** 三种操作。
+Actions 只有一个入口：**GKI 全属性内核构建矩阵**，提供 **编译内核**、**仅编译 SukiSU 安装包**、**检查上游更新** 和 **清理历史编译（保留5次）** 四种操作。
 
 ## 选择构建
 
@@ -19,6 +19,8 @@ Actions 只有一个入口：**GKI 全属性内核构建矩阵**，提供 **编�
 | 同时构建数量 | 默认 20，可填写 1–20 的整数；实际启动数量取决于 GitHub 账号并发额度与可用机器 |
 
 菜单保留 KernelSU 变体、分支、SUSFS、ZRAM、BBG、DDK、NTSync、网络增强、KPM、Re-Kernel、虚拟化、自定义模块及内核配置等选项，兼容规则由本仓库维护。例如 Official 不启用 KPM，6.12 跳过不兼容的旧 ZRAM 算法。
+
+**BBG 防格机、DDK 防格机 LSM、NTsync、网络增强（IPSet + BBR）默认关闭**，需要时可在构建表单中勾选。
 
 构建 SukiSU 时，变体选择 **SukiSU**，分支可以直接选择 **SukiSU 正式版** 或 **SukiSU 最新版**：前者使用官方最新正式 Release，后者使用官方默认分支。APK 和 AK3 中的 SukiSU 使用同一提交和版本号；Android/内核版本仍由“内核系列”和“指定版本”选择。默认已选 SukiSU 最新版。其他 KernelSU 变体继续使用原有四种分支选项。
 
@@ -96,6 +98,8 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 
 [KPM 修复验证 40081347134](https://github.com/cyzrqh/gki/actions/runs/40081347134)已完成 Android 12 / 5.10.236 / 2025-05 的实际编译、完整载荷与入口检查，并[发布修复后的 AK3](https://github.com/cyzrqh/gki/releases/tag/gki-40081347134-1)。SukiSU 为 41065，SUSFS 为 v2.3.0；下载复核确认 AK3 内的 APK 配对信息与完整载荷，文件摘要与 Actions 和 Release 一致，KPM 真实载荷为 294144 字节。维护者已反馈该修复包成功开机；这一反馈只覆盖该设备与构建配置。
 
+旧全量运行中唯一未完成编译的 `5.10.237 / 2025-06` 使用了已迁移的源码分支地址，现已修正并增加同名分支迁移处理及实际源码版本校验。[单版本补测 40085533520](https://github.com/cyzrqh/gki/actions/runs/40085533520)已通过源码同步、完整版本核对、内核编译和产物检查。
+
 **验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 修复后也已[单独补测成功](https://github.com/cyzrqh/gki/actions/runs/39901348783)，包含内核编译、产物校验和 Release 发布。此前的 `SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
 
 随后 [41050 配套构建](https://github.com/cyzrqh/gki/actions/runs/39936971198)也已成功：SukiSU 提交 `3c6ecb97305d8df8e85593302c8cb8337e763262`、5.10.246、SUSFS v2.3.0，原名 `SukiSU_v4.2.1-r1_41050-release.apk` 与 AK3 已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39936971198-1)。该 APK 的完整摘要、APK v2 签名和固定证书已独立核验。内核 C 编译实际用时 6 分 27 秒；该运行仍使用旧清理步骤，单清理耗时 12 分 50 秒，不能将此耗时视为新清理方案的实测结果。
@@ -136,6 +140,12 @@ Android 目录检查缓存已核实的完整源码 SHA 与版本；未变化的�
 只读检测使用工作流自带令牌或官方公开接口。**`UPSTREAM_SYNC_TOKEN`** 用于创建并自动合并官方数据更新 PR，发布步骤也优先使用它，以支持给历史构建创建 Release。原有 Secret 可以继续使用，无需重新配置。日常 PR 只修改 `data/kernels.json` 与 `data/upstream-candidates.json`；令牌保留该仓库的 **Contents、Pull requests、Workflows: Read and write** 权限，其中 Workflows 用于历史构建的发布权限要求。
 
 如在新仓库部署，可使用仅授权该仓库的 fine-grained token，保存到同名 Actions Secret。令牌过期时续期或更新 Secret，勿将令牌放入代码或聊天。
+
+## 清理历史编译
+
+在同一个 Actions 入口将“操作”改为 **清理历史编译（保留5次）**，选择默认分支后手动运行。该操作保留最新 5 次已完成的编译运行，删除更早的编译记录、日志及其 Actions 下载产物；进行中的任务、当前清理任务和官方更新检查不参与清理。**Release 中已发布的 APK、AK3 和校验文件保留。**
+
+清理不会在编译完成后或定时检查时自动执行。本地脚本 `tools/cleanup_workflow_runs.py` 默认只预览候选列表，加 `--execute` 才删除；Actions 中显式选择上述清理操作会实际执行删除。运行摘要显示本次保留、删除及失败结果。
 
 ## 本地维护
 

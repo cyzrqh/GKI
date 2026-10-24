@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 import yaml
-from workflow_jobs import updater_job, release_job
+from workflow_jobs import updater_job, release_job, cleanup_history_job
 from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key,
                               manager_lkm_job, source_cache_restore, source_backup_restore)
 
@@ -91,7 +91,7 @@ def feature_inputs(source):
         fields[option]['default'] = False
     selection = {
         'operation': {'description': '操作', 'required': True, 'type': 'choice',
-                      'options': ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'], 'default': '编译内核'},
+                      'options': ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新', '清理历史编译（保留5次）'], 'default': '编译内核'},
         'kernel_versions': {'description': '内核系列（all 或逗号分隔：5.10,5.15,6.1,6.6,6.12）',
                             'required': True, 'type': 'string', 'default': 'all'},
         'targets': {'description': '指定版本（留空全矩阵；例 6.1.145 或 6.1.145@2025-08，逗号分隔）',
@@ -715,12 +715,13 @@ PY
     }
     workflow = {
         'name': 'GKI 全属性内核构建矩阵',
-        'run-name': "${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '自动同步官方更新' || (inputs.operation == '仅编译 SukiSU 安装包' && '仅编译 SukiSU 安装包' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode)) }}",
+        'run-name': "${{ (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && '自动同步官方更新' || (inputs.operation == '清理历史编译（保留5次）' && '清理历史编译（保留5次）' || (inputs.operation == '仅编译 SukiSU 安装包' && '仅编译 SukiSU 安装包' || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode))) }}",
         'on': {'workflow_dispatch': {'inputs': dispatch}, 'schedule': [{'cron': '17 0 * * *'}]},
         'permissions': {'contents': 'read'},
         'jobs': {'prepare-matrix': prepare, 'build-sukisu-lkm': manager_lkm_job(MANAGER_IF),
                  'build-sukisu-manager': manager_job(),
-                 'build-kernel': job, 'publish-release': release_job(), 'check-upstream': updater_job()},
+                 'build-kernel': job, 'publish-release': release_job(), 'check-upstream': updater_job(),
+                 'cleanup-history': cleanup_history_job()},
     }
     return workflow
 

@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "source_repository": "SukiSU-Ultra/SukiSU-Ultra",
+  "ddk_release": "20260828",
+  "modules": [
+    {
+      "kmi": "android12-5.10",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:272ada1e61c525116032246df2a790d1ccec1804b7a9e0b09203c5e650dcb78e",
+      "vermagic": "5.10.252-dirty SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "c3fce1ba0a00227764491d9a3aabce77ad98ea23cd7502f761894ce545bd9687",
+      "modinfo_sha256": "dcbfd46e5d729838abb0d93aa04f51cc3e076ec5401abad2a82e93798c6cc815",
+      "module_size": 510448,
+      "artifact_id": 12511082068,
+      "artifact_digest": "sha256:a1b217d9c1deab64f6f0daf98be8d0065693b4ac13d84823f02c4d85b09fe81f",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12511082068"
+    },
+    {
+      "kmi": "android13-5.10",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:e5ce038ba38408ad26aae1f2622cfb44dfbf6634b025bf197aa08beac0794f5b",
+      "vermagic": "5.10.245 SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "743a43754cacbc672badaa7273d2bca34db5ee6b39d7e618a27466dd27ce6201",
+      "modinfo_sha256": "1dc7300924b0ca8afe4782f2ec0e1049c446bb1266d16107056a75d5156be1bf",
+      "module_size": 494688,
+      "artifact_id": 12511645154,
+      "artifact_digest": "sha256:2e3f1a47bdb2c10c9ad612070d396cbeeed3f32ee43380b2ecd89ca2f04f75d3",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12511645154"
+    },
+    {
+      "kmi": "android13-5.15",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:9e68cd9fcab748584755d31ba88ef134efc938dbde17f258c2652315f6cd81cd",
+      "vermagic": "5.15.202-android13-5.15.202_r00-dirty SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "8dea925ea8d776ea88123bcc009daa3eb87f67ad392e530ec7f4c2d2e23ad24f",
+      "modinfo_sha256": "294b9de26d247eaf2811fa064293baead5f1dcd8a5934ea6c293fe831de50cfd",
+      "module_size": 529720,
+      "artifact_id": 12511236165,
+      "artifact_digest": "sha256:0e38299f9de021e8b876b01460c346da2c7d0bae6067dbc25b4cbeb43672435e",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12511236165"
+    },
+    {
+      "kmi": "android14-5.15",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:bbf697a8fe995704268eef710921c9d2ea4f146954690d7ea97887f3a4014a6a",
+      "vermagic": "5.15.202-dirty SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "30a45fd032bc9e67639b8e74bb86775f87d3b9623c27fd8210b3dd9538ece8bb",
+      "modinfo_sha256": "357ceb4e93039c0ba772c5405464785f535c2991c6ec02e9e386634e687272ce",
+      "module_size": 650168,
+      "artifact_id": 12511995556,
+      "artifact_digest": "sha256:203a26c6cad04580e3698465e60f52e41cb5476713f4aaed33c981c6db174663",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12511995556"
+    },
+    {
+      "kmi": "android14-6.1",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:1dd6ac340b627a90a4031d6d0df6b129d8cc949b139fb56032c898f023d3d5d3",
+      "vermagic": "6.1.166-dirty SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "2b05d5328be3b6dc4ffbb45197dcc47d5b6f9ec4ac14edd80fab35925522371e",
+      "modinfo_sha256": "e586d4af66d11a1d5661946c068373336b4a9d5cde6e46a11a658517a27cb2df",
+      "module_size": 543064,
+      "artifact_id": 12510209871,
+      "artifact_digest": "sha256:3196a37a454b3ee8f8983324d913c851a24a4c8f4ed752da5a2089df2b2a6b55",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12510209871"
+    },
+    {
+      "kmi": "android15-6.6",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:51159bc935c75a282fc65bc87e02f16bd098d1cdf55dc558c4fdd0fcf7a132e2",
+      "vermagic": "6.6.127-4k-g46a034eca005-dirty SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "e4a615b136830ae8c9bbda8f5b70a34bfaafa45d6a713f63b2c47eba5e1587a6",
+      "modinfo_sha256": "91dbf9772bb602cf51fb97133cc13dd38fbb7d8e81addb40da901b4addbf397d",
+      "module_size": 436088,
+      "artifact_id": 12510209888,
+      "artifact_digest": "sha256:b65ba7f4868e2e3745da5c92830313eca4c40e3f66e16043e289ad643f1ebe19",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12510209888"
+    },
+    {
+      "kmi": "android16-6.12",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:fd3ec5cc71d7f2716212e9df8d5674a9afe68fb769282fcac87b83f207f949ee",
+      "vermagic": "6.12.76-4k SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "8b8762b6da35962938832bd003842fdba71d4884bbf68129953ed1b6b7e86060",
+      "modinfo_sha256": "41cb8e65467af14df9b53b863e384d05be20ec539687ebc60cc51000b3d1c605",
+      "module_size": 512888,
+      "artifact_id": 12511022145,
+      "artifact_digest": "sha256:d61abc2d89bb02c60606ba67bce4cd778d68badd4f281528cb35e27f2abf7445",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12511022145"
+    },
+    {
+      "kmi": "android17-6.18",
+      "image": "ghcr.io/ylarod/ddk-min@sha256:fb8b66200bf402cf65a751060fc1aa29524b9fa8840feef16c7b196a4f3f0e6e",
+      "vermagic": "6.18.32-4k-g47cc22554442-dirty SMP preempt mod_unload modversions aarch64",
+      "module_sha256": "4cfbe98ea4c649c0d13119c9eb841e3aa49ba274c75c2be2523e7ba25e9c6f65",
+      "modinfo_sha256": "e157ea46b3a9afd61419045b5a0a6a528f44cd9199bd9a90f260168a71d5c2a9",
+      "module_size": 481944,
+      "artifact_id": 12511091590,
+      "artifact_digest": "sha256:7bafaa6b648e2835be287fb3a49126b31a6eec3b24b99823093d89c3e4a0b525",
+      "source_commit": "b50518a2946b7ca49e933356343526bb7dd81ff8",
+      "source_url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/actions/runs/39975135657/artifacts/12511091590"
+    }
+  ]
+}

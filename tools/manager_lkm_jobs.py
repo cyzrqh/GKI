@@ -39,19 +39,24 @@ def load_ddk_matrix(root: Path) -> list[dict[str, str]]:
         raise ValueError('The manager DDK image lock must use schema_version 1 and an images list.')
     images = {}
     for entry in document['images']:
-        if not isinstance(entry, dict) or set(entry) - {'kmi', 'image', 'ddk_short', 'tag'}:
+        if not isinstance(entry, dict) or set(entry) - {'kmi', 'image', 'ddk_short', 'tag', 'kernel_release'}:
             raise ValueError('Invalid manager DDK image entry.')
         kmi, image = entry.get('kmi'), entry.get('image')
         match = DDK_IMAGE.fullmatch(image) if isinstance(image, str) else None
         if not isinstance(kmi, str) or kmi not in KMIS or kmi in images or not match:
             raise ValueError('Every official KMI must have one fully pinned DDK image.')
+        release = entry.get('kernel_release')
+        series = kmi.split('-', 1)[1]
+        if (not isinstance(release, str) or not 1 <= len(release) <= 64
+                or not re.fullmatch(re.escape(series) + r'\.[0-9]+[A-Za-z0-9_.+-]*', release)):
+            raise ValueError('Every pinned DDK image requires its verified, matching kernel release.')
         if ('tag' in entry and (not isinstance(entry['tag'], str)
                 or not re.fullmatch(r'ghcr\.io/ylarod/ddk-min:' + re.escape(kmi) + r'-[0-9]{8}', entry['tag']))):
             raise ValueError('The human-readable DDK tag does not match its KMI.')
         short = match[1][:16]
         if 'ddk_short' in entry and entry['ddk_short'] != short:
             raise ValueError('The DDK image short digest does not match its pinned image.')
-        images[kmi] = {'kmi': kmi, 'image': image, 'ddk_short': short}
+        images[kmi] = {'kmi': kmi, 'image': image, 'ddk_short': short, 'kernel_release': release}
     if set(images) != set(KMIS):
         raise ValueError('The manager requires all eight official KMI images.')
     return [images[kmi] for kmi in KMIS]

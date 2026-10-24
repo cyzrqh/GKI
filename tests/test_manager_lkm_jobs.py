@@ -37,7 +37,8 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.directory)
         self.lock = {'schema_version': 1, 'images': [
             {'kmi': kmi, 'tag': f'ghcr.io/ylarod/ddk-min:{kmi}-20260828',
-             'image': 'ghcr.io/ylarod/ddk-min@sha256:' + str(index) * 64}
+             'image': 'ghcr.io/ylarod/ddk-min@sha256:' + str(index) * 64,
+             'kernel_release': kmi.split('-')[1] + '.123-dirty'}
             for index, kmi in enumerate(jobs.KMIS, 1)]}
         self.path = self.directory / 'config' / 'manager-ddk-images.json'
 
@@ -50,7 +51,7 @@ class ManagerLkmJobTests(unittest.TestCase):
         matrix = jobs.load_ddk_matrix(self.directory)
         self.assertEqual(jobs.KMIS, tuple(row['kmi'] for row in matrix))
         for row in matrix:
-            self.assertEqual({'kmi', 'image', 'ddk_short'}, set(row))
+            self.assertEqual({'kmi', 'image', 'ddk_short', 'kernel_release'}, set(row))
             self.assertEqual(row['image'].split('@sha256:')[1][:16], row['ddk_short'])
         # The actual checked-in lock is also usable without unpinned tag lookups.
         self.assertEqual(8, len(jobs.load_ddk_matrix(ROOT)))
@@ -71,6 +72,9 @@ class ManagerLkmJobTests(unittest.TestCase):
             ('image', 'ghcr.io/ylarod/ddk-min@sha256:' + 'a' * 64 + '\n'),
             ('tag', 'ghcr.io/ylarod/ddk-min:android15-6.6-20260828'),
             ('ddk_short', 'wrong-image-key'), ('unexpected', 'ignored configuration'),
+            ('kernel_release', ''), ('kernel_release', None), ('kernel_release', '5.15.123'),
+            ('kernel_release', '5.10.123 SMP'), ('kernel_release', '5.10.123\n'),
+            ('kernel_release', '5.10.123/unsafe'), ('kernel_release', '5.10.123-' + 'a' * 64),
         ):
             document = copy.deepcopy(self.lock)
             document['images'][0][field] = value

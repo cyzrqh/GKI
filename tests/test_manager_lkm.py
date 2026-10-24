@@ -67,8 +67,8 @@ class ManagerLkmTests(unittest.TestCase):
         # A tiny ELF test object exercises structural checks. It is deliberately
         # not a loadable module and is never exported outside the test fixture.
         names = b'\0.shstrtab\0.modinfo\0.rodata\0'
-        android, kernel = kmi.split('-')
-        info = overrides.get('modinfo', ('name=kernelsu\0vermagic=' + kernel + '.41-' + android + '-9 SMP preempt\0').encode())
+        release = lkm.locked_ddk(kmi)['kernel_release']
+        info = overrides.get('modinfo', ('name=kernelsu\0vermagic=' + release + ' SMP preempt mod_unload modversions aarch64\0').encode())
         constants = overrides.get('constants', (self.identity['manager_package'] + '\0' + self.identity['manager_cert_sha256'] +
                                                 '\0v4.2.1-' + self.reference[:8] + '@HEAD\0').encode())
         header = b'\x7fELF\x02\x01\x01' + b'\0' * 9
@@ -88,7 +88,7 @@ class ManagerLkmTests(unittest.TestCase):
         module = self.module(kmi, **overrides)
         output = self.artifacts / kmi
         return lkm.record(self.source, module, kmi, self.identity_file, self.reference, output,
-                          'ghcr.io/ylarod/ddk-min:' + kmi + '-20260828@sha256:' + 'd' * 64)
+                          lkm.locked_ddk(kmi)['image'])
 
     def stage(self, expected='android13-5.15'):
         return lkm.stage(self.source, self.artifacts, self.identity_file, self.reference, expected, self.report)
@@ -150,6 +150,8 @@ class ManagerLkmTests(unittest.TestCase):
         path = self.artifacts / 'android13-5.15/module.json'
         for field, value in (('ksu_ref', 'f' * 40), ('git_count', 999), ('git_describe', 'wrong'),
                              ('ksu_version_code', 41000), ('compiler_records', 0), ('compiler_records_sha256', 'bad'),
+                             ('ddk_image', None), ('ddk_image', 'ghcr.io/ylarod/ddk-min:latest'),
+                             ('ddk_image', lkm.locked_ddk('android14-5.15')['image']),
                              ('manager_package', 'com.sukisu.ultra'), ('manager_cert_size', 860),
                              ('manager_cert_sha256', 'f' * 64), ('file', '../outside.ko'),
                              ('sha256', '0' * 64), ('size', 1), ('kmi', 'android14-6.1')):
@@ -241,6 +243,41 @@ class ManagerLkmTests(unittest.TestCase):
             path.write_text(text, encoding='utf-8')
             with self.subTest(text=text), self.assertRaisesRegex(lkm.LkmError, 'formula changed'):
                 lkm.native_version_code(self.source, 3872)
+
+    def test_official_eight_vermagics_include_generic_releases_and_match_image_locks(self):
+        provenance = json.loads((ROOT / 'tests/fixtures/official-ddk-vermagic/provenance.json').read_text(encoding='utf-8'))
+        self.assertEqual(len(provenance['modules']), 8)
+        for entry in provenance['modules']:
+            kmi, vermagic = entry['kmi'], entry['vermagic']
+            lock = lkm.locked_ddk(kmi, entry['image'])
+            self.assertEqual(lock['kernel_release'], vermagic.split(' ', 1)[0])
+            # A synthetic nonloadable ELF container carries the exact public
+            # official .modinfo value; real provenance is in the fixture JSON.
+            module = self.module(kmi, modinfo=('name=kernelsu\0vermagic=' + vermagic + '\0').encode())
+            with self.subTest(kmi=kmi):
+                self.assertEqual(lkm.inspect_module(module, kmi, self.identity, self.reference)['vermagic'], vermagic)
+
+    def test_same_family_cross_kmi_or_unpinned_image_cannot_substitute_a_module(self):
+        for left, right in (('android12-5.10', 'android13-5.10'), ('android13-5.15', 'android14-5.15')):
+            with self.subTest(left=left, right=right):
+                for actual, declared in ((left, right), (right, left)):
+                    with self.assertRaisesRegex(lkm.LkmError, 'pinned DDK kernel release'):
+                        lkm.inspect_module(self.module(actual), declared, self.identity, self.reference)
+                    with self.assertRaisesRegex(lkm.LkmError, 'pinned image'):
+                        lkm.locked_ddk(actual, lkm.locked_ddk(declared)['image'])
+        module = self.module()
+        for image in (None, 'ghcr.io/ylarod/ddk-min:android13-5.15-20260828',
+                      'ghcr.io/ylarod/ddk-min@sha256:' + 'f' * 64):
+            with self.subTest(image=image), self.assertRaisesRegex(lkm.LkmError, 'pinned image'):
+                lkm.record(self.source, module, 'android13-5.15', self.identity_file, self.reference,
+                           self.artifacts / 'wrong-image', image)
+        self.assertFalse(list(self.artifacts.iterdir()))
+
+    def test_existing_v2_cache_fields_remain_usable_with_exact_ddk_binding(self):
+        metadata = self.record()
+        self.assertNotIn('kernel_release', metadata)  # Keep the successful v2 artifact contract.
+        self.assertEqual(metadata['ddk_image'], lkm.locked_ddk('android13-5.15')['image'])
+        self.assertEqual(self.stage()['modules'], [metadata])
 
 
 if __name__ == '__main__':

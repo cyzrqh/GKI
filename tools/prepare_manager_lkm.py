@@ -19,16 +19,30 @@ import sys
 import tempfile
 
 from snapshot_ksu_source import REPOSITORY, SnapshotError, expected_commit, git, source_identity
+from manager_lkm_jobs import load_ddk_matrix
 
 
 KMI = re.compile(r"android[0-9]+-[0-9]+\.[0-9]+\Z")
 PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+\Z")
 MAX_MODULE = 64 * 1024 * 1024
 MAX_JSON = 64 * 1024
+ROOT = Path(__file__).resolve().parents[1]
+_UNSPECIFIED_IMAGE = object()
 
 
 class LkmError(ValueError):
     pass
+
+
+def locked_ddk(kmi: str, image: object = _UNSPECIFIED_IMAGE) -> dict:
+    """Bind a KMI to the reviewed immutable image and its actual UTS_RELEASE."""
+    try:
+        candidates = [entry for entry in load_ddk_matrix(ROOT) if entry['kmi'] == kmi]
+    except (OSError, ValueError) as error:
+        raise LkmError('The reviewed manager DDK image/release lock is invalid') from error
+    if len(candidates) != 1 or image is not _UNSPECIFIED_IMAGE and image != candidates[0]['image']:
+        raise LkmError('LKM DDK image does not match its declared KMI and pinned image')
+    return candidates[0]
 
 
 def read_json(path: Path) -> dict:
@@ -168,9 +182,15 @@ def inspect_module(path: Path, kmi: str, identity: dict, reference: str) -> dict
         vermagic = fields[b"vermagic"][0].decode("ascii")
     except UnicodeError as error:
         raise LkmError("LKM vermagic is invalid") from error
-    android, kernel = kmi.split("-", 1)
-    if not vermagic.startswith(kernel + ".") or not re.search(r"(?:^|[-_])" + re.escape(android) + r"(?:[-_ .]|$)", vermagic):
-        raise LkmError("LKM vermagic does not match its declared KMI")
+    # Seven of the eight official DDKs have a generic UTS_RELEASE, with no
+    # Android name in it. Match the exact release reviewed for this pinned
+    # image instead of inventing an Android suffix or accepting any same-series
+    # module. The immutable image/KMI binding is also checked by record/stage.
+    actual_release = vermagic.split(' ', 1)[0]
+    expected_release = locked_ddk(kmi)['kernel_release']
+    if not actual_release or actual_release != expected_release:
+        raise LkmError(f'LKM vermagic release {actual_release[:128]!r} does not match '
+                       f'pinned DDK kernel release {expected_release!r} for KMI {kmi}')
     # Native Kbuild emits these exact strings into loaded constants. This also
     # rejects official static-signature modules mistakenly substituted here.
     for label, value in (("manager package", identity["manager_package"]),
@@ -199,8 +219,7 @@ def record(source: Path, module: Path, kmi: str, identity_file: Path, reference:
     source = source.resolve(strict=True)
     identity = public_identity(identity_file)
     provenance = selected_source(source, reference)
-    if not re.fullmatch(r"ghcr\.io/ylarod/ddk-min(?::[A-Za-z0-9._-]+)?(?:@sha256:[0-9a-f]{64})?", ddk_image):
-        raise LkmError("LKM DDK image must identify the official DDK container")
+    locked_ddk(kmi, ddk_image)
     inspected = inspect_module(module, kmi, identity, provenance["ksu_ref"])
     version_proof = compile_version_proof(source, provenance["ksu_version_code"])
     filename = kmi + "_kernelsu.ko"
@@ -241,6 +260,7 @@ def stage(source: Path, artifacts: Path, identity_file: Path, reference: str,
                 or any(metadata.get(key) != value for key, value in {**identity, **provenance}.items())):
             raise LkmError("LKM source/version, manager identity or KMI provenance does not match this build")
         module = path.parent / metadata["file"]
+        locked_ddk(kmi, metadata.get('ddk_image', ''))
         if (type(metadata.get("compiler_records")) is not int or metadata["compiler_records"] < 1
                 or not isinstance(metadata.get("compiler_records_sha256"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", metadata["compiler_records_sha256"])):

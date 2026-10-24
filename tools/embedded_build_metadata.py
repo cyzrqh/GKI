@@ -106,13 +106,8 @@ def _algorithm_records(data: bytes) -> dict[int, bytes]:
     return result
 
 
-def verify_apk_v2(data: bytes) -> bytes:
-    """Verify RSA/SHA256 signer, X509 key agreement and Android chunk digests.
-
-    This repository uses one fixed RSA key and Android's v2 RSA PKCS#1 SHA256
-    algorithm (0x0103). Reject unsupported identities rather than accepting
-    only a certificate fingerprint without checking the APK signature.
-    """
+def _apk_signing_block(data: bytes) -> tuple[int, int, int, dict[int, bytes]]:
+    """Parse one bounded signing block, rejecting duplicate/malformed pairs."""
     if not 0 < len(data) <= MAX_APK_BYTES:
         raise ValueError('Unexpected signed APK size')
     candidates = [pos for pos in range(max(0, len(data) - 65557), len(data) - 21)
@@ -145,6 +140,11 @@ def verify_apk_v2(data: bytes) -> bytes:
         position = end
     if position != pair_end or 0x7109871A not in pairs:
         raise ValueError('The APK has no valid v2 signing block')
+    return eocd, directory_offset, block_start, pairs
+
+
+def _verify_apk_v2(data: bytes, layout: tuple[int, int, int, dict[int, bytes]]) -> bytes:
+    eocd, directory_offset, block_start, pairs = layout
     signers, end = _length_prefixed(pairs[0x7109871A])
     if end != len(pairs[0x7109871A]):
         raise ValueError('Unexpected trailing v2 signing data')
@@ -207,6 +207,32 @@ def verify_apk_v2(data: bytes) -> bytes:
     return certificates[0]
 
 
+def verify_apk_v2(data: bytes) -> bytes:
+    """Verify the v2 RSA signer, X509 key agreement and Android chunk digests.
+
+    This generic diagnostic path can inspect a legacy APK that also contains
+    v3 blocks. It verifies v2, including its signature-stripping protection;
+    it does not establish SukiSU's native manager acceptance policy.
+    """
+    return _verify_apk_v2(data, _apk_signing_block(data))
+
+
+def verify_sukisu_apk(data: bytes) -> bytes:
+    """Require the native SukiSU v2/padding-only policy plus full v2 crypto.
+
+    The fixed official manager/apk_sign.c rejects every non-v2/non-padding
+    pair even after the v2 certificate hash matches. Android installation
+    verification alone therefore cannot establish manager trust.
+    """
+    layout = _apk_signing_block(data)
+    unsupported = set(layout[3]) - {0x7109871A, 0x42726577}
+    if unsupported:
+        identities = ', '.join(f'0x{value:08x}' for value in sorted(unsupported))
+        raise ValueError('SukiSU native manager authentication rejects APK signing block(s): '
+                         + identities + '; a v2-only signature is required')
+    return _verify_apk_v2(data, layout)
+
+
 def validate_manager_document(metadata: dict) -> None:
     def positive(value):
         return (type(value) in (str, int) and re.fullmatch(r'[1-9][0-9]*', str(value))
@@ -232,7 +258,10 @@ def validate_manager_document(metadata: dict) -> None:
         raise ValueError('Invalid embedded manager version or workflow provenance')
 
 
-def read_manager_apk(source: Path | bytes, *, filename: str | None = None) -> dict:
+def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
+                     allow_legacy_signing_blocks: bool = False) -> dict:
+    if type(allow_legacy_signing_blocks) is not bool:
+        raise ValueError('Legacy APK signing-block inspection requires an explicit boolean')
     if isinstance(source, (str, Path)):
         path = Path(source)
         if path.is_symlink() or not path.is_file() or path.stat().st_size > MAX_APK_BYTES:
@@ -240,7 +269,7 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None) -> di
         data, filename = path.read_bytes(), filename or path.name
     else:
         data = bytes(source)
-    certificate = verify_apk_v2(data)
+    certificate = verify_apk_v2(data) if allow_legacy_signing_blocks else verify_sukisu_apk(data)
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         members = validate_members(archive)
         for required in ('AndroidManifest.xml', 'classes.dex', 'lib/arm64-v8a/libksud.so'):

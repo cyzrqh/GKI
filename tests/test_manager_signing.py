@@ -61,6 +61,11 @@ class ManagerSigningTests(unittest.TestCase):
         self.which = patch.object(signing.shutil, "which", return_value="keytool")
         self.which.start()
         self.addCleanup(self.which.stop)
+        # These SDK command fixtures copy unsigned ZIP bytes. Genuine RSA and
+        # kernel-layout checks have separate binary-fixture regression tests.
+        self.authenticator = patch.object(signing, 'verify_sukisu_apk', return_value=CERTIFICATE)
+        self.kernel_auth = self.authenticator.start()
+        self.addCleanup(self.authenticator.stop)
         if os.name == "nt":
             # Python's private-directory Windows ACL excludes the execution
             # sandbox identity. Keep the production secure directory code;
@@ -135,6 +140,8 @@ class ManagerSigningTests(unittest.TestCase):
         sign_args = self.calls[3][0]
         self.assertEqual(sign_args[sign_args.index("--ks-type") + 1], "PKCS12")
         self.assertEqual(sign_args[sign_args.index("--ks-key-alias") + 1], "gki-sukisu")
+        for scheme, enabled in ((1, 'false'), (2, 'true'), (3, 'false'), (4, 'false')):
+            self.assertEqual(sign_args[sign_args.index(f'--v{scheme}-signing-enabled') + 1], enabled)
         self.assertIn(f"env:{signing.PASSWORD_ENV}", sign_args)
         self.assertIn("-storepass:env", self.calls[1][0])
         self.assertEqual(metadata["manager_package"], "com.sukisu.ultra")
@@ -150,6 +157,7 @@ class ManagerSigningTests(unittest.TestCase):
         for value in (PASSWORD, ENCODED_KEY, str(KEY_BYTES)):
             self.assertNotIn(value, outputs)
         self.assertTrue(self.output.is_file())
+        self.kernel_auth.assert_called_once_with(self.output.read_bytes())
         self.assertFalse(list(self.private_root.iterdir()))
         self.assertTrue(all(not path.exists() for path in self.private_paths))
         if os.name != "nt":
@@ -177,6 +185,16 @@ class ManagerSigningTests(unittest.TestCase):
         self.assertEqual(self.unsigned.read_bytes(), unsigned)
         with zipfile.ZipFile(self.output) as archive:
             self.assertEqual(json.loads(archive.read(signing.APK_MEMBER)), observed[0])
+
+    def test_android_valid_but_kernel_rejected_signature_never_replaces_output(self):
+        self.output.parent.mkdir(parents=True)
+        self.output.write_bytes(b'previous verified APK')
+        self.kernel_auth.side_effect = ValueError('APK-v3 is rejected by native kernel verifier')
+        with patch.object(signing.subprocess, 'run', side_effect=self.fake_sdk):
+            with self.assertRaisesRegex(signing.SigningError, 'kernel manager authentication'):
+                self.run_signing()
+        self.assertEqual(self.output.read_bytes(), b'previous verified APK')
+        self.assertFalse(self.workflow_output.exists())
 
     def test_missing_immutable_source_provenance_never_publishes_an_apk(self):
         for field, value in (('KSU_REF', ''), ('KSU_REF', 'main'), ('KSU_BRANCH', ''), ('GITHUB_SHA', 'bad')):

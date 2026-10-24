@@ -17,7 +17,7 @@ import sys
 import tempfile
 import zipfile
 
-from embedded_build_metadata import APK_MEMBER, read_member, validate_members
+from embedded_build_metadata import APK_MEMBER, read_member, validate_members, verify_sukisu_apk
 
 
 KEYSTORE_ENV = "SUKISU_APK_KEYSTORE"
@@ -288,6 +288,8 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
         run_command([
             tools["apksigner"], "sign", "--ks", str(keystore), "--ks-type", "PKCS12",
             "--ks-key-alias", KEY_ALIAS, "--ks-pass", f"env:{PASSWORD_ENV}",
+            "--v1-signing-enabled", "false", "--v2-signing-enabled", "true",
+            "--v3-signing-enabled", "false", "--v4-signing-enabled", "false",
             "--key-pass", f"env:{PASSWORD_ENV}", "--out", str(signed), str(aligned),
         ], password, secrets, needs_password=True)
         verification = run_command([tools["apksigner"], "verify", "--print-certs-pem", str(signed)],
@@ -298,6 +300,15 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
         if signed_metadata != source_metadata:
             raise SigningError("The signed APK package/version metadata does not match the source APK.")
         validate_apk(signed)
+        # Android accepts APK-v3, but SukiSU's native manager authenticator
+        # rejects its extra signing block even when the v2 certificate matches.
+        # Check the final bytes against that policy as well as Android's SDK.
+        try:
+            native_certificate = verify_sukisu_apk(signed.read_bytes())
+        except ValueError:
+            raise SigningError('The signed APK is incompatible with SukiSU kernel manager authentication.') from None
+        if native_certificate != certificate:
+            raise SigningError('The native APK certificate differs from the fixed signing certificate.')
         with zipfile.ZipFile(signed) as archive:
             if read_member(archive, APK_MEMBER) != embedded_identity:
                 raise SigningError('The signed APK embedded build identity changed during signing.')

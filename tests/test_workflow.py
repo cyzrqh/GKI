@@ -74,21 +74,30 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.workflow['on']['schedule'], [{'cron': '17 0 * * *'}])
         operation = self.workflow['on']['workflow_dispatch']['inputs']['operation']
         self.assertEqual(operation['default'], '编译内核')
-        self.assertEqual(operation['options'], ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新', '清理历史编译（保留5次）'])
+        self.assertEqual(operation['options'], ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'])
         self.assertNotIn('仅编译 SukiSU 安装包', generator.BUILD_IF)
         self.assertNotIn('schedule', generator.PREPARE_IF)
         self.assertEqual(self.workflow['jobs']['prepare-matrix']['steps'][1]['if'], generator.BUILD_IF)
 
     def test_history_cleanup_requires_explicit_default_branch_manual_operation(self):
-        cleanup = self.workflow['jobs']['cleanup-history']
-        self.assertEqual(cleanup['if'], "github.event_name == 'workflow_dispatch' && inputs.operation == '清理历史编译（保留5次）' && github.ref_name == github.event.repository.default_branch")
+        standalone = generator.cleanup_history_workflow()
+        self.assertEqual(standalone['name'], '清理历史编译（保留5次）')
+        self.assertEqual(standalone['run-name'], standalone['name'])
+        self.assertEqual(standalone['on'], {'workflow_dispatch': {}})
+        self.assertEqual(set(standalone['jobs']), {'cleanup-history'})
+        self.assertNotIn('cleanup-history', self.workflow['jobs'])
+        self.assertNotIn('清理历史编译', self.workflow['run-name'])
+        cleanup = standalone['jobs']['cleanup-history']
+        self.assertEqual(cleanup['if'], "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
         self.assertEqual(cleanup['permissions'], {'contents': 'read', 'actions': 'write'})
         self.assertIs(cleanup['concurrency']['cancel-in-progress'], False)
         self.assertNotIn('needs', cleanup)
         checkout, execute = cleanup['steps']
+        self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
         self.assertIs(checkout['with']['persist-credentials'], False)
         self.assertEqual(execute['env'], {'GH_TOKEN': '${{ github.token }}'})
         self.assertIn('--keep 5 --execute', execute['run'])
+        self.assertIn('--workflow kernel-full-feature-matrix.yml', execute['run'])
         self.assertIn('--summary "$GITHUB_STEP_SUMMARY"', execute['run'])
         self.assertNotIn('schedule', cleanup['if'])
         self.assertNotIn('upload-artifact', str(cleanup))

@@ -1,10 +1,10 @@
-"""Official-source update and public release jobs for the single GKI workflow."""
+"""Build, update, release, and standalone history-cleanup workflow jobs."""
 
 
 def cleanup_history_job():
     return {
         'name': '清理历史编译（保留5次）',
-        'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '清理历史编译（保留5次）' && github.ref_name == github.event.repository.default_branch",
+        'if': "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
         'permissions': {'contents': 'read', 'actions': 'write'},
         'concurrency': {'group': '${{ github.repository }}-history-cleanup', 'cancel-in-progress': False},
@@ -18,6 +18,16 @@ def cleanup_history_job():
   --keep 5 --execute --summary "$GITHUB_STEP_SUMMARY"
 '''},
         ],
+    }
+
+
+def cleanup_history_workflow():
+    return {
+        'name': '清理历史编译（保留5次）',
+        'run-name': '清理历史编译（保留5次）',
+        'on': {'workflow_dispatch': {}},
+        'permissions': {'contents': 'read'},
+        'jobs': {'cleanup-history': cleanup_history_job()},
     }
 
 

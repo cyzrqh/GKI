@@ -24,7 +24,7 @@ class WorkflowTests(unittest.TestCase):
         return next(step for step in self.steps if step.get('name') == name)
 
     def test_one_dispatch_and_no_remote_workflow_calls(self):
-        self.assertEqual(list(self.workflow['on']), ['workflow_dispatch', 'schedule'])
+        self.assertEqual(list(self.workflow['on']), ['workflow_dispatch'])
         self.assertEqual(len(self.workflow['on']['workflow_dispatch']['inputs']), 25)
         self.assertTrue(all('uses' not in job for job in self.workflow['jobs'].values()))
 
@@ -71,7 +71,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("needs.build-sukisu-manager.result == 'success'", generator.KERNEL_JOB_IF)
         self.assertIn("github.event_name == 'workflow_dispatch'", generator.BUILD_IF)
         self.assertIn("inputs.operation == '编译内核'", generator.BUILD_IF)
-        self.assertEqual(self.workflow['on']['schedule'], [{'cron': '17 0 * * *'}])
+        self.assertNotIn('schedule', self.workflow['on'])
         operation = self.workflow['on']['workflow_dispatch']['inputs']['operation']
         self.assertEqual(operation['default'], '编译内核')
         self.assertEqual(operation['options'], ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'])
@@ -104,7 +104,8 @@ class WorkflowTests(unittest.TestCase):
 
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.workflow['jobs']['check-upstream']
-        self.assertIn('github.ref_name == github.event.repository.default_branch', job['if'])
+        self.assertEqual(job['if'], "github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
+        self.assertNotIn('schedule', self.workflow['run-name'])
         self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'write'})
         checkout = job['steps'][0]
         self.assertIs(checkout['with']['persist-credentials'], False)

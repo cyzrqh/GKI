@@ -281,6 +281,35 @@ class ManagerIdentityTests(unittest.TestCase):
         self.assertIn('MANAGER_PACKAGE=com.cyzrqh.gki.sukisu\n', envfile.read_text())
         self.assertNotIn('SUKISU_APK_PASSWORD', envfile.read_text())
 
+    def test_capture_reports_susfs_for_verified_checked_patch_sources_and_preserves_strict_policy(self):
+        directory = ROOT / 'tests' / ('.manager-identity-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        output = directory / 'manager.json'
+        env = {'META_FILE': self.metadata['file'], 'META_PACKAGE': self.metadata['package'],
+               'META_KSU_VERSION_CODE': '40922', 'META_KSU_VERSION_NAME': '4.2.0',
+               'META_KSU_REF': 'b' * 40, 'META_KSU_BRANCH': 'builtin',
+               'META_MANAGER_CERT_SIZE': '730', 'META_MANAGER_CERT_SHA256': 'c' * 64,
+               'META_APK_SHA256': 'd' * 64, 'GITHUB_REPOSITORY': 'cyzrqh/gki',
+               'GITHUB_RUN_ID': '123', 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40}
+        cases = (
+            ('checked-patch', 'true', 'f' * 40, 'v2.3.0'),
+            ('reviewed', 'true', 'f' * 40, None),
+            ('checked-patch', 'false', 'f' * 40, None),
+            ('reviewed', 'true', 'B' * 40, 'v2.3.0'),
+        )
+        for policy, enabled, reviewed_commit, expected in cases:
+            profile = {'source_policy': policy, 'version': 'v2.3.0', 'ksu_commits': [reviewed_commit]}
+            with self.subTest(policy=policy, enabled=enabled, reviewed_commit=reviewed_commit), \
+                    patch.object(capture, 'load_profile', return_value=profile) as load, \
+                    patch.dict(os.environ, {**env, 'META_ENABLE_SUSFS': enabled}), \
+                    patch.object(sys, 'argv', ['capture', '--output', str(output)]):
+                capture.main()
+                load.assert_called_once_with(ROOT)
+                metadata = json.loads(output.read_text(encoding='utf-8'))
+                self.assertEqual(metadata['susfs_version'], expected)
+                identity.validate_metadata(metadata, self.expected)
+
 
 if __name__ == '__main__':
     unittest.main()

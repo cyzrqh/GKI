@@ -4,7 +4,17 @@
     "source_ref": "17ff94d9da24d589a9705227fdda39a1c9045698",
     "reviewed_kernel_tree": "8c1e2c46af23862e2ab5d44fe4fb82fc6bb2fdc2",
     "reviewed_uapi_tree": "7280aa0d007776e3de1f81395998d03a19b23f3e",
-    "ksu_commits": ["17ff94d9da24d589a9705227fdda39a1c9045698"],
+    "reviewed_source_trees": [
+      {
+        "kernel": "357ee4168e3e3c2e5c8a0ce6c33498e3df96e6ca",
+        "uapi": "feecc02f0fb176017b8d3541f8313d5ceeff8bee"
+      }
+    ],
+    "source_policy": "checked-patch",
+    "ksu_commits": [
+      "17ff94d9da24d589a9705227fdda39a1c9045698",
+      "22561329c04479b7985391764125a3a362170df0"
+    ],
     "tiers": ["Stable(标准)", "Dev(开发)", "Latest(最新)"],
     "version": "v2.3.0",
     "pins": {

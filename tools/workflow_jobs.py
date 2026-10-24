@@ -34,7 +34,7 @@ def cleanup_history_workflow():
 def updater_job():
     return {
         'name': '检查并自动同步官方更新',
-        'if': "(github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch",
+        'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
         'permissions': {'contents': 'read', 'pull-requests': 'write'},
         'concurrency': {'group': '${{ github.repository }}-official-sync', 'cancel-in-progress': False},

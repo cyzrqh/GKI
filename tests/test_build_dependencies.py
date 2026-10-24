@@ -105,6 +105,57 @@ class BuildDependencyTests(unittest.TestCase):
             with self.subTest(changes=changes), self.assertRaises(pin.CompatibilityError):
                 self.select()
 
+    def test_multiple_reviewed_pairs_preserve_live_source_pin_and_legacy_pair(self):
+        profile = copy.deepcopy(PROFILE)
+        profile['sukisu_susfs'].update(
+            version='v2.3.0', reviewed_kernel_tree='e' * 40, reviewed_uapi_tree='f' * 40,
+            reviewed_source_trees=[{'kernel': 'A' * 40, 'uapi': 'B' * 40}])
+        self.write_profile(profile)
+        self.assertEqual(pin.reviewed_tree_pairs(pin.load_profile(self.root)),
+                         (('e' * 40, 'f' * 40), ('a' * 40, 'b' * 40)))
+        self.assertEqual(self.select(ksu_ref='d' * 40), (SUSFS, 'v2.3.0'))
+        del profile['sukisu_susfs']['reviewed_kernel_tree']
+        del profile['sukisu_susfs']['reviewed_uapi_tree']
+        self.write_profile(profile)
+        self.assertEqual(self.select(ksu_ref='d' * 40), (SUSFS, 'v2.3.0'))
+
+    def test_reviewed_pair_list_rejects_incomplete_duplicate_or_invalid_sources(self):
+        pair = {'kernel': 'e' * 40, 'uapi': 'f' * 40}
+        for entries in ([], None, pair, [None], [{}], [{'kernel': 'e' * 40}],
+                        [{**pair, 'extra': 'ignored'}], [{**pair, 'uapi': 'main'}],
+                        [{**pair, 'kernel': 'e' * 40 + '\n'}],
+                        [pair, {key: value.upper() for key, value in pair.items()}]):
+            document = copy.deepcopy(PROFILE)
+            document['sukisu_susfs'].update(version='v2.3.0', reviewed_source_trees=entries)
+            self.write_profile(document)
+            with self.subTest(entries=entries), self.assertRaises(pin.CompatibilityError):
+                self.select()
+        for changes in ({'version': 'v2.2.0'},
+                        {'reviewed_kernel_tree': 'e' * 40, 'reviewed_uapi_tree': 'f' * 40},
+                        {'reviewed_kernel_tree': 'e' * 40}):
+            document = copy.deepcopy(PROFILE)
+            document['sukisu_susfs'].update(version='v2.3.0', reviewed_source_trees=[pair])
+            document['sukisu_susfs'].update(changes)
+            self.write_profile(document)
+            with self.subTest(changes=changes), self.assertRaises(pin.CompatibilityError):
+                self.select()
+
+    def test_checked_patch_policy_pins_new_sources_without_claiming_tree_review(self):
+        document = copy.deepcopy(PROFILE)
+        document['sukisu_susfs'].update(version='v2.3.0', source_policy='checked-patch')
+        self.write_profile(document)
+        self.assertEqual(self.select(ksu_ref='d' * 40), (SUSFS, 'v2.3.0'))
+        self.assertEqual(pin.reviewed_tree_pairs(pin.load_profile(self.root)), ())
+        for policy in (None, True, 'ignore-checks', 'checked-patch\n'):
+            document['sukisu_susfs']['source_policy'] = policy
+            self.write_profile(document)
+            with self.subTest(policy=policy), self.assertRaises(pin.CompatibilityError):
+                self.select()
+        document['sukisu_susfs'].update(version='v2.2.0', source_policy='checked-patch')
+        self.write_profile(document)
+        with self.assertRaisesRegex(pin.CompatibilityError, 'requires SUSFS v2.3.0'):
+            self.select()
+
     def test_checkout_verifies_full_sha_and_version_then_updates_environment(self):
         with patch.object(pin.subprocess, "run", side_effect=self.mock_git) as run:
             self.assertTrue(self.run_pin())

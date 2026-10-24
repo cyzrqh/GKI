@@ -4,7 +4,8 @@
 The patch is a three-way port of simonpunk/susfs4ksu's official
 10_enable_susfs_for_ksu.patch at b57ed1998b82c4e3a2a81cdbf11172a560979c40
 to SukiSU-Ultra 17ff94d9da24d589a9705227fdda39a1c9045698. New official
-manager/ksud revisions can use this port when both source trees are identical.
+revisions can use this port when their complete kernel/UAPI pair is reviewed,
+or checked-patch policy proves the complete port and native interfaces again.
 It contains the
 real preinit runner and SELinux implementations and preserves SukiSU's KPM,
 extensions and manager support. See the patch header for upstream attribution.
@@ -20,7 +21,7 @@ import subprocess
 import sys
 
 from validate_susfs_hooks import HOOKS, inspect_c_source, strip_comments_and_literals
-from pin_build_dependencies import CompatibilityError, load_profile
+from pin_build_dependencies import CompatibilityError, load_profile, reviewed_tree_pairs, source_policy
 
 
 PROFILE_ROOT = Path(__file__).resolve().parents[1]
@@ -53,28 +54,32 @@ def find_repository(kernel_root: Path) -> Path:
 def check_versions(repository: Path, susfs_dir: Path) -> None:
     try:
         profile = load_profile(PROFILE_ROOT)
+        reviewed = reviewed_tree_pairs(profile)
+        policy = source_policy(profile)
     except CompatibilityError as error:
         raise ValueError(str(error)) from error
     result = git(repository, "rev-parse", "HEAD")
     actual = result.stdout.strip().lower()
     if result.returncode or not re.fullmatch(r"[0-9a-f]{40}", actual):
         raise ValueError("Cannot verify the SukiSU checkout commit")
-    if "reviewed_kernel_tree" in profile:
+    if reviewed or policy == "checked-patch":
         # Comparing complete Git trees covers additions, deletions, modes and
         # symlinks as well as file contents. The root UAPI tree is included via
         # kernel/include/uapi -> ../../uapi, and is part of the same ABI review.
-        for path, field in (("kernel", "reviewed_kernel_tree"), ("uapi", "reviewed_uapi_tree")):
-            expected = profile.get(field)
-            if not isinstance(expected, str) or not re.fullmatch(r"[0-9a-fA-F]{40}", expected):
-                raise ValueError(f"Reviewed SukiSU source profile is missing a valid {field}")
+        found = []
+        for path in ("kernel", "uapi"):
             tree = git(repository, "rev-parse", "--verify", f"HEAD:{path}")
-            found = tree.stdout.strip().lower()
-            if tree.returncode or found != expected.lower():
-                raise ValueError(
-                    f"SUSFS 2.3 port requires the reviewed SukiSU {path} tree {expected}; "
-                    f"commit {actual} has {found or 'unavailable'}. "
-                    "Review and adapt the port before building this upstream revision."
-                )
+            value = tree.stdout.strip().lower()
+            if tree.returncode or not re.fullmatch(r"[0-9a-f]{40}", value):
+                raise ValueError(f"Cannot verify the SukiSU {path} tree at {actual}")
+            found.append(value)
+        if tuple(found) not in reviewed and policy != "checked-patch":
+            path = "kernel" if all(pair[0] != found[0] for pair in reviewed) else "uapi"
+            raise ValueError(
+                f"SUSFS 2.3 port requires the reviewed SukiSU {path} tree in its complete kernel/UAPI pair; "
+                f"commit {actual} has kernel {found[0]} and UAPI {found[1]}. "
+                "Review and adapt the port before building this upstream revision."
+            )
         unchanged = git(repository, "diff", "--quiet", "HEAD", "--", "uapi")
         if unchanged.returncode:
             raise ValueError("SukiSU UAPI files differ from the reviewed source")
@@ -96,9 +101,10 @@ def check_versions(repository: Path, susfs_dir: Path) -> None:
 
 
 def patch_files(patch: Path) -> tuple[str, ...]:
-    paths = tuple(re.findall(r'^diff --git a/(kernel/\S+) b/\1$',
-                             patch.read_text(encoding="utf-8"), re.M))
-    if not paths or any(".." in Path(path).parts for path in paths):
+    content = patch.read_text(encoding="utf-8")
+    paths = tuple(re.findall(r'^diff --git a/(kernel/\S+) b/\1$', content, re.M))
+    if (not paths or len(paths) != len(re.findall(r'^diff --git ', content, re.M))
+            or any(".." in Path(path).parts for path in paths)):
         raise ValueError("Reviewed SUSFS integration patch has an invalid file list")
     return paths
 
@@ -171,10 +177,39 @@ def verify_preinit_fd_cleanup(preinit: str, util: str) -> None:
         raise ValueError("SukiSU ksu_close_fd must retain its native close syscall implementation")
 
 
+def verify_avc_lifecycle(core: str, boot_event: str) -> None:
+    """Keep the selected upstream's AVC feature connected to its native lifecycle."""
+    for name, content in (("core init", core), ("boot event", boot_event)):
+        includes = re.sub(r"/\*.*?\*/|//[^\n]*", "", content, flags=re.S)
+        if not re.search(r'(?m)^\s*#\s*include\s+"feature/avc_spoof\.h"', includes):
+            raise ValueError(f"SukiSU AVC {name} must include its native feature header")
+    for symbol, content in (("ksu_avc_spoof_init", core), ("ksu_avc_spoof_exit", core),
+                            ("ksu_avc_spoof_late_init", boot_event)):
+        calls = re.findall(r"\b" + symbol + r"\s*\(\s*\)\s*;", strip_comments_and_literals(content))
+        if len(calls) != 1:
+            raise ValueError(f"SukiSU AVC lifecycle requires exactly one {symbol} call")
+
+
+def verify_native_avc(repository: Path) -> None:
+    if git(repository, "cat-file", "-e", "HEAD:kernel/feature/avc_spoof.c").returncode:
+        return
+    source = repository / "kernel"
+    paths = ("kernel/feature/avc_spoof.c", "kernel/feature/avc_spoof.h")
+    if (any(not (repository / path).is_file() for path in paths)
+            or git(repository, "diff", "--quiet", "HEAD", "--", *paths).returncode):
+        raise ValueError("SukiSU AVC provider must retain its selected, real implementation")
+    kbuild = re.sub(r"#[^\n]*", "", (source / "Kbuild").read_text(encoding="utf-8"))
+    if not re.search(r"(?m)^\s*kernelsu-objs\s*\+=\s*feature/avc_spoof\.o\s*$", kbuild):
+        raise ValueError("SukiSU AVC provider must remain linked in Kbuild")
+    verify_avc_lifecycle((source / "core/init.c").read_text(encoding="utf-8"),
+                         (source / "runtime/boot_event.c").read_text(encoding="utf-8"))
+
+
 def verify_integration(repository: Path) -> None:
     source = repository / "kernel"
     verify_patch_memory_sources(repository)
     verify_patch_memory_build((source / "Kbuild").read_text(encoding="utf-8"))
+    verify_native_avc(repository)
     verify_blacklist_lifecycle((source / "core/init.c").read_text(encoding="utf-8"),
                                (source / "runtime/ksud_integration.c").read_text(encoding="utf-8"))
     original_blacklist = git(repository, "diff", "--quiet", "HEAD", "--",
@@ -216,32 +251,55 @@ def verify_integration(repository: Path) -> None:
                 raise ValueError(f"Incomplete SUSFS 2.3 integration: {relative} lacks {marker!r}")
 
 
-def apply_integration(kernel_root: Path, susfs_dir: Path, patch: Path = PATCH_PATH) -> bool:
-    repository = find_repository(kernel_root)
-    check_versions(repository, susfs_dir)
+def apply_reviewed_port(repository: Path, patch: Path, *, allow_variants: bool = False) -> bool:
+    """Prove and apply the real port, for prepare clones and kernel jobs alike.
+
+    This checks source and patch consistency, not a kernel compile or device boot.
+    A matching recorded source tree never bypasses any integration validation.
+    """
     verify_patch_memory_sources(repository)
     patch = patch.resolve(strict=True)
-    paths = patch_files(patch)
+    candidates = [patch]
+    variant = patch.with_name("sukisu-susfs23-avc.patch")
+    if allow_variants and variant.is_file():
+        candidates.append(variant.resolve(strict=True))
+    paths = tuple(dict.fromkeys(path for candidate in candidates for path in patch_files(candidate)))
+    if git(repository, "diff", "--quiet", "HEAD", "--", "uapi").returncode:
+        raise ValueError("SukiSU UAPI files differ from the selected source")
     # A complete reverse dry run confirms every hunk is present, not just a marker.
-    reverse = git(repository, "apply", "--reverse", "--check", str(patch))
-    if reverse.returncode == 0:
-        verify_integration(repository)
-        return False
+    for candidate in candidates:
+        reverse = git(repository, "apply", "--reverse", "--check", str(candidate))
+        if reverse.returncode == 0:
+            verify_integration(repository)
+            return False
     # Refuse partial application or other local edits, including staged changes.
     clean = git(repository, "diff", "--quiet", "HEAD", "--", *paths)
     if clean.returncode:
         raise ValueError("SukiSU integration files differ from the pinned source; refusing a partial or conflicting patch")
-    checked = git(repository, "apply", "--check", str(patch))
-    if checked.returncode:
+    selected = None
+    for candidate in candidates:
+        checked = git(repository, "apply", "--check", str(candidate))
+        if checked.returncode == 0:
+            selected = candidate
+            break
+    if selected is None:
         raise ValueError("Complete SUSFS 2.3 patch does not apply; no source was changed. " + checked.stderr.strip())
-    applied = git(repository, "apply", str(patch))
+    applied = git(repository, "apply", str(selected))
     if applied.returncode:
         raise ValueError("Git could not apply the complete SUSFS 2.3 patch: " + applied.stderr.strip())
-    verified = git(repository, "apply", "--reverse", "--check", str(patch))
+    verified = git(repository, "apply", "--reverse", "--check", str(selected))
     if verified.returncode:
         raise ValueError("SUSFS 2.3 patch failed its complete reverse verification")
+    if git(repository, "diff", "--quiet", "HEAD", "--", "uapi").returncode:
+        raise ValueError("SUSFS 2.3 integration changed the selected SukiSU UAPI")
     verify_integration(repository)
     return True
+
+
+def apply_integration(kernel_root: Path, susfs_dir: Path, patch: Path = PATCH_PATH) -> bool:
+    repository = find_repository(kernel_root)
+    check_versions(repository, susfs_dir)
+    return apply_reviewed_port(repository, patch, allow_variants=patch.resolve() == PATCH_PATH.resolve())
 
 
 def main(argv: list[str] | None = None) -> int:

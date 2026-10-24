@@ -8,7 +8,7 @@ import shutil
 import sys
 import unittest
 from unittest.mock import MagicMock, patch
-from urllib.error import HTTPError
+from urllib.error import HTTPError, URLError
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -155,13 +155,15 @@ class OfficialCandidateTests(unittest.TestCase):
     def test_fetch_reads_default_head_release_and_all_five_official_susfs_branches(self):
         current = updates.baseline(self.root)
         with patch.object(updates, 'github_json', side_effect=[{'default_branch': 'main'}, {'tag_name': 'v4.0.0'},
-                                                             {'status': 'behind'}]) as github:
+                                                             {'status': 'behind', 'base_commit': {'sha': BASE}}]) as github:
             with patch.object(updates, 'github_commit', side_effect=[NEW, OLD_RELEASE]) as commit:
                 with patch.object(updates, 'gitlab_head', side_effect=lambda target: PINS[target]) as gitlab:
                     snapshot = updates.fetch_snapshot(current)
         self.assertEqual(snapshot['sukisu']['head'], NEW)
         self.assertFalse(snapshot['sukisu']['release']['newer_than_baseline'])
         self.assertEqual(github.call_args_list[1].args[1], '/releases/latest')
+        self.assertEqual(github.call_args_list[2].args[1],
+                         '/compare/' + BASE + '...' + OLD_RELEASE + '?per_page=1&page=2')
         self.assertEqual(commit.call_args_list[0].args, (updates.SUKISU, 'main'))
         self.assertEqual(commit.call_args_list[1].args, (updates.SUKISU, 'v4.0.0'))
         self.assertEqual([call.args[0] for call in gitlab.call_args_list], list(updates.TARGETS))
@@ -171,6 +173,70 @@ class OfficialCandidateTests(unittest.TestCase):
             with patch.object(updates, 'github_commit', return_value=BASE):
                 with patch.object(updates, 'gitlab_head', side_effect=lambda target: PINS[target]):
                     self.assertIsNone(updates.fetch_snapshot(updates.baseline(self.root))['sukisu']['release'])
+
+    def test_release_ancestry_avoids_large_first_page_diff_and_requires_exact_baseline(self):
+        def github(repository, resource='', **kwargs):
+            if not resource:
+                return {'default_branch': 'main'}
+            if resource == '/releases/latest':
+                return {'tag_name': 'v4.2.1-r2'}
+            if resource == '/compare/' + BASE + '...' + NEW + '?per_page=1&page=2':
+                return {'status': 'ahead', 'base_commit': {'sha': BASE}, 'total_commits': 30}
+            # The unpaginated r2 response is 1.4 MB and is correctly rejected
+            # by the shared client's 1 MiB limit. Do not increase that limit.
+            raise updates.SourceResolutionError('GitHub source lookup response is too large')
+        with patch.object(updates, 'github_json', side_effect=github):
+            with patch.object(updates, 'github_commit', return_value=NEW):
+                with patch.object(updates, 'gitlab_head', side_effect=lambda target: PINS[target]):
+                    found = updates.fetch_snapshot(updates.baseline(self.root))
+        self.assertTrue(found['sukisu']['release']['newer_than_baseline'])
+        for comparison in ({'status': 'ahead'}, {'status': 'ahead', 'base_commit': {'sha': NEW}},
+                           {'status': 'unknown', 'base_commit': {'sha': BASE}}):
+            with self.subTest(comparison=comparison):
+                with patch.object(updates, 'github_json', side_effect=[{'default_branch': 'main'},
+                                                                       {'tag_name': 'v4.2.1-r2'}, comparison]):
+                    with patch.object(updates, 'github_commit', return_value=NEW):
+                        with self.assertRaisesRegex(updates.UpdateError, 'ancestry.*baseline'):
+                            updates.fetch_snapshot(updates.baseline(self.root))
+
+    def test_github_lookups_retry_transient_failures_only_and_report_source_stage(self):
+        retry = updates.SourceResolutionError('Official GitHub source lookup failed')
+        reader = MagicMock(side_effect=[retry, retry, {'default_branch': 'main'}])
+        with patch.object(updates.time, 'sleep') as sleep:
+            self.assertEqual(updates.github_lookup('SukiSU repository', reader), {'default_branch': 'main'})
+        self.assertEqual(reader.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+        for message, category in (('GitHub source lookup response is too large', 'size limit'),
+                                  ('GitHub source lookup redirects are not permitted', 'metadata'),
+                                  ('untrusted private-token response', 'metadata')):
+            reader = MagicMock(side_effect=updates.SourceResolutionError(message))
+            with self.subTest(message=message), patch.object(updates.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(updates.UpdateError, 'SukiSU release ancestry.*' + category) as raised:
+                    updates.github_lookup('SukiSU release ancestry', reader)
+                self.assertEqual(reader.call_count, 1)
+                sleep.assert_not_called()
+                self.assertNotIn('private-token', str(raised.exception))
+        reader = MagicMock(side_effect=retry)
+        with patch.object(updates.time, 'sleep'):
+            with self.assertRaisesRegex(updates.UpdateError, 'SukiSU default branch.*3 attempts'):
+                updates.github_lookup('SukiSU default branch', reader)
+        self.assertEqual(reader.call_count, 3)
+
+    def test_main_reports_validation_stage_without_echoing_unknown_exception_details(self):
+        arguments = ['--check-only', '--repo-root', str(self.root)]
+        with patch.object(updates, 'fetch_snapshot', side_effect=updates.UpdateError(
+                'SukiSU release ancestry: response exceeds size limit')):
+            output = io.StringIO()
+            with redirect_stderr(output):
+                self.assertEqual(updates.main(arguments), 1)
+        self.assertIn('official source lookup', output.getvalue())
+        self.assertIn('SukiSU release ancestry: response exceeds size limit', output.getvalue())
+        with patch.object(updates, 'fetch_snapshot', side_effect=ValueError('secret-response-token')):
+            output = io.StringIO()
+            with redirect_stderr(output):
+                self.assertEqual(updates.main(arguments), 1)
+        self.assertIn('JSON or snapshot metadata is invalid', output.getvalue())
+        self.assertNotIn('secret-response-token', output.getvalue())
 
 
 class OfficialGitLabSecurityTests(unittest.TestCase):
@@ -225,6 +291,34 @@ class OfficialGitLabSecurityTests(unittest.TestCase):
                 updates.gitlab_head('android14-6.1')
         self.assertNotIn('private-token', str(raised.exception))
         self.assertNotIn('secret-url', str(raised.exception))
+
+    def test_gitlab_retries_transient_http_and_network_errors_without_relaxing_validation(self):
+        response, opener = self.response()
+        opener.open.side_effect = [HTTPError('https://private-url', 503, 'secret-body', {}, None),
+                                   URLError('secret-network-detail'), response]
+        with patch.object(updates, 'build_opener', return_value=opener):
+            with patch.object(updates.time, 'sleep') as sleep:
+                self.assertEqual(updates.gitlab_head('android14-6.1'), NEW)
+        self.assertEqual(opener.open.call_count, 3)
+        self.assertEqual([call.args for call in sleep.call_args_list], [(1,), (2,)])
+        opener.open.side_effect = HTTPError('https://private-url', 429, 'secret-body', {}, None)
+        with patch.object(updates, 'build_opener', return_value=opener):
+            with patch.object(updates.time, 'sleep'):
+                with self.assertRaisesRegex(updates.UpdateError, 'SUSFS gki-android14-6.1.*HTTP 429.*3 attempts') as raised:
+                    updates.gitlab_head('android14-6.1')
+        self.assertNotIn('private-url', str(raised.exception))
+        self.assertNotIn('secret-body', str(raised.exception))
+
+    def test_invalid_gitlab_json_has_safe_source_label_and_is_not_retried(self):
+        response, opener = self.response()
+        response.read.return_value = b'{invalid-secret-body'
+        with patch.object(updates, 'build_opener', return_value=opener):
+            with patch.object(updates.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(updates.UpdateError, 'SUSFS gki-android14-6.1.*invalid JSON') as raised:
+                    updates.gitlab_head('android14-6.1')
+        self.assertNotIn('secret-body', str(raised.exception))
+        self.assertEqual(opener.open.call_count, 1)
+        sleep.assert_not_called()
 
 
 if __name__ == '__main__':

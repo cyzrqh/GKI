@@ -95,7 +95,9 @@ class Susfs23ApplicationTests(unittest.TestCase):
 
     def test_unreviewed_sukisu_tree_refused_before_modification(self):
         before = self.state()
-        with self.assertRaisesRegex(ValueError, "requires the reviewed SukiSU kernel tree"):
+        strict_profile = {**self.profile, 'reviewed_kernel_tree': 'a' * 40}
+        with mock.patch.object(susfs, 'load_profile', return_value=strict_profile), \
+                self.assertRaisesRegex(ValueError, "requires the reviewed SukiSU kernel tree"):
             susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
         self.assertEqual(before, self.state())
 
@@ -122,6 +124,109 @@ class Susfs23ApplicationTests(unittest.TestCase):
                     susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
                 self.assertEqual(before, self.state())
                 self.run_git("reset", "--hard", "--quiet", self.head)
+
+    def add_reviewed_source_pair(self):
+        (self.repository / 'kernel/new_feature.c').write_text('/* reviewed new native feature */\n', encoding='utf-8')
+        self.uapi.write_text('/* reviewed new native UAPI */\n', encoding='utf-8')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'reviewed native source update')
+        self.profile['reviewed_source_trees'] = [{
+            'kernel': self.run_git('rev-parse', 'HEAD:kernel').stdout.strip(),
+            'uapi': self.run_git('rev-parse', 'HEAD:uapi').stdout.strip()}]
+
+    def test_two_reviewed_source_pairs_both_apply_and_reverify(self):
+        self.add_reviewed_source_pair()
+        newer = self.run_git('rev-parse', 'HEAD').stdout.strip()
+        for reference in (self.head, newer):
+            with self.subTest(reference=reference):
+                self.run_git('reset', '--hard', '--quiet', reference)
+                self.assertTrue(self.apply_fixture())
+                self.assertFalse(self.apply_fixture())
+
+    def test_crossed_reviewed_kernel_and_uapi_pairs_are_rejected(self):
+        self.add_reviewed_source_pair()
+        newer = self.run_git('rev-parse', 'HEAD').stdout.strip()
+        for kernel_from, uapi_from in ((self.head, newer), (newer, self.head)):
+            with self.subTest(kernel_from=kernel_from):
+                self.run_git('reset', '--hard', '--quiet', newer)
+                self.run_git('restore', '--source', kernel_from, '--staged', '--worktree', '--', 'kernel')
+                self.run_git('restore', '--source', uapi_from, '--staged', '--worktree', '--', 'uapi')
+                self.run_git('commit', '--quiet', '-m', 'mix separately reviewed sources')
+                before = self.state()
+                with mock.patch.object(susfs, 'load_profile', return_value=self.profile), \
+                        self.assertRaisesRegex(ValueError, 'complete kernel/UAPI pair'):
+                    susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
+                self.assertEqual(before, self.state())
+
+    def test_checked_patch_policy_accepts_unknown_sources_only_with_real_patch(self):
+        self.add_reviewed_source_pair()
+        del self.profile['reviewed_source_trees']
+        self.profile.update(source_policy='checked-patch', version='v2.3.0')
+        uapi = self.uapi.read_bytes()
+        self.assertTrue(self.apply_fixture())
+        self.assertFalse(self.apply_fixture())
+        self.assertEqual(self.uapi.read_bytes(), uapi)
+        self.assertEqual(self.run_git('diff', '--name-only', 'HEAD', '--', 'uapi').stdout, '')
+
+    def test_checked_patch_policy_preserves_patch_and_native_validation_failures(self):
+        self.add_reviewed_source_pair()
+        del self.profile['reviewed_source_trees']
+        self.profile.update(source_policy='checked-patch', version='v2.3.0')
+        before = self.state()
+        broken = self.patch.read_text().replace('-/* original kernel init */', '-/* incompatible source */')
+        self.patch.write_text(broken, encoding='utf-8', newline='\n')
+        with mock.patch.object(susfs, 'load_profile', return_value=self.profile), \
+                self.assertRaisesRegex(ValueError, 'Complete SUSFS 2.3 patch does not apply'):
+            susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
+        self.assertEqual(before, self.state())
+        self.providers[0].write_text('int ksu_patch_text(void) { return 0; }\n', encoding='utf-8')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'upstream provider regressed')
+        with mock.patch.object(susfs, 'load_profile', return_value=self.profile), \
+                self.assertRaisesRegex(ValueError, 'Incomplete SukiSU text patch implementation'):
+            susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
+
+    def test_checked_patch_policy_still_refuses_local_uapi_edits(self):
+        self.profile.update(source_policy='checked-patch', version='v2.3.0')
+        self.uapi.write_text('/* local ABI edit */\n', encoding='utf-8')
+        with mock.patch.object(susfs, 'load_profile', return_value=self.profile), \
+                self.assertRaisesRegex(ValueError, 'UAPI files differ from the reviewed source'):
+            susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
+
+    def test_port_patch_cannot_modify_uapi_even_when_normal_kernel_hunks_are_present(self):
+        self.uapi.write_text('/* changed by patch */\n', encoding='utf-8')
+        uapi_patch = self.run_git('diff', '--full-index').stdout
+        self.run_git('restore', '.')
+        self.patch.write_text(self.patch.read_text() + uapi_patch, encoding='utf-8', newline='\n')
+        before = self.state()
+        with mock.patch.object(susfs, 'load_profile', return_value=self.profile), \
+                self.assertRaisesRegex(ValueError, 'invalid file list'):
+            susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
+        self.assertEqual(before, self.state())
+
+    def test_reviewed_variant_uses_complete_patch_checks_and_reverifies(self):
+        variant = self.patch.with_name('sukisu-susfs23-avc.patch')
+        variant.write_text(self.patch.read_text(), encoding='utf-8', newline='\n')
+        self.patch.write_text(self.patch.read_text().replace('-/* original kernel init */',
+                                                           '-/* incompatible older init */'),
+                              encoding='utf-8', newline='\n')
+        with mock.patch.object(susfs, 'verify_integration') as verify:
+            self.assertTrue(susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True))
+            self.assertFalse(susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True))
+            self.assertEqual(verify.call_count, 2)
+        self.assertIn('integrated', self.core.read_text())
+
+    def test_explicit_custom_patch_does_not_search_for_variants(self):
+        variant = self.patch.with_name('sukisu-susfs23-avc.patch')
+        variant.write_text(self.patch.read_text(), encoding='utf-8', newline='\n')
+        self.patch.write_text(self.patch.read_text().replace('-/* original kernel init */',
+                                                           '-/* incompatible older init */'),
+                              encoding='utf-8', newline='\n')
+        before = self.state()
+        with mock.patch.object(susfs, 'load_profile', return_value=self.profile), \
+                self.assertRaisesRegex(ValueError, 'Complete SUSFS 2.3 patch does not apply'):
+            susfs.apply_integration(self.repository.parent, self.directory / 'susfs', self.patch)
+        self.assertEqual(before, self.state())
 
     def test_local_uapi_drift_and_staged_drift_are_rejected(self):
         for staged in (False, True):
@@ -215,6 +320,55 @@ class Susfs23ApplicationTests(unittest.TestCase):
                     susfs.apply_integration(self.repository.parent, self.directory / "susfs", self.patch)
                 self.assertEqual(before, self.state())
                 self.run_git("restore", ".")
+
+    def test_native_avc_provider_cannot_be_replaced_or_unlinked(self):
+        feature = self.repository / 'kernel/feature'
+        feature.mkdir()
+        provider = feature / 'avc_spoof.c'
+        provider.write_text('void ksu_avc_spoof_init(void) { real_init(); }\n', encoding='utf-8')
+        (feature / 'avc_spoof.h').write_text('void ksu_avc_spoof_init(void);\n', encoding='utf-8')
+        runtime = self.repository / 'kernel/runtime'
+        runtime.mkdir()
+        (runtime / 'boot_event.c').write_text(AvcLifecycleTests.BOOT, encoding='utf-8')
+        self.core.write_text(AvcLifecycleTests.CORE, encoding='utf-8')
+        self.build.write_text('kernelsu-objs += feature/avc_spoof.o\n', encoding='utf-8')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'native AVC feature')
+        susfs.verify_native_avc(self.repository)
+        provider.write_text('void ksu_avc_spoof_init(void) {}\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'selected, real implementation'):
+            susfs.verify_native_avc(self.repository)
+        self.run_git('restore', '.')
+        self.build.write_text('# kernelsu-objs += feature/avc_spoof.o\n', encoding='utf-8')
+        with self.assertRaisesRegex(ValueError, 'linked in Kbuild'):
+            susfs.verify_native_avc(self.repository)
+
+
+class AvcLifecycleTests(unittest.TestCase):
+    CORE = '''#include "feature/avc_spoof.h"
+void init(void) { ksu_avc_spoof_init(); }
+void exit(void) { ksu_avc_spoof_exit(); }
+'''
+    BOOT = '''#include "feature/avc_spoof.h"
+void post_fs_data(void) { ksu_avc_spoof_late_init(); }
+'''
+
+    def test_native_init_teardown_and_late_init_are_preserved(self):
+        susfs.verify_avc_lifecycle(self.CORE, self.BOOT)
+
+    def test_missing_init_exit_or_late_init_cannot_hide_behind_comments(self):
+        for symbol, core, boot in (
+                ('ksu_avc_spoof_init', self.CORE.replace('ksu_avc_spoof_init();', '/* ksu_avc_spoof_init(); */'), self.BOOT),
+                ('ksu_avc_spoof_exit', self.CORE.replace('ksu_avc_spoof_exit();', ''), self.BOOT),
+                ('ksu_avc_spoof_late_init', self.CORE, self.BOOT.replace('ksu_avc_spoof_late_init();', ''))):
+            with self.subTest(symbol=symbol), self.assertRaisesRegex(ValueError, symbol):
+                susfs.verify_avc_lifecycle(core, boot)
+
+    def test_duplicate_calls_and_missing_native_include_are_rejected(self):
+        with self.assertRaisesRegex(ValueError, 'exactly one ksu_avc_spoof_init'):
+            susfs.verify_avc_lifecycle(self.CORE + 'void extra(void) { ksu_avc_spoof_init(); }', self.BOOT)
+        with self.assertRaisesRegex(ValueError, 'native feature header'):
+            susfs.verify_avc_lifecycle(self.CORE.replace('#include "feature/avc_spoof.h"', ''), self.BOOT)
 
 
 class PatchMemoryBuildTests(unittest.TestCase):

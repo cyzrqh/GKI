@@ -207,6 +207,142 @@ class KsuSourceSnapshotTests(unittest.TestCase):
                 snapshot.git(self.source, "rev-parse", "HEAD")
         self.assertNotIn("sensitive-token", str(found.exception))
 
+    def test_new_reviewed_pair_passes_isolated_preflight_and_exports_original_source(self):
+        import apply_susfs23
+        profile = {'version': 'v2.3.0',
+                   'reviewed_kernel_tree': self.git(self.source, 'rev-parse', 'HEAD:kernel'),
+                   'reviewed_uapi_tree': self.git(self.source, 'rev-parse', 'HEAD:uapi')}
+        (self.source / 'kernel/new_feature.c').write_text('/* reviewed native addition */\n', encoding='utf-8')
+        (self.source / 'uapi/ioctl.h').write_text('/* reviewed new UAPI */\n', encoding='utf-8')
+        self.commit('reviewed source update')
+        self.reference = self.git(self.source, 'rev-parse', 'HEAD')
+        profile['reviewed_source_trees'] = [{
+            'kernel': self.git(self.source, 'rev-parse', 'HEAD:kernel'),
+            'uapi': self.git(self.source, 'rev-parse', 'HEAD:uapi')}]
+        original = (self.source / 'kernel/Kbuild').read_bytes()
+        (self.source / 'kernel/Kbuild').write_text('ported kernel\n', encoding='utf-8', newline='\n')
+        patch = self.git(self.source, 'diff', '--full-index') + '\n'
+        self.git(self.source, 'restore', '.')
+        patch_path = self.root / 'tools/patches/sukisu-susfs23.patch'
+        patch_path.parent.mkdir(parents=True)
+        patch_path.write_text(patch, encoding='utf-8', newline='\n')
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                mock.patch.object(apply_susfs23, 'verify_patch_memory_sources'), \
+                mock.patch.object(apply_susfs23, 'verify_integration') as verify:
+            self.create(susfs=True, tier='Latest(最新)')
+            verify.assert_called_once()
+        self.assertEqual((self.source / 'kernel/Kbuild').read_bytes(), original)
+        self.assertEqual(self.git(self.source, 'status', '--porcelain'), '')
+        self.restore()
+        self.assertEqual((self.destination / 'kernel/Kbuild').read_bytes(), original)
+        self.assertEqual((self.destination / 'kernel/new_feature.c').read_bytes(),
+                         (self.source / 'kernel/new_feature.c').read_bytes())
+
+    def test_crossed_reviewed_tree_pair_fails_before_patch_or_export(self):
+        import apply_susfs23
+        original = self.git(self.source, 'rev-parse', 'HEAD')
+        profile = {'version': 'v2.3.0',
+                   'reviewed_kernel_tree': self.git(self.source, 'rev-parse', 'HEAD:kernel'),
+                   'reviewed_uapi_tree': self.git(self.source, 'rev-parse', 'HEAD:uapi')}
+        (self.source / 'kernel/new_feature.c').write_text('/* reviewed native addition */\n', encoding='utf-8')
+        (self.source / 'uapi/ioctl.h').write_text('/* reviewed new UAPI */\n', encoding='utf-8')
+        self.commit('second reviewed source pair')
+        profile['reviewed_source_trees'] = [{
+            'kernel': self.git(self.source, 'rev-parse', 'HEAD:kernel'),
+            'uapi': self.git(self.source, 'rev-parse', 'HEAD:uapi')}]
+        self.git(self.source, 'checkout', original, '--', 'uapi')
+        self.commit('unreviewed combination of individually reviewed trees')
+        self.reference = self.git(self.source, 'rev-parse', 'HEAD')
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                mock.patch.object(apply_susfs23, 'verify_patch_memory_sources') as verify, \
+                self.assertRaisesRegex(snapshot.SnapshotError, 'UAPI pair is unreviewed'):
+            self.create(susfs=True, tier='Latest(最新)')
+        verify.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def checked_patch_fixture(self):
+        import apply_susfs23
+        for arch in apply_susfs23.PATCH_MEMORY_ARCHES:
+            provider = self.source / f'kernel/hook/{arch}/patch_memory.c'
+            provider.parent.mkdir(parents=True)
+            provider.write_text('int ksu_patch_text(void *dst, void *src, int len, int flags)\n'
+                                '{ return stop_machine(callback, dst, cpu_online_mask); }\n', encoding='utf-8')
+        self.commit('unknown upstream kernel implementation')
+        self.reference = self.git(self.source, 'rev-parse', 'HEAD')
+        profile = {'version': 'v2.3.0', 'source_policy': 'checked-patch',
+                   'reviewed_kernel_tree': 'a' * 40, 'reviewed_uapi_tree': 'b' * 40}
+        (self.source / 'kernel/Kbuild').write_text('ported kernel\n', encoding='utf-8', newline='\n')
+        patch = self.git(self.source, 'diff', '--full-index') + '\n'
+        self.git(self.source, 'restore', '.')
+        patch_path = self.root / 'tools/patches/sukisu-susfs23.patch'
+        patch_path.parent.mkdir(parents=True)
+        patch_path.write_text(patch, encoding='utf-8', newline='\n')
+        return profile, patch_path
+
+    def test_checked_patch_unknown_tree_runs_real_patch_in_clone_before_export(self):
+        import apply_susfs23
+        profile, _ = self.checked_patch_fixture()
+        original = (self.source / 'kernel/Kbuild').read_bytes()
+        uapi = (self.source / 'uapi/ioctl.h').read_bytes()
+        def verify_port(directory):
+            self.assertNotEqual(directory, self.source)
+            self.assertEqual((directory / 'kernel/Kbuild').read_text(), 'ported kernel\n')
+            self.assertEqual(self.git(directory, 'diff', '--name-only', 'HEAD', '--', 'uapi'), '')
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                mock.patch.object(apply_susfs23, 'verify_integration', side_effect=verify_port) as verify:
+            self.create(susfs=True, tier='Latest(最新)')
+            verify.assert_called_once()
+        self.assertEqual(self.git(self.source, 'status', '--porcelain'), '')
+        self.restore()
+        self.assertEqual((self.destination / 'kernel/Kbuild').read_bytes(), original)
+        self.assertEqual((self.destination / 'uapi/ioctl.h').read_bytes(), uapi)
+
+    def test_checked_patch_conflict_fails_without_export_or_source_changes(self):
+        profile, patch = self.checked_patch_fixture()
+        original = (self.source / 'kernel/Kbuild').read_bytes()
+        patch.write_text(patch.read_text().replace('-original kernel', '-incompatible kernel'),
+                         encoding='utf-8', newline='\n')
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                self.assertRaisesRegex(ValueError, 'Complete SUSFS 2.3 patch does not apply'):
+            self.create(susfs=True, tier='Latest(最新)')
+        self.assertFalse(self.output.exists())
+        self.assertEqual((self.source / 'kernel/Kbuild').read_bytes(), original)
+        self.assertEqual(self.git(self.source, 'status', '--porcelain'), '')
+
+    def test_checked_patch_missing_native_provider_cannot_export(self):
+        profile, _ = self.checked_patch_fixture()
+        (self.source / 'kernel/hook/arm64/patch_memory.c').write_text('int ksu_patch_text(void) { return 0; }\n', encoding='utf-8')
+        self.commit('upstream provider no longer implements text patching')
+        self.reference = self.git(self.source, 'rev-parse', 'HEAD')
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                self.assertRaisesRegex(ValueError, 'Incomplete SukiSU text patch implementation'):
+            self.create(susfs=True, tier='Latest(最新)')
+        self.assertFalse(self.output.exists())
+
+    def test_checked_patch_missing_hook_after_apply_cannot_export(self):
+        import apply_susfs23
+        profile, _ = self.checked_patch_fixture()
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                mock.patch.object(apply_susfs23, 'verify_integration', side_effect=ValueError('required hook missing')), \
+                self.assertRaisesRegex(ValueError, 'required hook missing'):
+            self.create(susfs=True, tier='Latest(最新)')
+        self.assertFalse(self.output.exists())
+        self.assertEqual(self.git(self.source, 'status', '--porcelain'), '')
+
+    def test_checked_patch_prepare_selects_complete_reviewed_variant(self):
+        import apply_susfs23
+        profile, patch = self.checked_patch_fixture()
+        patch.with_name('sukisu-susfs23-avc.patch').write_text(patch.read_text(), encoding='utf-8', newline='\n')
+        patch.write_text(patch.read_text().replace('-original kernel', '-incompatible kernel'),
+                         encoding='utf-8', newline='\n')
+        with mock.patch.object(snapshot, 'load_profile', return_value=profile), \
+                mock.patch.object(apply_susfs23, 'verify_integration') as verify:
+            self.create(susfs=True, tier='Latest(最新)')
+            verify.assert_called_once()
+        self.assertEqual(self.git(self.source, 'status', '--porcelain'), '')
+        self.restore()
+        self.assertEqual((self.destination / 'kernel/Kbuild').read_text(), 'original kernel\n')
+
 
 if __name__ == "__main__":
     unittest.main()

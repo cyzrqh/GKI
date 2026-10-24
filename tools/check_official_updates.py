@@ -10,6 +10,7 @@ from pathlib import Path
 import re
 import sys
 import tempfile
+import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
@@ -26,6 +27,7 @@ CANDIDATE_PATH = 'data/upstream-candidates.json'
 TITLE = 'chore: review official SukiSU and SUSFS updates'
 BRANCH = 'automation/official-updates'
 SHA = re.compile(r'[0-9a-fA-F]{40}\Z')
+LOOKUP_ATTEMPTS = 3
 
 
 class UpdateError(RuntimeError):
@@ -37,6 +39,25 @@ class NoRedirect(HTTPRedirectHandler):
         raise UpdateError('Official SUSFS API redirects are not permitted')
 
 
+def github_lookup(label: str, function, *arguments, **keywords):
+    """Retry bounded public lookups, without logging remote responses or tokens."""
+    transient = {'Official GitHub source lookup failed', 'GitHub source lookup failed',
+                 'GitHub source lookup returned an unsuccessful status'}
+    for attempt in range(LOOKUP_ATTEMPTS):
+        try:
+            return function(*arguments, **keywords)
+        except SourceResolutionError as error:
+            # Only these constant messages come from the shared HTTP client.
+            # Ref, redirect, size and shape failures cannot be fixed by retries.
+            if str(error) not in transient:
+                category = ('response exceeds size limit' if str(error) == 'GitHub source lookup response is too large'
+                            else 'invalid or unexpected GitHub metadata')
+                raise UpdateError(f'{label}: {category}') from None
+            if attempt + 1 == LOOKUP_ATTEMPTS:
+                raise UpdateError(f'{label}: GitHub network/API lookup failed after {LOOKUP_ATTEMPTS} attempts') from None
+            time.sleep(attempt + 1)
+
+
 def gitlab_head(target: str) -> str:
     if target not in TARGETS:
         raise UpdateError('Unknown official SUSFS target')
@@ -45,22 +66,34 @@ def gitlab_head(target: str) -> str:
            + '/repository/branches/' + quote(branch, safe=''))
     # GitLab is public. Never forward GH_TOKEN/GITHUB_TOKEN to this host.
     request = Request(url, headers={'Accept': 'application/json', 'User-Agent': 'gki-official-updates'})
-    try:
-        with build_opener(NoRedirect()).open(request, timeout=60) as response:
-            if response.geturl() != url or urlsplit(response.geturl()).netloc != 'gitlab.com':
-                raise UpdateError('Official SUSFS API returned an unexpected URL')
-            if response.status != 200:
-                raise UpdateError('Official SUSFS API returned an unsuccessful status')
-            raw = response.read(1024 * 1024 + 1)
-            if len(raw) > 1024 * 1024:
-                raise UpdateError('Official SUSFS API response is too large')
-            document = json.loads(raw)
-    except (HTTPError, URLError, OSError, ValueError):
-        raise UpdateError('Official SUSFS API lookup failed') from None
+    label = 'SUSFS ' + branch
+    for attempt in range(LOOKUP_ATTEMPTS):
+        try:
+            with build_opener(NoRedirect()).open(request, timeout=60) as response:
+                if response.geturl() != url or urlsplit(response.geturl()).netloc != 'gitlab.com':
+                    raise UpdateError(label + ': official API returned an unexpected URL')
+                if response.status != 200:
+                    raise UpdateError(label + ': official API returned an unsuccessful status')
+                raw = response.read(1024 * 1024 + 1)
+                if len(raw) > 1024 * 1024:
+                    raise UpdateError(label + ': official API response is too large')
+                document = json.loads(raw)
+            break
+        except HTTPError as error:
+            if error.code not in (408, 429, 500, 502, 503, 504):
+                raise UpdateError(f'{label}: official API failed (HTTP {error.code})') from None
+            if attempt + 1 == LOOKUP_ATTEMPTS:
+                raise UpdateError(f'{label}: official API failed (HTTP {error.code}) after {LOOKUP_ATTEMPTS} attempts') from None
+        except (URLError, OSError):
+            if attempt + 1 == LOOKUP_ATTEMPTS:
+                raise UpdateError(f'{label}: network lookup failed after {LOOKUP_ATTEMPTS} attempts') from None
+        except (ValueError, UnicodeError):
+            raise UpdateError(label + ': official API returned invalid JSON') from None
+        time.sleep(attempt + 1)
     commit = document.get('commit') if isinstance(document, dict) else None
     if (not isinstance(commit, dict) or not isinstance(commit.get('id'), str)
             or not SHA.fullmatch(commit['id']) or document.get('name', branch) != branch):
-        raise UpdateError('Official SUSFS branch did not return its full commit SHA')
+        raise UpdateError(label + ': official branch did not return its full commit SHA')
     return commit['id'].lower()
 
 
@@ -76,25 +109,31 @@ def baseline(root: Path) -> dict:
 
 
 def fetch_snapshot(current: dict) -> dict:
-    repository = github_json(SUKISU)
+    repository = github_lookup('SukiSU repository', github_json, SUKISU)
     branch = repository.get('default_branch')
     if not isinstance(branch, str):
         raise UpdateError('Official SukiSU repository did not return a default branch')
     validate_ref(branch)
-    head = github_commit(SUKISU, branch)
-    release_document = github_json(SUKISU, '/releases/latest', missing=True)
+    head = github_lookup('SukiSU default branch', github_commit, SUKISU, branch)
+    release_document = github_lookup('SukiSU latest release', github_json, SUKISU, '/releases/latest', missing=True)
     release = None
     if release_document is not None:
         tag = release_document.get('tag_name')
         if not isinstance(tag, str):
             raise UpdateError('Official SukiSU release did not return a tag')
         validate_ref(tag)
-        commit = github_commit(SUKISU, tag)
+        commit = github_lookup('SukiSU release commit', github_commit, SUKISU, tag)
         newer = False
         if commit != current['sukisu']:
-            comparison = github_json(SUKISU, '/compare/' + current['sukisu'] + '...' + commit)
-            if comparison.get('status') not in ('ahead', 'behind', 'identical', 'diverged'):
-                raise UpdateError('Official release comparison did not return a known ancestry status')
+            # Only ancestry is needed. GitHub includes every changed file and
+            # patch on page 1 even with per_page=1; page 2 omits that potentially
+            # multi-megabyte diff while retaining the comparison's status.
+            comparison = github_lookup('SukiSU release ancestry', github_json, SUKISU,
+                                       '/compare/' + current['sukisu'] + '...' + commit + '?per_page=1&page=2')
+            base = comparison.get('base_commit')
+            if (not isinstance(base, dict) or base.get('sha') != current['sukisu']
+                    or comparison.get('status') not in ('ahead', 'behind', 'identical', 'diverged')):
+                raise UpdateError('SukiSU release ancestry: invalid comparison baseline or ancestry status')
             newer = comparison['status'] in ('ahead', 'diverged')
         release = {'tag': tag, 'commit': commit, 'newer_than_baseline': newer}
     return validate_snapshot({'schema_version': 1, 'sukisu': {'branch': branch, 'head': head, 'release': release},
@@ -239,10 +278,13 @@ def main(argv=None) -> int:
     if args.candidates_json is not None and not args.prepare:
         parser.error('--candidates-json requires --prepare')
     write_outputs({'has_updates': 'false', 'body_path': ''})
+    stage = 'compatibility metadata'
     try:
         root = args.root.resolve()
         current = baseline(root)
+        stage = 'previous official snapshot'
         previous = acknowledged(root)
+        stage = 'official source lookup'
         snapshot = validate_snapshot(json.loads(args.candidates_json)) if args.candidates_json is not None else fetch_snapshot(current)
         updates = changes(current, snapshot)
         needed = bool(updates) and previous != head_state(snapshot)
@@ -250,14 +292,24 @@ def main(argv=None) -> int:
                   'candidates_json': json.dumps(snapshot, sort_keys=True, separators=(',', ':')),
                   'heads_marker': heads_marker(snapshot)}
         if args.prepare and needed:
+            stage = 'candidate publication'
             body = prepare(root, current, snapshot, updates, args.report_dir)
             values.update(body_path=str(body), changed_files_json=json.dumps([CANDIDATE_PATH]))
         write_outputs(values)
         print('Official source candidates require compatibility review.' if needed else 'No unacknowledged official source updates.')
         return 0
-    except (UpdateError, CompatibilityError, SourceResolutionError, OSError, ValueError, UnicodeError):
-        # Do not echo untrusted API responses, URLs, headers, or token values.
-        print('Official update detection stopped; the source snapshot or local compatibility metadata could not be verified.', file=sys.stderr)
+    except UpdateError as error:
+        # UpdateError messages contain only local labels/validation constants;
+        # never forward the response body, headers, URLs or low-level exception.
+        print(f'::error::Official update detection failed ({stage}): {error}', file=sys.stderr)
+        return 1
+    except (CompatibilityError, SourceResolutionError, OSError, ValueError, UnicodeError) as error:
+        categories = {CompatibilityError: 'compatibility profile is invalid',
+                      SourceResolutionError: 'official ref metadata is invalid',
+                      OSError: 'local file access failed', ValueError: 'JSON or snapshot metadata is invalid',
+                      UnicodeError: 'response or metadata encoding is invalid'}
+        category = next(reason for kind, reason in categories.items() if isinstance(error, kind))
+        print(f'::error::Official update detection failed ({stage}): {category}', file=sys.stderr)
         return 1
 
 

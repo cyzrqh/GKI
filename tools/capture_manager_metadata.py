@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 
 from wait_manager_identity import Expected, positive_integer, validate_metadata
+from pin_build_dependencies import load_profile, source_policy
 
 
 def main():
@@ -21,10 +22,14 @@ def main():
             or not re.fullmatch(r'[0-9]+', fields['ksu_version_code'])
             or any('\n' in value or '\r' in value for value in fields.values())):
         raise SystemExit('Invalid verified manager release metadata')
-    profile = json.loads((Path(__file__).resolve().parents[1] / 'build-compatibility.json').read_text(encoding='utf-8'))['sukisu_susfs']
+    profile = load_profile(Path(__file__).resolve().parents[1])
+    # Prepare has already proved the selected source and full SUSFS port before
+    # any manager job runs. Checked-patch sources need not be a fixed commit.
+    susfs_enabled = os.environ.get('META_ENABLE_SUSFS') == 'true'
+    compatible_source = (source_policy(profile) == 'checked-patch'
+                         or fields['ksu_ref'].lower() in {commit.lower() for commit in profile['ksu_commits']})
     fields.update(ksu_variant='SukiSU', built_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(),
-                  susfs_version=profile['version'] if (os.environ.get('META_ENABLE_SUSFS') == 'true'
-                  and fields['ksu_ref'] in profile['ksu_commits']) else None)
+                  susfs_version=profile['version'] if susfs_enabled and compatible_source else None)
     # Signer outputs supply these public certificate/APK hashes. No private key
     # or signing password is ever put in this identity artifact.
     fields.update(

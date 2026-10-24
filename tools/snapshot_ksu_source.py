@@ -20,7 +20,8 @@ import subprocess
 import sys
 import uuid
 
-from pin_build_dependencies import CompatibilityError, TIERS, custom_configuration, load_profile
+from pin_build_dependencies import (CompatibilityError, TIERS, custom_configuration, load_profile,
+                                    reviewed_tree_pairs, source_policy)
 
 
 REPOSITORY = "SukiSU-Ultra/SukiSU-Ultra"
@@ -123,30 +124,30 @@ def verify_susfs_compatibility(source: Path, root: Path, tier: str, susfs: bool,
         return
     try:
         profile = load_profile(root)
+        reviewed = reviewed_tree_pairs(profile)
+        policy = source_policy(profile)
     except CompatibilityError as error:
         raise SnapshotError(str(error)) from error
     reference = git(source, "rev-parse", "HEAD").lower()
     if profile.get("version") != "v2.3.0":
         raise SnapshotError("SukiSU prepare validation requires the SUSFS v2.3.0 compatibility profile")
-    if "reviewed_kernel_tree" in profile:
-        for path, field in (("kernel", "reviewed_kernel_tree"), ("uapi", "reviewed_uapi_tree")):
-            if git(source, "rev-parse", "--verify", f"HEAD:{path}").lower() != profile[field].lower():
-                raise SnapshotError(f"SukiSU {path} tree changed; adapt and review the SUSFS 2.3 port before building the matrix")
+    if reviewed or policy == "checked-patch":
+        found = tuple(git(source, "rev-parse", "--verify", f"HEAD:{path}").lower()
+                      for path in ("kernel", "uapi"))
+        if found not in reviewed and policy != "checked-patch":
+            raise SnapshotError("SukiSU kernel tree changed or its UAPI pair is unreviewed; "
+                                "adapt and review the SUSFS 2.3 port before building the matrix")
     elif reference not in {commit.lower() for commit in profile["ksu_commits"]}:
         raise SnapshotError("SukiSU commit has not been reviewed for the SUSFS 2.3 port")
     # Run the complete patch and native lifecycle checks on an isolated copy.
     # The manager and the exported source always retain the original tree.
     patch = (root / "tools/patches/sukisu-susfs23.patch").resolve(strict=True)
-    from apply_susfs23 import verify_integration, verify_patch_memory_sources
+    from apply_susfs23 import apply_reviewed_port
     with temporary_directory(source.parent, ".gki-sukisu-port-") as temporary_root:
         checked = temporary_root / "source"
         git(temporary_root, "clone", "--quiet", "--config", "core.autocrlf=false", "--no-checkout", str(bundle), str(checked))
         git(checked, "checkout", "--quiet", "--detach", reference)
-        verify_patch_memory_sources(checked)
-        git(checked, "apply", "--check", str(patch))
-        git(checked, "apply", str(patch))
-        git(checked, "apply", "--reverse", "--check", str(patch))
-        verify_integration(checked)
+        apply_reviewed_port(checked, patch, allow_variants=True)
 
 
 def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = ROOT,

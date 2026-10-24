@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Select SUSFS pins; verify the reviewed SukiSU kernel tree before patching."""
+"""Select SUSFS pins and the policy for proving the real SukiSU port."""
 from __future__ import annotations
 
 import argparse
@@ -21,6 +21,42 @@ class CompatibilityError(RuntimeError):
     """Stop before mixing incompatible build dependencies."""
 
 
+def source_policy(profile: dict) -> str:
+    """Opt in to proving new upstream sources with the complete real port."""
+    policy = profile.get("source_policy", "reviewed")
+    if not isinstance(policy, str) or policy not in ("reviewed", "checked-patch"):
+        raise CompatibilityError("Source policy must be reviewed or checked-patch")
+    if policy == "checked-patch" and profile.get("version") != "v2.3.0":
+        raise CompatibilityError("Checked-patch source policy requires SUSFS v2.3.0")
+    return policy
+
+
+def reviewed_tree_pairs(profile: dict) -> tuple[tuple[str, str], ...]:
+    """Return whole reviewed (kernel, UAPI) pairs; never combine their halves."""
+    pairs = []
+    legacy = ("reviewed_kernel_tree", "reviewed_uapi_tree")
+    if any(field in profile for field in legacy):
+        for field in legacy:
+            value = profile.get(field)
+            if not isinstance(value, str) or not SHA.fullmatch(value):
+                raise CompatibilityError(f"Reviewed SukiSU source profile is missing a valid {field}")
+        pairs.append(tuple(profile[field].lower() for field in legacy))
+    if "reviewed_source_trees" in profile:
+        entries = profile["reviewed_source_trees"]
+        if not isinstance(entries, list) or not entries:
+            raise CompatibilityError("Reviewed source trees must be a nonempty list of kernel/UAPI pairs")
+        for entry in entries:
+            if (not isinstance(entry, dict) or set(entry) != {"kernel", "uapi"}
+                    or any(not isinstance(entry[field], str) or not SHA.fullmatch(entry[field])
+                           for field in ("kernel", "uapi"))):
+                raise CompatibilityError("Each reviewed source tree must contain paired kernel and UAPI full SHAs")
+            pair = (entry["kernel"].lower(), entry["uapi"].lower())
+            if pair in pairs:
+                raise CompatibilityError("Reviewed source tree pairs must not be duplicated")
+            pairs.append(pair)
+    return tuple(pairs)
+
+
 def load_profile(root: Path) -> dict:
     try:
         document = json.loads((root / "build-compatibility.json").read_text(encoding="utf-8"))
@@ -39,14 +75,9 @@ def load_profile(root: Path) -> dict:
     if source is not None and (not isinstance(source, str) or not SHA.fullmatch(source)
                                or source.lower() not in {value.lower() for value in commits}):
         raise CompatibilityError("Compatibility source_ref must name a reviewed KSU commit")
-    tree = profile.get("reviewed_kernel_tree")
-    if tree is not None and (not isinstance(tree, str) or not SHA.fullmatch(tree)
-                             or version != "v2.3.0"):
-        raise CompatibilityError("Reviewed kernel tree requires a full SHA and SUSFS v2.3.0")
-    uapi = profile.get("reviewed_uapi_tree")
-    if (tree is None) != (uapi is None) or (uapi is not None and
-            (not isinstance(uapi, str) or not SHA.fullmatch(uapi))):
-        raise CompatibilityError("Reviewed kernel and UAPI trees must be paired full SHAs")
+    if reviewed_tree_pairs(profile) and version != "v2.3.0":
+        raise CompatibilityError("Reviewed source trees require SUSFS v2.3.0")
+    source_policy(profile)
     if (not isinstance(tiers, list) or not tiers
             or any(not isinstance(value, str) or value not in TIERS for value in tiers)):
         raise CompatibilityError("Compatibility tiers must be Stable, Dev or Latest")
@@ -81,11 +112,11 @@ def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str)
     if not isinstance(ksu_ref, str) or not SHA.fullmatch(ksu_ref):
         raise CompatibilityError("Selected SukiSU source must be a full commit SHA")
     if (ksu_ref.lower() not in {value.lower() for value in profile["ksu_commits"]}
-            and "reviewed_kernel_tree" not in profile):
+            and not reviewed_tree_pairs(profile) and source_policy(profile) != "checked-patch"):
         return None
-    # A newer manager/ksud commit can retain the exact reviewed kernel sources.
-    # apply_susfs23.py verifies HEAD:kernel before any patch or C compilation;
-    # an incompatible source fails there instead of silently using older SUSFS.
+    # Tree review or checked-patch policy permits trying a newer source.
+    # The prepare clone and apply_susfs23.py must still prove the real complete
+    # patch and native interfaces before the kernel compile begins.
     if target not in profile["pins"]:
         raise CompatibilityError(f"No compatible SUSFS pin for {target}; review build-compatibility.json")
     return profile["pins"][target].lower(), profile["version"]

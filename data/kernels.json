@@ -1064,6 +1064,78 @@
       "date": "lts",
       "ref": "refs/heads/android16-6.12-lts",
       "revision": "r1"
+    },
+    {
+      "android_version": "android12",
+      "kernel_version": "5.10",
+      "kernel": "5.10.252",
+      "date": "2026-04",
+      "ref": "f827e6c7d3dbd135404093a35db75e4952a674b2",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android12",
+      "kernel_version": "5.10",
+      "kernel": "5.10.257",
+      "date": "2026-07",
+      "ref": "814e645e2b16e08570cf873cfae6abca4c025432",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android12",
+      "kernel_version": "5.10",
+      "kernel": "5.10.269",
+      "date": "2026-10",
+      "ref": "222b41edc3a297e6b34d2a4c47084e3695e5d807",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android13",
+      "kernel_version": "5.15",
+      "kernel": "5.15.197",
+      "date": "2026-03",
+      "ref": "9616f3007869b69ddcc06bf141947a10c01f9f18",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android13",
+      "kernel_version": "5.15",
+      "kernel": "5.15.206",
+      "date": "2026-06",
+      "ref": "a1e4d663db17e19d7cbeff1c70cb81b316a012b0",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android13",
+      "kernel_version": "5.15",
+      "kernel": "5.15.211",
+      "date": "2026-09",
+      "ref": "ab1c2c39ab07dd880ceb8e075f8c2040ec389417",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android15",
+      "kernel_version": "6.6",
+      "kernel": "6.6.30",
+      "date": "2024-07",
+      "ref": "c5bb31908c12dfded18679d8b4a6633c1c073bce",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android15",
+      "kernel_version": "6.6",
+      "kernel": "6.6.30",
+      "date": "2024-08",
+      "ref": "394605f7e8266e836a8acf09a8deabd4ab6d7e70",
+      "revision": "r1"
+    },
+    {
+      "android_version": "android15",
+      "kernel_version": "6.6",
+      "kernel": "6.6.46",
+      "date": "2024-09",
+      "ref": "9c4b01a470b0df996838b5f1d19b79ca59709c78",
+      "revision": "r1"
     }
   ]
 }

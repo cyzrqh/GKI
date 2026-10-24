@@ -270,7 +270,7 @@
       "kernel_version": "5.10",
       "kernel": "5.10.237",
       "date": "2025-06",
-      "ref": "refs/heads/android12-5.10-2025-06",
+      "ref": "refs/heads/deprecated/android12-5.10-2025-06",
       "revision": "r1"
     },
     {

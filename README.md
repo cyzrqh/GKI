@@ -36,6 +36,8 @@ SukiSU 在展开矩阵前只从官方下载一次完整历史，校验源码与 
 
 同步 Android 源码时，对清单里已固定提交的项目只抓取该提交，避免旧清单额外要求下载 `master`；分支、标签和最终检出的源码版本保持不变。同步日志记录实际下载命令，便于核实网络耗时。
 
+历史 GKI 命名分支移入 `deprecated` 时，只解析同一系列、同一月份的官方分支地址，优先保留仍存在的原引用；明确指定的提交 SHA 和标签保持不变。同步完成后读取实际 Makefile 核对所选完整版本，LTS 核对系列；版本不匹配时在编译前停止。
+
 SukiSU APK 编译并核验成功后才启动内核矩阵；内核在开始编译前读取同一次运行的已签名 APK 身份，核对源码、包名、证书和版本。管理器构建失败时停止配对，发布也要求配套管理器成功。
 
 管理器先按 SukiSU 官方 DDK 流程构建八种 ARM64 KMI 的真实 LKM 模块，模块与 APK 使用同一源码和本仓库的固定公开签名身份。模块使用按源码、证书和 DDK 镜像摘要隔离的缓存传递，不另上传模块压缩包；APK 校验通过后再启动内核矩阵，避免全量内核占满机器后互相等待。
@@ -92,7 +94,7 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 
 旧构建使用的嵌入式 KPM 包装器可能携带空占位载荷并返回成功；来自[旧运行 40062459370](https://github.com/cyzrqh/gki/actions/runs/40062459370) 的 `android12-5.10.236-2025-05-AnyKernel3.zip` 实际把入口指向文件之外。该旧运行的文件不能继续用于刷机，需重新编译，不能仅修改跳转来修复。现在所有最终 Image 在打包与发布时都检查 ARM64 启动入口，但静态检查通过仍不等同于实机启动验证。
 
-[KPM 修复验证 40081347134](https://github.com/cyzrqh/gki/actions/runs/40081347134)已完成 Android 12 / 5.10.236 / 2025-05 的实际编译、完整载荷与入口检查，并[发布修复后的 AK3](https://github.com/cyzrqh/gki/releases/tag/gki-40081347134-1)。SukiSU 为 41065，SUSFS 为 v2.3.0；下载复核确认 AK3 内的 APK 配对信息与完整载荷，文件摘要与 Actions 和 Release 一致，KPM 真实载荷为 294144 字节。该修复包尚未完成实机启动验证。
+[KPM 修复验证 40081347134](https://github.com/cyzrqh/gki/actions/runs/40081347134)已完成 Android 12 / 5.10.236 / 2025-05 的实际编译、完整载荷与入口检查，并[发布修复后的 AK3](https://github.com/cyzrqh/gki/releases/tag/gki-40081347134-1)。SukiSU 为 41065，SUSFS 为 v2.3.0；下载复核确认 AK3 内的 APK 配对信息与完整载荷，文件摘要与 Actions 和 Release 一致，KPM 真实载荷为 294144 字节。维护者已反馈该修复包成功开机；这一反馈只覆盖该设备与构建配置。
 
 **验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 修复后也已[单独补测成功](https://github.com/cyzrqh/gki/actions/runs/39901348783)，包含内核编译、产物校验和 Release 发布。此前的 `SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
 

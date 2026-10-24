@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import tempfile
+import time
 from typing import Callable
 import xml.etree.ElementTree as ET
 
@@ -62,6 +63,37 @@ def resolve_kernel_ref(branch: str) -> str:
     raise ValueError(f"No live/deprecated branch or release tag found for {branch}")
 
 
+def resolve_named_kernel_ref(branch: str, preferred_ref: str) -> str:
+    """Keep a named GKI branch, allowing only its live/deprecated relocation."""
+    validate_branch(branch)
+    aliases = (f"refs/heads/{branch}", f"refs/heads/deprecated/{branch}")
+    if preferred_ref not in aliases:
+        raise ValueError("The named kernel ref must match the selected GKI branch")
+    for attempt in range(3):
+        try:
+            result = subprocess.run(
+                ["git", "ls-remote", "--refs", COMMON_URL, *aliases],
+                check=True, text=True, encoding="utf-8", capture_output=True, timeout=60,
+            )
+            break
+        except (subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            if attempt == 2:
+                raise
+            time.sleep(2 * (attempt + 1))
+    refs: set[str] = set()
+    for line in result.stdout.splitlines():
+        fields = line.split()
+        if (len(fields) == 2 and re.fullmatch(r"(?:[0-9a-fA-F]{40}|[0-9a-fA-F]{64})", fields[0])
+                and fields[1] in aliases):
+            refs.add(fields[1])
+    if preferred_ref in refs:
+        return preferred_ref
+    for alias in aliases:
+        if alias in refs:
+            return alias
+    raise ValueError(f"No live/deprecated branch found for explicitly selected {branch}")
+
+
 def _manifest_path(root: Path, name: str) -> Path:
     pure = PurePosixPath(name)
     if (not name or "\\" in name or ":" in name or pure.is_absolute()
@@ -110,6 +142,7 @@ def set_kernel_ref(
     kernel_ref: str,
     branch: str,
     resolver: Callable[[str], str] | None = None,
+    named_resolver: Callable[[str, str], str] | None = None,
 ) -> tuple[str, int]:
     """Patch common projects reachable from default.xml, validating before writes."""
     validate_branch(branch)
@@ -129,7 +162,14 @@ def set_kernel_ref(
             count += len(common)
     if not count:
         raise ValueError("No common kernel project found in default.xml or its includes")
-    effective_ref = validate_ref(kernel_ref or (resolver or resolve_kernel_ref)(branch))
+    aliases = (f"refs/heads/{branch}", f"refs/heads/deprecated/{branch}")
+    if kernel_ref in aliases:
+        effective_ref = (named_resolver or resolve_named_kernel_ref)(branch, kernel_ref)
+        if effective_ref not in aliases:
+            raise ValueError("Named kernel resolution changed the selected GKI branch")
+        effective_ref = validate_ref(effective_ref)
+    else:
+        effective_ref = validate_ref(kernel_ref or (resolver or resolve_kernel_ref)(branch))
 
     # Resolve and validate every include and ref before touching any source file.
     staged: list[tuple[Path, Path]] = []

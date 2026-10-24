@@ -655,6 +655,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(step['env']['GKI_KERNEL_REF'], '${{ matrix.kernel_ref }}')
         self.assertLess(step['run'].index('tools/set_kernel_ref.py'), step['run'].index('tools/optimize_manifest_fetch.py'))
         self.assertLess(step['run'].index('tools/optimize_manifest_fetch.py'), step['run'].index('"$REPO" --trace sync'))
+        self.assertEqual(step['env']['GKI_SUBLEVEL'], '${{ matrix.sub_level }}')
+        self.assertLess(step['run'].index('"$REPO" --trace sync'), step['run'].index('tools/validate_kernel_source.py'))
+        self.assertIn('--family "$GKI_KERNEL" --sublevel "$GKI_SUBLEVEL"', step['run'])
 
     def test_catalog_guard_runs_after_checkout_before_slow_disk_cleanup(self):
         names = [step.get('name') for step in self.steps]

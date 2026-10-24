@@ -118,6 +118,8 @@ python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \\
   --manifest-root "$KERNEL_ROOT/.repo/manifests"
 for attempt in 1 2 3; do
   if "$REPO" --trace sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
+    python3 "$GITHUB_WORKSPACE/tools/validate_kernel_source.py" \\
+      --kernel-root "$KERNEL_ROOT" --family "$GKI_KERNEL" --sublevel "$GKI_SUBLEVEL"
     exit 0
   fi
   echo "::warning::源码同步失败（${attempt}/3）"
@@ -384,6 +386,7 @@ PY
 
     step = step_named(steps, '初始化并同步内核源码')
     step['env'] = {'GKI_ANDROID': '${{ matrix.android_version }}', 'GKI_KERNEL': '${{ matrix.kernel_version }}',
+                   'GKI_SUBLEVEL': '${{ matrix.sub_level }}',
                    'GKI_PATCH': '${{ matrix.os_patch_level }}', 'GKI_KERNEL_REF': '${{ matrix.kernel_ref }}'}
     step['run'] = SOURCE_SYNC
     step = step_named(steps, '添加一加 8E 处理器支持')

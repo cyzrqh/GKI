@@ -623,6 +623,7 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
         'if': PREPARE_IF,
         'permissions': {'contents': 'write'},
         'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}',
+                    'full_catalog': '${{ steps.matrix.outputs.full_catalog }}',
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
                     'source_cache_key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
                     'source_backup_release_id': '${{ steps.source-backup.outputs.backup_release_id }}',

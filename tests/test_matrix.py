@@ -237,9 +237,78 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual(0, result)
         self.assertEqual(expected_count, len(json.loads(capture.getvalue())["include"]))
         self.assertIn(f"count={expected_count}\n", output.read_text(encoding="utf-8"))
+        self.assertIn("full_catalog=false\n", output.read_text(encoding="utf-8"))
         self.assertIn("包含 LTS：否", summary.read_text(encoding="utf-8"))
         self.assertIn("所选系列的全部历史版本与补丁月份", summary.read_text(encoding="utf-8"))
         self.assertIn("按 5.10、5.15、6.1、6.6、6.12 系列分组", summary.read_text(encoding="utf-8"))
+
+    def cli_outputs(self, *arguments):
+        output = self.root / ("output-" + uuid.uuid4().hex)
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, matrix.main(["--root", str(self.root), "--github-output", str(output), *arguments]))
+        return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())
+
+    def test_full_catalog_output_compares_actual_rows_for_all_explicit_families_and_targets(self):
+        complete = self.cli_outputs()
+        self.assertEqual("true", complete["full_catalog"])
+        self.assertEqual({"include"}, set(json.loads(complete["matrix"])))
+        families = self.cli_outputs("--kernel-versions", "6.12,6.6,6.1,5.15,5.10")
+        self.assertEqual("true", families["full_catalog"])
+        document = json.loads((self.root / "data/kernels.json").read_text(encoding="utf-8"))
+        targets = ",".join(entry["kernel"] + "@" + entry["date"] for entry in document["entries"]
+                           if entry["date"] != "lts")
+        specified = self.cli_outputs("--targets", targets)
+        self.assertEqual("true", specified["full_catalog"])
+        self.assertEqual(complete["count"], specified["count"])
+        missing_one = self.cli_outputs("--targets", ",".join(targets.split(",")[1:]))
+        self.assertEqual("false", missing_one["full_catalog"])
+
+    def test_full_catalog_requires_every_month_not_just_five_families_or_same_count(self):
+        rows = matrix.build_matrix(self.root)
+        latest_each = [next(row for row in rows if row["kernel_version"] == family) for family in matrix.KERNELS]
+        self.assertFalse(matrix.covers_full_catalog(self.root, latest_each))
+        targets = ",".join(f'{row["kernel_version"]}.{row["sub_level"]}@{row["os_patch_level"]}'
+                           for row in latest_each)
+        self.assertEqual("false", self.cli_outputs("--targets", targets)["full_catalog"])
+        duplicate_with_missing = rows[:-1] + [dict(rows[0])]
+        self.assertEqual(len(rows), len(duplicate_with_missing))
+        self.assertFalse(matrix.covers_full_catalog(self.root, duplicate_with_missing))
+        for field, value in (("kernel_ref", "a" * 40), ("revision", "r999"), ("os_patch_level", "2000-01")):
+            changed = [dict(row) for row in rows]
+            changed[0][field] = value
+            with self.subTest(field=field):
+                self.assertFalse(matrix.covers_full_catalog(self.root, changed))
+
+    def test_full_catalog_lts_scope_uses_the_same_switch_and_accepts_explicit_complete_targets(self):
+        monthly = matrix.build_matrix(self.root)
+        with_lts = matrix.build_matrix(self.root, include_lts=True)
+        self.assertTrue(matrix.covers_full_catalog(self.root, monthly))
+        self.assertFalse(matrix.covers_full_catalog(self.root, monthly, include_lts=True))
+        self.assertFalse(matrix.covers_full_catalog(self.root, with_lts))
+        self.assertTrue(matrix.covers_full_catalog(self.root, with_lts, include_lts=True))
+        self.assertEqual("true", self.cli_outputs("--include-lts", "true")["full_catalog"])
+        document = json.loads((self.root / "data/kernels.json").read_text(encoding="utf-8"))
+        monthly_targets = ",".join(entry["kernel"] + "@" + entry["date"] for entry in document["entries"]
+                                   if entry["date"] != "lts")
+        self.assertEqual("false", self.cli_outputs("--include-lts", "true", "--targets", monthly_targets)["full_catalog"])
+        all_versions = ",".join(sorted({entry["kernel"] for entry in document["entries"]}))
+        self.assertEqual("true", self.cli_outputs("--include-lts", "true", "--targets", all_versions)["full_catalog"])
+
+    def test_incomplete_catalog_cannot_qualify_as_all_five_families(self):
+        path = self.root / "data/kernels.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        document["entries"] = [entry for entry in document["entries"] if entry["kernel_version"] != "6.12"]
+        path.write_text(json.dumps(document), encoding="utf-8")
+        self.assertEqual("false", self.cli_outputs()["full_catalog"])
+
+    def test_large_catalog_still_allows_partial_build_with_release_disabled(self):
+        def expand(data):
+            data["entries"] = [{"date": f"{2000 + n // 12:04d}-{n % 12 + 1:02d}",
+                                "kernel": f"6.1.{n}", "ref": ""} for n in range(257)]
+        self.edit("6.1", expand)
+        values = self.cli_outputs("--kernel-versions", "6.1", "--targets", "6.1.0@2000-01")
+        self.assertEqual("1", values["count"])
+        self.assertEqual("false", values["full_catalog"])
 
     def test_cli_summary_distinguishes_explicit_targets_from_all_history(self):
         summary = self.root / "summary.md"

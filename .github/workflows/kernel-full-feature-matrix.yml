@@ -168,6 +168,7 @@ jobs:
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
+      full_catalog: ${{ steps.matrix.outputs.full_catalog }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       source_cache_key: ${{ steps.source-snapshot.outputs.source_cache_key }}
       source_backup_release_id: ${{ steps.source-backup.outputs.backup_release_id }}
@@ -6882,7 +6883,7 @@ jobs:
       max-parallel: ${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
   publish-release:
-    name: 发布 APK 与详细内核配置
+    name: 整理产物与校验（全量成功才发行）
     if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && needs.prepare-matrix.result == 'success' &&
       ((inputs.operation == '编译内核' && needs.build-kernel.result == 'success' && (inputs.kernelsu_variant != 'SukiSU' || needs.build-sukisu-manager.result
       == 'success')) || (inputs.operation == '仅编译 SukiSU 安装包' && needs.build-sukisu-manager.result == 'success'))
@@ -6911,11 +6912,23 @@ jobs:
         merge-multiple: false
         skip-decompress: true
     - name: 整理直接下载文件与实际配置
+      id: assets
       env:
         EXPECTED_KERNEL_COUNT: ${{ inputs.operation == '仅编译 SukiSU 安装包' && '0' || needs.prepare-matrix.outputs.count }}
+        REPORT_KIND: ${{ inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true' && 'release' ||
+          'actions' }}
       run: python3 tools/prepare_release.py --input release-input --output release-publish --expected-kernel-count "$EXPECTED_KERNEL_COUNT"
+        --report-kind "$REPORT_KIND"
+    - name: 上传同名校验文件
+      uses: actions/upload-artifact@v7
+      with:
+        path: release-publish/assets/SHA256SUMS.txt
+        archive: false
+        if-no-files-found: error
+        overwrite: true
     - name: 发布独立安装包和刷机包
       id: release
+      if: inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         RELEASE_TAG: gki-${{ github.run_id }}-${{ github.run_attempt }}
@@ -6930,19 +6943,13 @@ jobs:
         url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
         printf 'release_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
         printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"
-    - name: 上传同名校验文件
-      uses: actions/upload-artifact@v7
-      with:
-        path: release-publish/assets/SHA256SUMS.txt
-        archive: false
-        if-no-files-found: error
-        overwrite: true
     - name: 核对原文件并清理发布中转包
+      if: steps.release.outcome == 'success'
       env:
         GH_TOKEN: ${{ github.token }}
       run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID"
     - name: 清理本次临时源码备份
-      if: needs.prepare-matrix.outputs.source_backup_release_id != ''
+      if: needs.prepare-matrix.outputs.source_backup_release_id != '' && steps.release.outcome == 'success'
       env:
         GH_TOKEN: ${{ github.token }}
         SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
@@ -6950,6 +6957,38 @@ jobs:
       run: |
         python3 tools/transfer_ksu_snapshot.py delete --release-id "$SOURCE_BACKUP_RELEASE_ID" \
           --published-tag "gki-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --expected-ref "$KSU_REF"
+    - name: 核对 Actions 原文件并清理临时源码备份
+      if: needs.prepare-matrix.outputs.source_backup_release_id != '' && steps.release.outcome == 'skipped'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py delete-actions --release-id "$SOURCE_BACKUP_RELEASE_ID" \
+          --expected-ref "$KSU_REF" --assets-directory release-publish/assets
+    - name: 显示构建配置与发行结果
+      if: always() && !cancelled()
+      env:
+        ASSETS_RESULT: ${{ steps.assets.outcome }}
+        RELEASE_RESULT: ${{ steps.release.outcome }}
+        FULL_CATALOG: ${{ needs.prepare-matrix.outputs.full_catalog }}
+        OPERATION: ${{ inputs.operation }}
+      run: |
+        if [ "$ASSETS_RESULT" = success ]; then
+          if [ "$RELEASE_RESULT" = success ]; then
+            echo '完整内核目录全部构建成功，已发布 Release。' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$OPERATION" = '仅编译 SukiSU 安装包' ]; then
+            echo '本次仅构建 APK，安装包和校验文件在 Actions 下载。' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$FULL_CATALOG" != true ]; then
+            echo '本次为单版本或部分版本构建，文件和校验信息在 Actions 下载；完整目录全部成功才发布 Release。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '完整目录构建文件已核验，发行步骤未完成，请查看相应日志。' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          cat release-publish/release.md >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo '构建产物核验未完成，请查看整理步骤的日志。' >> "$GITHUB_STEP_SUMMARY"
+        fi
   check-upstream:
     name: 检查并自动同步官方更新
     if: github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}',

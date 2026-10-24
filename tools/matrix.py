@@ -150,6 +150,43 @@ def validate_catalog(document: object, source: str = "kernel catalog") -> dict:
     return document
 
 
+def _catalog_candidates(root: Path, include_lts: bool) -> list[tuple[dict[str, str], str]]:
+    """Construct identical source/packaging rows for selection and full-scope checks."""
+    candidates: list[tuple[dict[str, str], str]] = []
+    for entry in load_catalog(root)["entries"]:
+        date = entry["date"]
+        if date == "lts" and not include_lts:
+            continue
+        full, family, android = entry["kernel"], entry["kernel_version"], entry["android_version"]
+        row = _row(android, family, full, date, _kernel_ref(entry.get("ref", ""), "kernel catalog"))
+        row["revision"] = entry.get("revision", row["revision"])
+        if date == "lts":
+            row["sub_level"] = "X"
+        candidates.append((row, full))
+    return candidates
+
+
+def covers_full_catalog(root: Path, rows: list[dict[str, str]], include_lts: bool = False) -> bool:
+    """Compare actual selected targets with the complete five-family catalog.
+
+    Use the same LTS switch and duplicate handling as build_matrix, while not
+    imposing the matrix job limit on this reference set: a large catalog must
+    still allow partial builds, which simply cannot qualify for a Release.
+    """
+    if not isinstance(include_lts, bool):
+        raise ValueError("include_lts must be a boolean")
+    expected = {}
+    identity = ("android_version", "kernel_version", "sub_level", "os_patch_level")
+    fields = (*identity, "revision", "kernel_ref")
+    for row, _ in _catalog_candidates(Path(root), include_lts):
+        expected.setdefault(tuple(row[field] for field in identity), row)
+    if {row["kernel_version"] for row in expected.values()} != set(KERNELS):
+        return False
+    expected_rows = {tuple(row[field] for field in fields) for row in expected.values()}
+    selected_rows = {tuple(row[field] for field in fields) for row in rows}
+    return len(rows) == len(selected_rows) and selected_rows == expected_rows
+
+
 def build_matrix(
     root: Path,
     kernel_versions: str = "all",
@@ -162,19 +199,8 @@ def build_matrix(
     """
     if not isinstance(include_lts, bool):
         raise ValueError("include_lts must be a boolean")
-    root = Path(root)
     selected, requested = _selectors(kernel_versions, targets)
-    candidates: list[tuple[dict[str, str], str]] = []
-    for entry in load_catalog(root)["entries"]:
-        date = entry["date"]
-        if date == "lts" and not include_lts:
-            continue
-        full, family, android = entry["kernel"], entry["kernel_version"], entry["android_version"]
-        row = _row(android, family, full, date, _kernel_ref(entry.get("ref", ""), "kernel catalog"))
-        row["revision"] = entry.get("revision", row["revision"])
-        if date == "lts":
-            row["sub_level"] = "X"
-        candidates.append((row, full))
+    candidates = _catalog_candidates(Path(root), include_lts)
 
     output: dict[tuple[str, str, str, str], dict[str, str]] = {}
     matched: set[tuple[str, str | None]] = set()
@@ -237,18 +263,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         matrix = build_matrix(args.root, args.kernel_versions, args.targets, args.include_lts)
+        full_catalog = covers_full_catalog(args.root, matrix, args.include_lts)
         encoded = json.dumps({"include": matrix}, ensure_ascii=False, separators=(",", ":"))
         output = _append_path(args.github_output, "GITHUB_OUTPUT")
         summary = _append_path(args.summary, "GITHUB_STEP_SUMMARY")
         if output is not None:
             with output.open("a", encoding="utf-8", newline="\n") as stream:
-                stream.write(f"matrix={encoded}\ncount={len(matrix)}\n")
+                stream.write(f"matrix={encoded}\ncount={len(matrix)}\nfull_catalog={str(full_catalog).lower()}\n")
         if summary is not None:
             counts = Counter(row["kernel_version"] for row in matrix)
             with summary.open("a", encoding="utf-8", newline="\n") as stream:
                 stream.write("## GKI 全属性内核构建矩阵\n\n")
                 stream.write(f"- 构建任务：{len(matrix)}\n")
                 stream.write(f"- 包含 LTS：{'是' if args.include_lts else '否'}\n")
+                stream.write("- 发行范围：" + ("完整目录，全部成功后才发布 Release。\n" if full_catalog
+                                                   else "部分目录，产物仅保存在 Actions。\n"))
                 if args.targets.strip():
                     stream.write(f"- 选择范围：指定版本（{args.targets}）。\n")
                 else:

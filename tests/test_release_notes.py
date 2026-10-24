@@ -110,6 +110,39 @@ class ReleaseNotesTests(unittest.TestCase):
         vanilla["ksu_variant"] = "None"
         self.assertIn("| KernelSU 变体 | None |", self.render(manager=None, kernels=[vanilla]))
 
+    def test_actions_report_has_truthful_location_and_time_without_changing_configuration(self):
+        release = self.render()
+        actions = notes.render_notes(MANAGER, [KERNEL], generated_at=UTC, report_kind='actions')
+        self.assertTrue(actions.startswith('# GKI 构建结果\n'))
+        self.assertIn('| 输出位置 | Actions 构建产物 |', actions)
+        self.assertIn('| 记录时间 | 2026-10-22 06:07:08 UTC |', actions)
+        self.assertNotIn('| 发布类型 |', actions)
+        self.assertNotIn('| 发布时间 |', actions)
+        self.assertNotIn('GKI Kernel Release', actions)
+        self.assertEqual(release.split('## 构建配置\n', 1)[1], actions.split('## 构建配置\n', 1)[1])
+        self.assertEqual(actions.count('## 构建配置\n'), 1)
+        self.assertIn(MANAGER['file'], actions)
+        self.assertIn(KERNEL['file'], actions)
+        self.assertEqual(release, notes.render_notes(MANAGER, [KERNEL], generated_at=UTC, report_kind='release'))
+
+    def test_actions_apk_only_report_says_built_not_published(self):
+        body = notes.render_notes(MANAGER, [], generated_at=UTC, report_kind='actions')
+        self.assertIn('本次仅构建管理器安装包，没有内核构建。', body)
+        self.assertIn('内核功能配置不适用于本次 APK 构建。', body)
+        self.assertIn('| 输出位置 | Actions 构建产物 |', body)
+        self.assertNotIn('发布', body)
+        self.assertNotIn('## 构建配置', body)
+        self.assertIn(MANAGER['file'], body)
+
+    def test_report_kind_validation_and_file_generation(self):
+        manager = self.write('manager.json', MANAGER)
+        output = self.root / 'actions.md'
+        notes.generate_notes(manager, [], output, report_kind='actions')
+        self.assertIn('# GKI 构建结果', output.read_text(encoding='utf-8'))
+        for value in ('', 'published', None, True, []):
+            with self.subTest(report_kind=value), self.assertRaisesRegex(notes.ReleaseNotesError, 'Report kind'):
+                notes.render_notes(MANAGER, [KERNEL], report_kind=value)
+
     def test_mixed_kernel_versions_are_not_reported_as_one_shared_version(self):
         other = copy.deepcopy(KERNEL)
         other["ksu_version_code"] = 50000

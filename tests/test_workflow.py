@@ -1,5 +1,6 @@
 import copy
 import fnmatch
+import itertools
 import json
 import os
 import shutil
@@ -319,8 +320,58 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(preparation['env']['EXPECTED_KERNEL_COUNT'],
                          "${{ inputs.operation == '仅编译 SukiSU 安装包' && '0' || needs.prepare-matrix.outputs.count }}")
         self.assertIn('--expected-kernel-count "$EXPECTED_KERNEL_COUNT"', preparation['run'])
+        self.assertIn('--report-kind "$REPORT_KIND"', preparation['run'])
+        self.assertEqual(preparation['env']['REPORT_KIND'],
+                         "${{ inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true' && 'release' || 'actions' }}")
         self.assertEqual(self.workflow['jobs']['prepare-matrix']['outputs']['count'],
                          '${{ steps.matrix.outputs.count }}')
+        self.assertEqual(self.workflow['jobs']['prepare-matrix']['outputs']['full_catalog'],
+                         '${{ steps.matrix.outputs.full_catalog }}')
+
+    def test_only_complete_successful_catalog_can_publish_a_release(self):
+        job = self.workflow['jobs']['publish-release']
+        publish = next(step for step in job['steps'] if step.get('id') == 'release')
+        statuses = ('success', 'failure', 'cancelled', 'skipped')
+        for operation, variant, full, prepare, manager, kernels, cancelled in itertools.product(
+                ('编译内核', '仅编译 SukiSU 安装包', '检查上游更新'), ('SukiSU', 'None'),
+                ('true', 'false', '', 'True'), ('success', 'failure'), statuses, statuses, (False, True)):
+            with self.subTest(operation=operation, variant=variant, full=full,
+                              prepare=prepare, manager=manager, kernels=kernels, cancelled=cancelled):
+                values = {
+                    'always()': 'True', 'cancelled()': repr(cancelled),
+                    'github.event_name': repr('workflow_dispatch'),
+                    'inputs.operation': repr(operation), 'inputs.kernelsu_variant': repr(variant),
+                    'needs.prepare-matrix.result': repr(prepare),
+                    'needs.prepare-matrix.outputs.full_catalog': repr(full),
+                    'needs.build-sukisu-manager.result': repr(manager),
+                    'needs.build-kernel.result': repr(kernels),
+                }
+                def evaluate(expression):
+                    for name, value in values.items():
+                        expression = expression.replace(name, value)
+                    expression = expression.replace('&&', ' and ').replace('||', ' or ')
+                    expression = expression.replace('!True', 'not True').replace('!False', 'not False')
+                    return bool(eval(expression, {'__builtins__': {}}, {}))
+                actual = evaluate(job['if']) and evaluate(publish['if'])
+                expected = (not cancelled and prepare == 'success' and operation == '编译内核'
+                            and full == 'true' and kernels == 'success'
+                            and (variant != 'SukiSU' or manager == 'success'))
+                self.assertEqual(expected, actual)
+
+    def test_non_release_builds_keep_checksums_configuration_and_clean_owned_source_draft(self):
+        steps = self.workflow['jobs']['publish-release']['steps']
+        publish = next(step for step in steps if step.get('id') == 'release')
+        checksum = next(step for step in steps if step['name'] == '上传同名校验文件')
+        self.assertNotIn('if', checksum)
+        self.assertLess(steps.index(checksum), steps.index(publish))
+        cleanup = next(step for step in steps if 'cleanup_build_artifacts.py' in step.get('run', ''))
+        self.assertEqual(cleanup['if'], "steps.release.outcome == 'success'")
+        actions_cleanup = next(step for step in steps if 'delete-actions' in step.get('run', ''))
+        self.assertIn("steps.release.outcome == 'skipped'", actions_cleanup['if'])
+        self.assertIn("source_backup_release_id != ''", actions_cleanup['if'])
+        self.assertIn('--assets-directory release-publish/assets', actions_cleanup['run'])
+        summary = next(step for step in steps if step['name'] == '显示构建配置与发行结果')
+        self.assertIn('cat release-publish/release.md', summary['run'])
 
     def test_sukisu_source_is_frozen_and_checked_before_any_kernel_sync(self):
         prepare = self.workflow['jobs']['prepare-matrix']['steps']

@@ -238,6 +238,51 @@ class RawReleasePreparationTests(unittest.TestCase):
         self.assertIn(self.manager['apk_sha256'] + '  ' + apk.name,
                       (self.output / 'assets/SHA256SUMS.txt').read_text())
 
+    def test_actions_report_retains_original_apk_ak3_boot_and_the_shared_configuration(self):
+        self.make_raw(boot=True, flat=True)
+        originals = {path.name: path.read_bytes() for path in self.source.iterdir() if path.is_file()}
+        result = prepare_release.prepare(self.source, self.output, expected_kernel_count=1, report_kind='actions')
+        self.assertEqual({'assets': 3, 'kernels': 1, 'manager': True}, result)
+        for name, contents in originals.items():
+            self.assertEqual(contents, (self.output / 'assets' / name).read_bytes())
+        sums = (self.output / 'assets/SHA256SUMS.txt').read_text(encoding='utf-8')
+        self.assertEqual({hashlib.sha256(contents).hexdigest() + '  ' + name for name, contents in originals.items()},
+                         set(sums.splitlines()))
+        body = (self.output / 'release.md').read_text(encoding='utf-8')
+        self.assertTrue(body.startswith('# GKI 构建结果\n'))
+        self.assertIn('| 输出位置 | Actions 构建产物 |', body)
+        self.assertNotIn('| 发布类型 | Release |', body)
+        self.assertNotIn('| 发布时间 |', body)
+        self.assertEqual(1, body.count('## 构建配置\n'))
+        self.assertIn('| LTO | thin |', body)
+        self.assertTrue((self.output / 'title.txt').read_text(encoding='utf-8').startswith('GKI 构建结果 · SukiSU '))
+
+    def test_actions_apk_only_cli_preserves_files_and_does_not_claim_publication(self):
+        apk, _, _ = self.make_raw(kernel=False, flat=True)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = prepare_release.main(['--input', str(self.source), '--output', str(self.output),
+                                           '--expected-kernel-count', '0', '--report-kind', 'actions'])
+        self.assertEqual(0, status)
+        self.assertEqual({'assets': 1, 'kernels': 0, 'manager': True}, json.loads(output.getvalue()))
+        self.assertEqual(self.apk_bytes, (self.output / 'assets' / apk.name).read_bytes())
+        body = (self.output / 'release.md').read_text(encoding='utf-8')
+        self.assertIn('本次仅构建管理器安装包，没有内核构建。', body)
+        self.assertNotIn('发布', body)
+        self.assertNotIn('GKI Kernel Release', body)
+
+    def test_invalid_report_kind_is_rejected_before_creating_any_output(self):
+        self.make_raw(kernel=False, flat=True)
+        for value in ('', 'published', None, True, []):
+            with self.subTest(report_kind=value), self.assertRaisesRegex(ValueError, 'Report kind'):
+                prepare_release.prepare(self.source, self.output, report_kind=value)
+            self.assert_no_output()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
+            prepare_release.main(['--input', str(self.source), '--output', str(self.output),
+                                  '--report-kind', 'published'])
+        self.assertEqual(2, error.exception.code)
+        self.assert_no_output()
+
     def test_separate_raw_artifact_directories_rejoin_apk_ak3_and_boot_without_wrappers(self):
         apk, ak3, document = self.make_raw(boot=True)
         originals = {path.name: path.read_bytes() for path in self.source.rglob('*') if path.is_file()}

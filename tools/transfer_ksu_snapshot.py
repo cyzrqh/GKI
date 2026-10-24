@@ -2,7 +2,8 @@
 """Keep a run-bound SukiSU snapshot in a temporary draft Release, outside Artifacts.
 
 Actions cache is only an accelerator. Failed runs retain their draft backup;
-only a matching published build allows this tool to delete that exact draft.
+a matching published build or verified original Actions files allow this tool
+to delete that exact draft after the source consumers finish successfully.
 """
 from __future__ import annotations
 
@@ -31,6 +32,8 @@ MAX_JSON = 2 * 1024 * 1024
 PUBLIC_DOWNLOAD_HOSTS = {'release-assets.githubusercontent.com', 'objects.githubusercontent.com',
                          'github-releases.githubusercontent.com'}
 FILES = {BUNDLE_NAME, MANIFEST_NAME}
+MAX_PUBLIC_ASSETS = 1000
+PUBLIC_ASSET_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+@()-]{0,249}\Z')
 
 
 class TransferError(ValueError):
@@ -346,10 +349,120 @@ def delete(release_id: int, published_tag: str, expected: Expected, api: GitHub)
     return {'backup_release_id': release_id, 'deleted': True}
 
 
+def native_assets(directory: Path) -> dict[str, dict]:
+    """Read only direct native outputs, bound to their complete checksum list."""
+    directory = Path(directory).absolute()
+    if (directory.is_symlink() or not directory.is_dir() or directory.resolve() != directory
+            or any(parent.is_symlink() for parent in directory.parents)):
+        raise TransferError('Actions cleanup requires an unlinked native assets directory')
+    paths = list(directory.iterdir())
+    if not 2 <= len(paths) <= MAX_PUBLIC_ASSETS:
+        raise TransferError('Actions cleanup requires checksums and native build files')
+    assets = {}
+    for path in paths:
+        name = path.name
+        if (not PUBLIC_ASSET_NAME.fullmatch(name) or '..' in name
+                or not (name == 'SHA256SUMS.txt' or name.endswith(('.apk', '.img', '-AnyKernel3.zip')))
+                or path.is_symlink() or not path.is_file()):
+            raise TransferError('Actions cleanup assets must be native APK, AK3, boot or checksum files')
+        before = path.stat()
+        if not 0 < before.st_size <= 2 * 1024 * 1024 * 1024:
+            raise TransferError('Actions cleanup native asset has an invalid size')
+        digest = file_digest(path)
+        after = path.stat()
+        if (path.is_symlink() or (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
+                != (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)):
+            raise TransferError('Actions cleanup native asset changed during verification')
+        assets[name] = {'size': before.st_size, 'digest': 'sha256:' + digest}
+    if 'SHA256SUMS.txt' not in assets or assets['SHA256SUMS.txt']['size'] > 512 * 1024:
+        raise TransferError('Actions cleanup requires a bounded SHA256SUMS.txt')
+    try:
+        content = (directory / 'SHA256SUMS.txt').read_text(encoding='utf-8')
+    except (OSError, UnicodeError):
+        raise TransferError('Actions cleanup checksum file could not be read') from None
+    checksums = {}
+    for line in content.splitlines():
+        match = re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9._+@()-]{0,249})', line)
+        if (match is None or match[2] == 'SHA256SUMS.txt' or match[2] in checksums
+                or match[2] not in assets or assets[match[2]]['digest'] != 'sha256:' + match[1]):
+            raise TransferError('Actions cleanup checksum list differs from its native assets')
+        checksums[match[2]] = match[1]
+    if set(checksums) != set(assets) - {'SHA256SUMS.txt'}:
+        raise TransferError('Actions cleanup checksum list is incomplete')
+    if file_digest(directory / 'SHA256SUMS.txt') != assets['SHA256SUMS.txt']['digest'][7:]:
+        raise TransferError('Actions cleanup checksum file changed during verification')
+    return assets
+
+
+def validate_actions_run(run: dict, expected: Expected) -> None:
+    if (not isinstance(run, dict) or type(run.get('id')) is not int or run['id'] != expected.run_id
+            or type(run.get('run_attempt')) is not int or run['run_attempt'] != expected.run_attempt
+            or run.get('head_sha') != expected.head_sha or not isinstance(run.get('head_repository'), dict)
+            or str(run['head_repository'].get('full_name', '')).lower() != expected.repository.lower()
+            or run.get('status') not in ('in_progress', 'completed')
+            or (run.get('status') == 'completed' and run.get('conclusion') != 'success')):
+        raise TransferError('Actions cleanup run repository, ID, attempt, head or state does not match')
+
+
+def validate_actions_assets(expected: Expected, assets: dict[str, dict], api: GitHub) -> None:
+    run_path = '/actions/runs/' + str(expected.run_id)
+    validate_actions_run(api.json(run_path), expected)
+    artifacts, total = [], None
+    for page in range(1, 12):
+        document = api.json(run_path + f'/artifacts?per_page=100&page={page}')
+        batch = document.get('artifacts') if isinstance(document, dict) else None
+        count = document.get('total_count') if isinstance(document, dict) else None
+        if (not isinstance(batch, list) or len(batch) > 100 or type(count) is not int
+                or not 0 <= count <= MAX_PUBLIC_ASSETS or (total is not None and count != total)
+                or any(not isinstance(item, dict) for item in batch)):
+            raise TransferError('Actions cleanup artifact inventory is invalid or changed')
+        total = count
+        artifacts.extend(batch)
+        if len(artifacts) > total:
+            raise TransferError('Actions cleanup artifact inventory exceeds its reported count')
+        if len(batch) < 100:
+            break
+    else:
+        raise TransferError('Actions cleanup artifact pagination did not finish')
+    ids = [item.get('id') for item in artifacts]
+    if (len(artifacts) != total or any(type(value) is not int or value <= 0 for value in ids)
+            or len(ids) != len(set(ids))):
+        raise TransferError('Actions cleanup artifact inventory is incomplete or duplicated')
+    for name, asset in assets.items():
+        matches = [item for item in artifacts if item.get('name') == name]
+        if (len(matches) != 1 or matches[0].get('expired') is not False
+                or type(matches[0].get('size_in_bytes')) is not int
+                or matches[0]['size_in_bytes'] != asset['size'] or matches[0].get('digest') != asset['digest']):
+            raise TransferError('Actions cleanup original file is missing or has the wrong size/SHA256: ' + name)
+    for item in artifacts:
+        name = item.get('name')
+        if (isinstance(name, str) and (name.endswith(('.apk', '.img', '-AnyKernel3.zip')) or name == 'SHA256SUMS.txt')
+                and name not in assets):
+            raise TransferError('Actions cleanup found a native file outside its verified asset inventory')
+    # Failed-job reruns can start while files are being checked. Never use the
+    # previous attempt's uploaded files to unlock deletion during a new attempt.
+    validate_actions_run(api.json(run_path), expected)
+
+
+def delete_actions(release_id: int, assets_directory: Path, expected: Expected, api: GitHub) -> dict:
+    expected.validate()
+    release_id = integer(release_id, 'backup release ID')
+    assets = native_assets(assets_directory)
+    validate_actions_assets(expected, assets, api)
+    release = api.json('/releases/' + str(release_id), missing=True)
+    if release is None:
+        return {'backup_release_id': release_id, 'deleted': False, 'already_absent': True}
+    # A matching public Release is never a deletion target. The complete
+    # existing ownership/source check must identify this independent draft.
+    validate_backup(release, expected, release_id)
+    api.json('/releases/' + str(release_id), method='DELETE')
+    return {'backup_release_id': release_id, 'deleted': True, 'verified_actions_files': len(assets)}
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='operation', required=True)
-    for name in ('create', 'restore', 'delete'):
+    for name in ('create', 'restore', 'delete', 'delete-actions'):
         command = commands.add_parser(name)
         command.add_argument('--repository', default=os.environ.get('GITHUB_REPOSITORY', ''))
         command.add_argument('--run-id', default=os.environ.get('GITHUB_RUN_ID', ''))
@@ -364,6 +477,8 @@ def main(argv=None) -> int:
             command.add_argument('--output', required=True, type=Path)
         if name == 'delete':
             command.add_argument('--published-tag', required=True)
+        if name == 'delete-actions':
+            command.add_argument('--assets-directory', type=Path, required=True)
     args = parser.parse_args(argv)
     try:
         expected = Expected(args.repository, integer(args.run_id, 'workflow run ID'),
@@ -374,8 +489,10 @@ def main(argv=None) -> int:
             result = create(args.source, expected, api)
         elif args.operation == 'restore':
             result = restore(args.release_id, args.output, expected, api)
-        else:
+        elif args.operation == 'delete':
             result = delete(args.release_id, args.published_tag, expected, api)
+        else:
+            result = delete_actions(args.release_id, args.assets_directory, expected, api)
         if args.operation == 'create' and os.environ.get('GITHUB_OUTPUT'):
             with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as output:
                 for key, value in result.items():

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepare direct Release assets and notes from the selected workflow artifacts."""
+"""Prepare native assets and Release or Actions notes from selected artifacts."""
 from __future__ import annotations
 
 import argparse
@@ -86,7 +86,10 @@ def validate_bindings(manager: dict | None, kernels: list[tuple[dict, bool]], *,
                 raise ValueError('The release kernel does not match the signed manager APK: ' + key)
 
 
-def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = None) -> dict:
+def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = None,
+            report_kind: str = 'release') -> dict:
+    if report_kind not in ('release', 'actions'):
+        raise ValueError("Report kind must be 'release' or 'actions'")
     if expected_kernel_count is not None and (type(expected_kernel_count) is not int or expected_kernel_count < 0):
         raise ValueError('Expected kernel count must be a nonnegative integer')
     source, output = Path(source), Path(output)
@@ -210,7 +213,7 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
     expected_hashes = {path.name: digest(path) for path in entries}
     if manager_verified and expected_hashes[manager['file']] != manager['apk_sha256']:
         raise ValueError('The signed manager APK changed while preparing its release')
-    body = render_notes(manager, kernel_documents)
+    body = render_notes(manager, kernel_documents, report_kind=report_kind)
     assets = output / 'assets'
     assets.mkdir(parents=True, exist_ok=True)
     checksums = []
@@ -224,6 +227,9 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
     (assets / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='utf-8')
     (output / 'release.md').write_text(body, encoding='utf-8')
     title = 'GKI · SukiSU ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code')) if manager else 'GKI Kernel Release'
+    if report_kind == 'actions':
+        title = ('GKI 构建结果 · SukiSU ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code'))
+                 if manager else 'GKI 构建结果')
     (output / 'title.txt').write_text(title, encoding='utf-8')
     return {'assets': len(entries), 'kernels': len(kernel_documents), 'manager': bool(manager)}
 
@@ -242,11 +248,13 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--report-kind', choices=('release', 'actions'), default='release')
     parser.add_argument('--expected-kernel-count', type=nonnegative_integer,
                         help='Require this many unique kernel builds before preparing any public files')
     args = parser.parse_args(argv)
     try:
-        result = prepare(args.input, args.output, expected_kernel_count=args.expected_kernel_count)
+        result = prepare(args.input, args.output, expected_kernel_count=args.expected_kernel_count,
+                         report_kind=args.report_kind)
     except (OSError, ValueError) as error:
         print(f'Release preparation failed: {error}', file=sys.stderr)
         return 1

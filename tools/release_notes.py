@@ -172,7 +172,10 @@ def grouped_value(kernels: list[dict], values: list) -> str:
                     for value, labels in groups.items())
 
 
-def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: datetime | None = None) -> str:
+def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: datetime | None = None,
+                 report_kind: str = 'release') -> str:
+    if report_kind not in ('release', 'actions'):
+        raise ReleaseNotesError("Report kind must be 'release' or 'actions'")
     if (manager is not None and not isinstance(manager, dict)) or any(not isinstance(item, dict) for item in kernels):
         raise ReleaseNotesError("Each metadata file must contain one JSON object")
     manager = {} if manager is None else manager
@@ -186,8 +189,13 @@ def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: dat
     scope = "、".join(dict.fromkeys(kernel_series(document) for document in kernels))
     if not scope:
         scope = "无内核（仅管理器 APK）" if manager_assets else "未记录"
-    lines = ["# GKI Kernel Release", "", "| 发布信息 | 实际值 |", "| --- | --- |",
-             "| 发布类型 | Release |", f"| 发布时间 | {timestamp} |",
+    if report_kind == 'actions':
+        heading = ["# GKI 构建结果", "", "| 构建信息 | 实际值 |", "| --- | --- |",
+                   "| 输出位置 | Actions 构建产物 |", f"| 记录时间 | {timestamp} |"]
+    else:
+        heading = ["# GKI Kernel Release", "", "| 发布信息 | 实际值 |", "| --- | --- |",
+                   "| 发布类型 | Release |", f"| 发布时间 | {timestamp} |"]
+    lines = [*heading,
              f"| 构建范围 | {escape(scope)} |",
              f"| 实际内核目标数 | {len(kernels)} |",
              f"| 管理器包名 | {escape(first(manager, 'package', 'manager_package'))} |",
@@ -224,11 +232,14 @@ def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: dat
             if any(text(value) != UNKNOWN for value in values):
                 lines.append(f"| {escape(key)} | {grouped_value(kernels, values)} |")
     else:
-        lines.append("本次仅发布管理器安装包，没有内核构建。" if manager_assets else "未记录内核构建目标或管理器安装包。")
+        only_manager = ("本次仅构建管理器安装包，没有内核构建。" if report_kind == 'actions'
+                        else "本次仅发布管理器安装包，没有内核构建。")
+        lines.append(only_manager if manager_assets else "未记录内核构建目标或管理器安装包。")
         if manager:
             lines.extend(("", f"管理器：{escape(first(manager, 'ksu_variant', 'variant'))}，"
                           f"分支 {escape(first(manager, 'ksu_branch', 'tier', 'branch'))}。"
-                          "内核功能配置不适用于本次 APK 发布。"))
+                          + ("内核功能配置不适用于本次 APK 构建。" if report_kind == 'actions'
+                             else "内核功能配置不适用于本次 APK 发布。")))
     lines.extend(("", "## 构建文件", "", f"本次包含 {len(kernels)} 个内核目标。", "",
                   "| 内核目标 | 产物 | 构建时间（UTC） |", "| --- | --- | --- |"))
     if manager_assets:
@@ -255,8 +266,9 @@ def load_metadata(path: Path) -> dict:
     return document
 
 
-def generate_notes(manager: Path | None, kernels: list[Path], output: Path) -> None:
-    body = render_notes(load_metadata(manager) if manager else None, [load_metadata(path) for path in kernels])
+def generate_notes(manager: Path | None, kernels: list[Path], output: Path, *, report_kind: str = 'release') -> None:
+    body = render_notes(load_metadata(manager) if manager else None, [load_metadata(path) for path in kernels],
+                        report_kind=report_kind)
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(body, encoding="utf-8", newline="\n")
 

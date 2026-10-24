@@ -92,6 +92,8 @@ Latest/Custom 及其他 KernelSU 变体按各自选择规则解析，随后将�
 
 旧构建使用的嵌入式 KPM 包装器可能携带空占位载荷并返回成功；来自[旧运行 40062459370](https://github.com/cyzrqh/gki/actions/runs/40062459370) 的 `android12-5.10.236-2025-05-AnyKernel3.zip` 实际把入口指向文件之外。该旧运行的文件不能继续用于刷机，需重新编译，不能仅修改跳转来修复。现在所有最终 Image 在打包与发布时都检查 ARM64 启动入口，但静态检查通过仍不等同于实机启动验证。
 
+[KPM 修复验证 40081347134](https://github.com/cyzrqh/gki/actions/runs/40081347134)已完成 Android 12 / 5.10.236 / 2025-05 的实际编译、完整载荷与入口检查，并[发布修复后的 AK3](https://github.com/cyzrqh/gki/releases/tag/gki-40081347134-1)。SukiSU 为 41065，SUSFS 为 v2.3.0；下载复核确认 AK3 内的 APK 配对信息与完整载荷，文件摘要与 Actions 和 Release 一致，KPM 真实载荷为 294144 字节。该修复包尚未完成实机启动验证。
+
 **验证状态：** [五系列实测](https://github.com/cyzrqh/gki/actions/runs/39815529229)中，SUSFS v2.3.0 的 5.15.194、6.1.145、6.6.143 和 6.12.92 已完成实际编译及产物校验，并已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39815529229-recovered)。5.10.246 修复后也已[单独补测成功](https://github.com/cyzrqh/gki/actions/runs/39901348783)，包含内核编译、产物校验和 Release 发布。此前的 `SukiSU_v4.2.1_41038-release.apk` 已完成实际编译、固定密钥签名和公开下载校验，包括 APK v2 签名及内容摘要。以上属于列出的构建配置验证，不代表所有菜单组合或实机启动均已验证。
 
 随后 [41050 配套构建](https://github.com/cyzrqh/gki/actions/runs/39936971198)也已成功：SukiSU 提交 `3c6ecb97305d8df8e85593302c8cb8337e763262`、5.10.246、SUSFS v2.3.0，原名 `SukiSU_v4.2.1-r1_41050-release.apk` 与 AK3 已[公开发布](https://github.com/cyzrqh/gki/releases/tag/gki-39936971198-1)。该 APK 的完整摘要、APK v2 签名和固定证书已独立核验。内核 C 编译实际用时 6 分 27 秒；该运行仍使用旧清理步骤，单清理耗时 12 分 50 秒，不能将此耗时视为新清理方案的实测结果。

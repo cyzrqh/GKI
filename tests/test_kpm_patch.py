@@ -232,6 +232,78 @@ class KpmPatchTests(unittest.TestCase):
                 self.assertNotIn('secret', str(error.exception))
                 self.assertEqual(self.image.read_bytes(), self.before)
 
+    def diagnostic(self):
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            status = kpm.main(['patch', '--image', str(self.image), '--cache-dir', str(self.cache)])
+        return status, output.getvalue()
+
+    def test_main_identifies_header_asset_and_layout_failures_without_replacing_image(self):
+        self.image.write_bytes(self.before[:64])
+        status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[image-entry]', message)
+        self.assertIn('outside Image file', message)
+        self.assertEqual(self.image.read_bytes(), self.before[:64])
+
+        self.image.write_bytes(self.before)
+        (self.cache / 'kpimg').write_bytes(b'corrupt private bytes')
+        status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[verify-assets]', message)
+        self.assertIn('size/SHA256 verification', message)
+        self.assertNotIn('private bytes', message)
+        self.assertEqual(self.image.read_bytes(), self.before)
+
+        (self.cache / 'kpimg').write_bytes(self.payload)
+        def invalid_layout(argv, **kwargs):
+            result = self.run_tool(argv, **kwargs)
+            output = Path(argv[argv.index('-o') + 1])
+            output.write_bytes(output.read_bytes()[:-1])
+            return result
+        with mock.patch.object(kpm.subprocess, 'run', side_effect=invalid_layout):
+            status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[verify-layout]', message)
+        self.assertIn('unexpected payload/extra extent', message)
+        self.assertEqual(self.image.read_bytes(), self.before)
+
+    def test_failed_tool_reports_only_exit_code_and_fixed_category_never_its_streams(self):
+        secret = 'private-password-only-in-tool-streams'
+        failure = subprocess.CompletedProcess([], 7, secret.encode(),
+                                               (secret + '\nanalyze_kallsym_info error\n' + secret).encode())
+        with mock.patch.dict(os.environ, {'KPM_PASSWORD': secret}), \
+                mock.patch.object(kpm.subprocess, 'run', return_value=failure):
+            status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[run-tool]', message)
+        self.assertIn('exit=7, class=kernel-symbols', message)
+        self.assertNotIn(secret, message)
+        self.assertNotIn('analyze_kallsym_info error', message)
+        self.assertEqual(self.image.read_bytes(), self.before)
+
+    def test_external_exception_and_unknown_validation_text_are_never_published(self):
+        secret = 'private-password-in-exception'
+        for failure in (OSError(secret), subprocess.TimeoutExpired([secret], 180, output=secret.encode())):
+            with self.subTest(failure=type(failure).__name__), \
+                    mock.patch.object(kpm.subprocess, 'run', side_effect=failure):
+                status, message = self.diagnostic()
+            self.assertEqual(status, 1)
+            self.assertIn('[run-tool]', message)
+            self.assertNotIn(secret, message)
+            self.assertEqual(self.image.read_bytes(), self.before)
+        with mock.patch.object(kpm, 'validate_image', side_effect=ValueError(secret)):
+            status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[image-entry]', message)
+        self.assertNotIn(secret, message)
+        self.assertEqual(self.image.read_bytes(), self.before)
+        with mock.patch.object(kpm, 'load_release', side_effect=ValueError(secret)):
+            status, message = self.diagnostic()
+        self.assertEqual(status, 1)
+        self.assertIn('[release-lock]', message)
+        self.assertNotIn(secret, message)
+
     def test_false_success_missing_or_truncated_output_preserves_original(self):
         for contents in (None, b'\xaa' + bytes(15), self.before):
             def run(argv, **kwargs):

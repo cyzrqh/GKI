@@ -166,11 +166,14 @@ jobs:
     name: 选择内核版本与补丁月份
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译 SukiSU 安装包')
+    permissions:
+      contents: write
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       source_cache_key: ${{ steps.source-snapshot.outputs.source_cache_key }}
+      source_backup_release_id: ${{ steps.source-backup.outputs.backup_release_id }}
       ddk_matrix: ${{ steps.lkm-matrix.outputs.matrix }}
       manager_package: ${{ steps.certificate.outputs.package }}
       manager_cert_size: ${{ steps.certificate.outputs.cert_size }}
@@ -271,9 +274,19 @@ jobs:
         with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
             output.write('source_cache_key='+key+'\n')
         PY
+    - name: 保存本次源码的独立临时备份
+      id: source-backup
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py create --source "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --expected-ref "$KSU_REF"
     - name: 保存本次不可变源码缓存
       uses: actions/cache/save@v5
       timeout-minutes: 3
+      continue-on-error: true
       if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
       with:
         path: ksu-source-bundle
@@ -281,12 +294,13 @@ jobs:
     - name: 确认所有构建可读取本次源码缓存
       uses: actions/cache/restore@v5
       timeout-minutes: 3
+      continue-on-error: true
       if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
       with:
         path: ksu-source-bundle
         key: ${{ steps.source-snapshot.outputs.source_cache_key }}
         lookup-only: true
-        fail-on-cache-miss: true
+        fail-on-cache-miss: false
   build-sukisu-lkm:
     name: SukiSU 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
@@ -308,15 +322,27 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: 还原本次固定源码缓存（缺失请重跑全部任务）
+    - name: 还原本次固定源码缓存
+      id: source-cache
       uses: actions/cache/restore@v5
       timeout-minutes: 3
+      continue-on-error: true
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
-        fail-on-cache-miss: true
+        fail-on-cache-miss: false
+    - name: 从本次临时备份恢复固定源码
+      if: steps.source-cache.outputs.cache-hit != 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py restore \
+          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle"
     - name: 还原并核实 SukiSU 源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -444,15 +470,27 @@ jobs:
           echo '::error::请先按 README 配置 SUKISU_APK_KEYSTORE 和 SUKISU_APK_PASSWORD。签名密钥应长期保持不变。'
           exit 1
         fi
-    - name: 还原本次固定源码缓存（缺失请重跑全部任务）
+    - name: 还原本次固定源码缓存
+      id: source-cache
       uses: actions/cache/restore@v5
       timeout-minutes: 3
+      continue-on-error: true
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
-        fail-on-cache-miss: true
+        fail-on-cache-miss: false
+    - name: 从本次临时备份恢复固定源码
+      if: steps.source-cache.outputs.cache-hit != 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py restore \
+          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle"
     - name: 检出同一版本的 SukiSU 源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -1267,16 +1305,28 @@ jobs:
           echo "自定义外部模块清单:"
           cut -f1,3 "$manifest"
         fi
-    - name: 还原本次固定源码缓存（缺失请重跑全部任务）
+    - name: 还原本次固定源码缓存
+      id: source-cache
       uses: actions/cache/restore@v5
       timeout-minutes: 3
+      continue-on-error: true
       env:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
-        fail-on-cache-miss: true
+        fail-on-cache-miss: false
       if: inputs.kernelsu_variant == 'SukiSU'
+    - name: 从本次临时备份恢复固定源码
+      if: (inputs.kernelsu_variant == 'SukiSU') && steps.source-cache.outputs.cache-hit != 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py restore \
+          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle"
     - name: 检出内核配套的 SukiSU 快照
       if: inputs.kernelsu_variant == 'SukiSU'
       env:
@@ -6881,8 +6931,11 @@ jobs:
         pattern: '{${{ needs.build-sukisu-manager.outputs.apk_filename || ''__NO_MANAGER_APK__'' }},*-AnyKernel3.zip,*-boot*.img}'
         path: release-input
         merge-multiple: false
+        skip-decompress: true
     - name: 整理直接下载文件与实际配置
-      run: python3 tools/prepare_release.py --input release-input --output release-publish
+      env:
+        EXPECTED_KERNEL_COUNT: ${{ inputs.operation == '仅编译 SukiSU 安装包' && '0' || needs.prepare-matrix.outputs.count }}
+      run: python3 tools/prepare_release.py --input release-input --output release-publish --expected-kernel-count "$EXPECTED_KERNEL_COUNT"
     - name: 发布独立安装包和刷机包
       id: release
       env:
@@ -6910,6 +6963,15 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID"
+    - name: 清理本次临时源码备份
+      if: needs.prepare-matrix.outputs.source_backup_release_id != ''
+      env:
+        GH_TOKEN: ${{ github.token }}
+        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py delete --release-id "$SOURCE_BACKUP_RELEASE_ID" \
+          --published-tag "gki-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --expected-ref "$KSU_REF"
   check-upstream:
     name: 检查官方源并准备更新 PR
     if: (github.event_name == 'schedule' || inputs.operation == '检查上游更新') && github.ref_name == github.event.repository.default_branch

@@ -155,9 +155,9 @@ class ManagerLkmJobTests(unittest.TestCase):
         source = next(step for step in steps if step.get('with', {}).get('path') == jobs.SOURCE_BUNDLE_PATH)
         self.assertEqual('actions/cache/restore@v5', source['uses'])
         self.assertEqual('${{ needs.prepare-matrix.outputs.source_cache_key }}', source['with']['key'])
-        self.assertTrue(source['with']['fail-on-cache-miss'])
+        self.assertFalse(source['with']['fail-on-cache-miss'])
         self.assertNotIn('restore-keys', source['with'])
-        self.assertNotIn('continue-on-error', source)
+        self.assertTrue(source['continue-on-error'])
         self.assertNotIn('actions/download-artifact', json.dumps(steps))
         checkout = next(step for step in steps if 'checkout_ksu_snapshot.py' in step.get('run', ''))
         self.assertLess(steps.index(source), steps.index(checkout))
@@ -188,9 +188,14 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertLess(script.index('prepare_manager_lkm.py version-code'), script.index('docker run'))
         self.assertLess(arguments[-1].index('make -j'), arguments[-1].index('cp kernelsu.ko'))
         self.assertLess(arguments[-1].index('cp kernelsu.ko'), arguments[-1].index('llvm-strip -d'))
-        serialized = json.dumps(job)
+        serialized = json.dumps(build)
         for private in ('secrets.', 'GITHUB_TOKEN', 'GH_TOKEN', 'SUKISU_APK_KEYSTORE', 'SUKISU_APK_PASSWORD'):
             self.assertNotIn(private, serialized)
+        for private in ('SUKISU_APK_KEYSTORE', 'SUKISU_APK_PASSWORD'):
+            self.assertNotIn(private, json.dumps(job))
+        fallback = next(step for step in job['steps'] if 'transfer_ksu_snapshot.py restore' in step.get('run', ''))
+        self.assertEqual(fallback['env']['GH_TOKEN'], '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}')
+        self.assertEqual(job['permissions'], {'contents': 'read'})
         self.assertIn('--expected-ref "$KSU_REF"', script)
         self.assertIn('--ddk-image "$DDK_IMAGE"', script)
 

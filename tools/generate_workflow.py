@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 from workflow_jobs import updater_job, release_job
 from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key,
-                              manager_lkm_job, source_cache_restore)
+                              manager_lkm_job, source_cache_restore, source_backup_restore)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
@@ -194,6 +194,7 @@ def manager_job():
 fi
 '''},
             source_cache_restore(),
+            source_backup_restore(),
             {'name': '检出同一版本的 SukiSU 源码',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
@@ -394,6 +395,7 @@ PY
     source_sync_index = steps.index(step_named(steps, '初始化并同步内核源码'))
     steps[source_sync_index:source_sync_index] = [
         source_cache_restore(condition="inputs.ksu_variant == 'SukiSU'"),
+        source_backup_restore(condition="inputs.ksu_variant == 'SukiSU'"),
         {'name': '检出内核配套的 SukiSU 快照', 'if': "inputs.ksu_variant == 'SukiSU'",
          'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
          'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
@@ -590,9 +592,11 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
     prepare = {
         'name': '选择内核版本与补丁月份', 'runs-on': 'ubuntu-24.04',
         'if': PREPARE_IF,
+        'permissions': {'contents': 'write'},
         'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}',
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
                     'source_cache_key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
+                    'source_backup_release_id': '${{ steps.source-backup.outputs.backup_release_id }}',
                     'ddk_matrix': '${{ steps.lkm-matrix.outputs.matrix }}',
                     'manager_package': '${{ steps.certificate.outputs.package }}',
                     'manager_cert_size': '${{ steps.certificate.outputs.cert_size }}',
@@ -664,13 +668,21 @@ with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
     output.write('source_cache_key='+key+'\\n')
 PY
 '''},
+            {'name': '保存本次源码的独立临时备份', 'id': 'source-backup',
+             'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
+             'env': {'GH_TOKEN': '${{ github.token }}', 'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}'},
+             'run': '''python3 tools/transfer_ksu_snapshot.py create --source "$GITHUB_WORKSPACE/ksu-source-bundle" \\
+  --expected-ref "$KSU_REF"
+'''},
             {'name': '保存本次不可变源码缓存', 'uses': 'actions/cache/save@v5', 'timeout-minutes': 3,
+             'continue-on-error': True,
              'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
              'with': {'path': SOURCE_BUNDLE_PATH, 'key': '${{ steps.source-snapshot.outputs.source_cache_key }}'}},
             {'name': '确认所有构建可读取本次源码缓存', 'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
+             'continue-on-error': True,
              'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
              'with': {'path': SOURCE_BUNDLE_PATH, 'key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
-                      'lookup-only': True, 'fail-on-cache-miss': True}},
+                      'lookup-only': True, 'fail-on-cache-miss': False}},
         ],
     }
     workflow = {

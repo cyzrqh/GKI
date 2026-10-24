@@ -18,14 +18,31 @@ SOURCE_CACHE_KEY = '${{ needs.prepare-matrix.outputs.source_cache_key }}'
 def source_cache_restore(*, condition: str | None = None) -> dict:
     """Use the successful prepare job's exact key, including on failed-job reruns."""
     step = {
-        'name': '还原本次固定源码缓存（缺失请重跑全部任务）',
+        'name': '还原本次固定源码缓存', 'id': 'source-cache',
         'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
+        'continue-on-error': True,
         'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
-        'with': {'path': SOURCE_BUNDLE_PATH, 'key': SOURCE_CACHE_KEY, 'fail-on-cache-miss': True},
+        'with': {'path': SOURCE_BUNDLE_PATH, 'key': SOURCE_CACHE_KEY, 'fail-on-cache-miss': False},
     }
     if condition is not None:
         step['if'] = condition
     return step
+
+
+def source_backup_restore(*, condition: str | None = None) -> dict:
+    check = "steps.source-cache.outputs.cache-hit != 'true'"
+    if condition is not None:
+        check = '(' + condition + ') && ' + check
+    return {
+        'name': '从本次临时备份恢复固定源码', 'if': check,
+        'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
+                'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
+                'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}'},
+        'run': '''python3 tools/transfer_ksu_snapshot.py restore \\
+  --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \\
+  --output "$GITHUB_WORKSPACE/ksu-source-bundle"
+''',
+    }
 
 
 def load_ddk_matrix(root: Path) -> list[dict[str, str]]:
@@ -99,6 +116,7 @@ def manager_lkm_job(condition: str) -> dict:
             {'name': '检出构建工具', 'uses': 'actions/checkout@v6',
              'with': {'persist-credentials': False}},
             source_cache_restore(),
+            source_backup_restore(),
             {'name': '还原并核实 SukiSU 源码',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''set -euo pipefail

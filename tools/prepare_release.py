@@ -86,7 +86,9 @@ def validate_bindings(manager: dict | None, kernels: list[tuple[dict, bool]], *,
                 raise ValueError('The release kernel does not match the signed manager APK: ' + key)
 
 
-def prepare(source: Path, output: Path) -> dict:
+def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = None) -> dict:
+    if expected_kernel_count is not None and (type(expected_kernel_count) is not int or expected_kernel_count < 0):
+        raise ValueError('Expected kernel count must be a nonnegative integer')
     source, output = Path(source), Path(output)
     if source.is_symlink() or not source.is_dir() or output.is_symlink():
         raise ValueError('Expected an input directory and an unlinked release output')
@@ -170,6 +172,9 @@ def prepare(source: Path, output: Path) -> dict:
             entries.extend(selected)
             claimed.update(selected)
             kernel_records.append((document, True))
+    if expected_kernel_count is not None and len(kernel_records) != expected_kernel_count:
+        raise ValueError(f'Expected {expected_kernel_count} kernel builds, found {len(kernel_records)}; '
+                         'refusing an incomplete Release. Preserve the original AnyKernel3 ZIP files.')
     if manager is None and not kernel_records:
         raise ValueError('Expected at most one manager and at least one release artifact')
     unclaimed_boot = [path.name for path in files if path.suffix.lower() == '.img' and path not in claimed]
@@ -223,13 +228,25 @@ def prepare(source: Path, output: Path) -> dict:
     return {'assets': len(entries), 'kernels': len(kernel_documents), 'manager': bool(manager)}
 
 
-def main():
+def nonnegative_integer(value: str) -> int:
+    try:
+        count = int(value)
+    except (TypeError, ValueError):
+        raise argparse.ArgumentTypeError('Expected a nonnegative integer') from None
+    if count < 0:
+        raise argparse.ArgumentTypeError('Expected a nonnegative integer')
+    return count
+
+
+def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--input', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
-    args = parser.parse_args()
+    parser.add_argument('--expected-kernel-count', type=nonnegative_integer,
+                        help='Require this many unique kernel builds before preparing any public files')
+    args = parser.parse_args(argv)
     try:
-        result = prepare(args.input, args.output)
+        result = prepare(args.input, args.output, expected_kernel_count=args.expected_kernel_count)
     except (OSError, ValueError) as error:
         print(f'Release preparation failed: {error}', file=sys.stderr)
         return 1

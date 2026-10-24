@@ -1,5 +1,7 @@
 import gzip
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import shutil
@@ -355,6 +357,54 @@ class RawReleasePreparationTests(unittest.TestCase):
             prepare_release.prepare(self.source, self.output)
         self.assertEqual([unrelated], list(assets.iterdir()))
         self.assertEqual(b'user-owned file', unrelated.read_bytes())
+
+    def test_decompressed_ak3_cannot_silently_publish_an_apk_only_kernel_run(self):
+        _, ak3, _ = self.make_raw(flat=True)
+        # Reproduce download-artifact's default ZIP expansion using only the
+        # known synthetic fixture members. The original public ZIP disappears.
+        expanded = self.source / 'expanded-raw-artifact'
+        with zipfile.ZipFile(ak3) as archive:
+            for name in archive.namelist():
+                target = expanded / name
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(archive.read(name))
+        ak3.unlink()
+        with self.assertRaisesRegex(ValueError, 'Expected 1 kernel builds, found 0'):
+            prepare_release.prepare(self.source, self.output, expected_kernel_count=1)
+        self.assert_no_output()
+
+    def test_expected_kernel_count_rejects_missing_extra_and_accepts_exact_targets(self):
+        self.make_raw(flat=True)
+        for expected in (0, 2):
+            with self.subTest(expected=expected), self.assertRaisesRegex(ValueError, 'kernel builds, found 1'):
+                prepare_release.prepare(self.source, self.output, expected_kernel_count=expected)
+            self.assert_no_output()
+        result = prepare_release.prepare(self.source, self.output, expected_kernel_count=1)
+        self.assertEqual(1, result['kernels'])
+
+    def test_apk_only_explicit_zero_count_and_cli_validation_remain_supported(self):
+        self.make_raw(kernel=False, flat=True)
+        arguments = ['--input', str(self.source), '--output', str(self.output), '--expected-kernel-count']
+        with contextlib.redirect_stderr(io.StringIO()):
+            for value in ('-1', '1.5', 'not-a-count'):
+                with self.subTest(value=value), self.assertRaises(SystemExit) as error:
+                    prepare_release.main(arguments + [value])
+                self.assertEqual(2, error.exception.code)
+                self.assert_no_output()
+        with contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(1, prepare_release.main(arguments + ['1']))
+        self.assert_no_output()
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(0, prepare_release.main(arguments + ['0']))
+        self.assertEqual({'assets': 1, 'kernels': 0, 'manager': True}, json.loads(stdout.getvalue()))
+
+    def test_programmatic_expected_count_does_not_accept_bool_float_or_negative(self):
+        self.make_raw(kernel=False, flat=True)
+        for count in (True, False, 0.0, -1, '1'):
+            with self.subTest(count=count), self.assertRaisesRegex(ValueError, 'nonnegative integer'):
+                prepare_release.prepare(self.source, self.output, expected_kernel_count=count)
+            self.assert_no_output()
 
 
 if __name__ == '__main__':

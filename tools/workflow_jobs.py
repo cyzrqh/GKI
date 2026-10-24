@@ -151,9 +151,10 @@ def release_job():
              'run': "python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check cryptography"},
             {'name': '收集本次构建产物', 'uses': 'actions/download-artifact@v8',
              'with': {'pattern': "{${{ needs.build-sukisu-manager.outputs.apk_filename || '__NO_MANAGER_APK__' }},*-AnyKernel3.zip,*-boot*.img}",
-                      'path': 'release-input', 'merge-multiple': False}},
+                      'path': 'release-input', 'merge-multiple': False, 'skip-decompress': True}},
             {'name': '整理直接下载文件与实际配置',
-             'run': 'python3 tools/prepare_release.py --input release-input --output release-publish'},
+             'env': {'EXPECTED_KERNEL_COUNT': "${{ inputs.operation == '仅编译 SukiSU 安装包' && '0' || needs.prepare-matrix.outputs.count }}"},
+             'run': 'python3 tools/prepare_release.py --input release-input --output release-publish --expected-kernel-count "$EXPECTED_KERNEL_COUNT"'},
             {'name': '发布独立安装包和刷机包', 'id': 'release',
              'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}', 'RELEASE_TAG': 'gki-${{ github.run_id }}-${{ github.run_attempt }}'},
              'run': '''set -euo pipefail
@@ -173,5 +174,13 @@ printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' 
             {'name': '核对原文件并清理发布中转包',
              'env': {'GH_TOKEN': '${{ github.token }}'},
              'run': 'python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID"'},
+            {'name': '清理本次临时源码备份',
+             'if': "needs.prepare-matrix.outputs.source_backup_release_id != ''",
+             'env': {'GH_TOKEN': '${{ github.token }}',
+                     'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}',
+                     'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
+             'run': '''python3 tools/transfer_ksu_snapshot.py delete --release-id "$SOURCE_BACKUP_RELEASE_ID" \\
+  --published-tag "gki-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --expected-ref "$KSU_REF"
+'''},
         ],
     }

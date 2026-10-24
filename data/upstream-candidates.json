@@ -1,17 +1,17 @@
 {
   "acknowledged_heads": {
     "sukisu_branch": "main",
-    "sukisu_head": "df84920b20a925fd1135530f6e403361ad494d7b",
+    "sukisu_head": "22561329c04479b7985391764125a3a362170df0",
     "sukisu_release": {
-      "commit": "a619544c9f68da80c6c3667501ec353be8ae77da",
-      "tag": "v4.2.1-r1"
+      "commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
+      "tag": "v4.2.1-r2"
     },
     "susfs": {
-      "android12-5.10": "13095b46a8d0de5ec9e7c44d484ec4671d8d7ac2",
-      "android13-5.15": "9359a9ce823f98ed7fec21c2e8b9f46d9740fbaa",
-      "android14-6.1": "c27ebe93c68e953c248b11bb747ef220ea648373",
-      "android15-6.6": "1f42ad6e3ea26466911fd14ea42dd060760179e6",
-      "android16-6.12": "746b92ad198a3882a09833576ce4711313950dc8"
+      "android12-5.10": "5419f4ee97cc8bf7ca67a9ff207f39653d7784f4",
+      "android13-5.15": "0b5f96716cb2fc7b035dce2f06cb8a51e1b9b108",
+      "android14-6.1": "27e0a0e42745991ba09d6f96a97bf4b83f41a012",
+      "android15-6.6": "c51cd8aad3f7e2f8c48bc3bda88cc68cf7d82895",
+      "android16-6.12": "3ff9fd3fac5bb01b71b2cfe96c612d469710fb74"
     }
   },
   "baseline": {
@@ -27,53 +27,53 @@
   },
   "changes": [
     {
-      "candidate": "df84920b20a925fd1135530f6e403361ad494d7b",
+      "candidate": "22561329c04479b7985391764125a3a362170df0",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "main",
       "source": "SukiSU",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/df84920b20a925fd1135530f6e403361ad494d7b"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/22561329c04479b7985391764125a3a362170df0"
     },
     {
-      "candidate": "a619544c9f68da80c6c3667501ec353be8ae77da",
+      "candidate": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
-      "ref": "v4.2.1-r1",
+      "ref": "v4.2.1-r2",
       "source": "SukiSU release",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.2.1-r1"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.2.1-r2"
     },
     {
-      "candidate": "13095b46a8d0de5ec9e7c44d484ec4671d8d7ac2",
+      "candidate": "5419f4ee97cc8bf7ca67a9ff207f39653d7784f4",
       "current": "f43926dc94b8ffbf9b74321313536600f69367b1",
       "ref": "gki-android12-5.10",
       "source": "SUSFS",
-      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/13095b46a8d0de5ec9e7c44d484ec4671d8d7ac2"
+      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/5419f4ee97cc8bf7ca67a9ff207f39653d7784f4"
     },
     {
-      "candidate": "9359a9ce823f98ed7fec21c2e8b9f46d9740fbaa",
+      "candidate": "0b5f96716cb2fc7b035dce2f06cb8a51e1b9b108",
       "current": "86b5b10068459dedb545dc5db46a0f0254428eda",
       "ref": "gki-android13-5.15",
       "source": "SUSFS",
-      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/9359a9ce823f98ed7fec21c2e8b9f46d9740fbaa"
+      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/0b5f96716cb2fc7b035dce2f06cb8a51e1b9b108"
     },
     {
-      "candidate": "c27ebe93c68e953c248b11bb747ef220ea648373",
+      "candidate": "27e0a0e42745991ba09d6f96a97bf4b83f41a012",
       "current": "b57ed1998b82c4e3a2a81cdbf11172a560979c40",
       "ref": "gki-android14-6.1",
       "source": "SUSFS",
-      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/c27ebe93c68e953c248b11bb747ef220ea648373"
+      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/27e0a0e42745991ba09d6f96a97bf4b83f41a012"
     },
     {
-      "candidate": "1f42ad6e3ea26466911fd14ea42dd060760179e6",
+      "candidate": "c51cd8aad3f7e2f8c48bc3bda88cc68cf7d82895",
       "current": "4a4cb1be85a4694372d3efb9420de69982eac29a",
       "ref": "gki-android15-6.6",
       "source": "SUSFS",
-      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/1f42ad6e3ea26466911fd14ea42dd060760179e6"
+      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/c51cd8aad3f7e2f8c48bc3bda88cc68cf7d82895"
     },
     {
-      "candidate": "746b92ad198a3882a09833576ce4711313950dc8",
+      "candidate": "3ff9fd3fac5bb01b71b2cfe96c612d469710fb74",
       "current": "9c9f19d8395693327c78df36569b44e94c187b8a",
       "ref": "gki-android16-6.12",
       "source": "SUSFS",
-      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/746b92ad198a3882a09833576ce4711313950dc8"
+      "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/3ff9fd3fac5bb01b71b2cfe96c612d469710fb74"
     }
   ],
   "schema_version": 1,
@@ -81,19 +81,19 @@
     "schema_version": 1,
     "sukisu": {
       "branch": "main",
-      "head": "df84920b20a925fd1135530f6e403361ad494d7b",
+      "head": "22561329c04479b7985391764125a3a362170df0",
       "release": {
-        "commit": "a619544c9f68da80c6c3667501ec353be8ae77da",
+        "commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
         "newer_than_baseline": true,
-        "tag": "v4.2.1-r1"
+        "tag": "v4.2.1-r2"
       }
     },
     "susfs": {
-      "android12-5.10": "13095b46a8d0de5ec9e7c44d484ec4671d8d7ac2",
-      "android13-5.15": "9359a9ce823f98ed7fec21c2e8b9f46d9740fbaa",
-      "android14-6.1": "c27ebe93c68e953c248b11bb747ef220ea648373",
-      "android15-6.6": "1f42ad6e3ea26466911fd14ea42dd060760179e6",
-      "android16-6.12": "746b92ad198a3882a09833576ce4711313950dc8"
+      "android12-5.10": "5419f4ee97cc8bf7ca67a9ff207f39653d7784f4",
+      "android13-5.15": "0b5f96716cb2fc7b035dce2f06cb8a51e1b9b108",
+      "android14-6.1": "27e0a0e42745991ba09d6f96a97bf4b83f41a012",
+      "android15-6.6": "c51cd8aad3f7e2f8c48bc3bda88cc68cf7d82895",
+      "android16-6.12": "3ff9fd3fac5bb01b71b2cfe96c612d469710fb74"
     }
   },
   "status": "candidates-require-validation"

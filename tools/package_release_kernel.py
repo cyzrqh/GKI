@@ -19,6 +19,7 @@ import zlib
 
 from capture_build_metadata import kernel_config, state
 from embedded_build_metadata import KERNEL_MEMBER, read_member, validate_members
+from validate_arm64_image import validate_image
 
 AK3_NAME = re.compile(
     r'(?P<android>android[0-9]+)-(?P<series>[0-9]+\.[0-9]+)\.(?P<sublevel>[0-9]+|X)-'
@@ -126,6 +127,9 @@ def verify_image_metadata(metadata: dict, image: bytes) -> None:
         if len(text) > 8 * 1024 * 1024 or not decoder.eof or decoder.unconsumed_tail or decoder.unused_data:
             raise PackagingError('The Image contains an oversized or ambiguous IKCONFIG stream')
     config, origin, config_sha = kernel_config(Path('.'), image)
+    entry = validate_image(image)
+    if 'image_entry' in metadata and metadata['image_entry'] != entry:
+        raise PackagingError('Embedded entry validation differs from the actual ARM64 Image')
     if config_sha != metadata['config_sha256'] or origin != metadata['config_source']:
         raise PackagingError('Embedded kernel configuration SHA256 differs from actual IKCONFIG')
     variant, features = metadata['ksu_variant'], metadata['features']

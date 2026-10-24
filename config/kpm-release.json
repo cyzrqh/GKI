@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "repository": "SukiSU-Ultra/SukiSU_KernelPatch_patch",
+  "tag": "0.13.9",
+  "commit": "72bf62025e9c72e07b64c77db0801891f1088429",
+  "assets": {
+    "kpimg": {
+      "size": 294144,
+      "sha256": "396a20777668e85d674a23dd3945815f285332b5358be0bfc97297935e2d130b",
+      "url": "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.9/kpimg"
+    },
+    "kptools-linux": {
+      "size": 1672792,
+      "sha256": "6b5122046848865b1f68c04a45e34bbed81c9b535a42646a3ea423ce38a93aeb",
+      "url": "https://github.com/SukiSU-Ultra/SukiSU_KernelPatch_patch/releases/download/0.13.9/kptools-linux"
+    }
+  }
+}

@@ -3,9 +3,16 @@ import gzip
 import hashlib
 import io
 import json
+import struct
 import zipfile
 
 from apk_fixture import manager_metadata
+
+
+def arm64_fixture(payload):
+    """A structurally valid entry header around inert, NON-BOOTABLE test bytes."""
+    return struct.pack('<IIQQQQQQII', 0x14000010, 0, 0, 64 + len(payload), 10,
+                       0, 0, 0, 0x644D5241, 0) + payload
 
 
 def kernel_fixture(manager=None, *, file='android14-6.1.145-2025-08-AnyKernel3.zip'):
@@ -15,8 +22,8 @@ def kernel_fixture(manager=None, *, file='android14-6.1.145-2025-08-AnyKernel3.z
     config = ('CONFIG_ARM64=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_LTO_CLANG_THIN=y\n'
               '# CONFIG_KPM is not set\n# CONFIG_ZRAM is not set\n').encode()
     # This is a test container payload, not a compiled or bootable kernel.
-    image = (b'TEST FIXTURE, NOT A KERNEL\0IKCFG_ST' + gzip.compress(config, mtime=0) + b'IKCFG_ED\0v2.3.0\0'
-             + manager['package'].encode() + b'\0' + manager['manager_cert_sha256'].encode() + b'\0')
+    image = arm64_fixture(b'TEST FIXTURE, NOT A KERNEL\0IKCFG_ST' + gzip.compress(config, mtime=0) + b'IKCFG_ED\0v2.3.0\0'
+                          + manager['package'].encode() + b'\0' + manager['manager_cert_sha256'].encode() + b'\0')
     metadata = {'schema_version': 1, 'file': file, 'android_version': target[0],
                 'kernel_version': series, 'sub_level': sublevel, 'os_patch_level': '-'.join(target[2:]),
                 'ksu_variant': 'SukiSU', 'ksu_branch': manager['ksu_branch'], 'ksu_ref': manager['ksu_ref'],

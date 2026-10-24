@@ -623,6 +623,23 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('lz4 -dc bootimgs/Image.lz4 | cmp - ./Image', run)
         self.assertNotIn('$src/Image.lz4', run)
 
+    def test_kpm_uses_verified_explicit_payload_and_all_images_check_entry_before_upload(self):
+        names = [step.get('name') for step in self.steps]
+        prepare = self.find('编译前核实官方 KPM 工具及真实载荷')
+        patch = self.find('应用 KPM 补丁 (SukiSU/BakaSU)')
+        entry = self.find('核对最终 ARM64 启动入口')
+        self.assertLess(names.index(prepare['name']), names.index('编译内核'))
+        self.assertIn('tools/apply_kpm_patch.py" prepare', prepare['run'])
+        self.assertIn('tools/apply_kpm_patch.py" patch', patch['run'])
+        self.assertNotIn('patch_linux', patch['run'])
+        self.assertNotIn('./patch', patch['run'])
+        self.assertIn('--cache-dir "$KPM_CACHE_DIR"', patch['run'])
+        self.assertNotIn('if', entry)
+        self.assertIn('tools/validate_arm64_image.py', entry['run'])
+        self.assertLess(names.index('准备 AK3 内核文件'), names.index(entry['name']))
+        self.assertLess(names.index(entry['name']), names.index('准备 AnyKernel3 刷机包'))
+        self.assertLess(names.index(entry['name']), names.index('上传可直接刷入的 AK3 包'))
+
     def test_month_is_part_of_workspace_and_artifact_identity(self):
         run = self.find('初始化构建环境')['run']
         self.assertIn('${{ matrix.sub_level }}-${{ matrix.os_patch_level }}', run)

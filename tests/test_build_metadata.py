@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 import shutil
 import subprocess
+import struct
 import sys
 import unittest
 from unittest.mock import patch
@@ -17,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import capture_build_metadata as metadata
 import prepare_release
 from apk_fixture import manager_metadata, signed_apk
-from kernel_fixture import ak3_bytes, kernel_fixture
+from kernel_fixture import ak3_bytes, kernel_fixture, arm64_fixture
 
 
 class BuiltMetadataTests(unittest.TestCase):
@@ -40,7 +41,7 @@ class BuiltMetadataTests(unittest.TestCase):
         self.make_image(self.config)
 
     def make_image(self, config, *, version=b'v2.3.0'):
-        self.image.write_bytes(b'kernel ' + version + b' IKCFG_ST' + gzip.compress(config.encode()) + b'IKCFG_ED')
+        self.image.write_bytes(arm64_fixture(b'kernel ' + version + b' IKCFG_ST' + gzip.compress(config.encode()) + b'IKCFG_ED'))
 
     def collect(self):
         result = subprocess.CompletedProcess([], 0, stdout='a' * 40 + '\n', stderr='')
@@ -67,6 +68,13 @@ class BuiltMetadataTests(unittest.TestCase):
         stale.parent.mkdir(parents=True)
         stale.write_text(self.config)
         with self.assertRaisesRegex(ValueError, 'missing IKCONFIG'):
+            self.collect()
+
+    def test_entry_jump_outside_image_is_rejected_despite_valid_ikconfig(self):
+        image = bytearray(self.image.read_bytes())
+        struct.pack_into('<I', image, 0, 0x14000400)  # B to offset 4096, past this inert fixture.
+        self.image.write_bytes(image)
+        with self.assertRaisesRegex(ValueError, 'outside Image'):
             self.collect()
 
     def test_corrupt_ikconfig_fails_instead_of_falling_back(self):
@@ -332,6 +340,22 @@ class RawReleasePreparationTests(unittest.TestCase):
                 archive.writestr(name, value)
         with self.assertRaisesRegex(ValueError, 'IKCONFIG'):
             prepare_release.prepare(self.source, self.output)
+        self.assert_no_output()
+
+    def test_release_rechecks_entry_even_with_matching_image_hash_and_ikconfig(self):
+        _, ak3, document = self.make_raw(flat=True)
+        with zipfile.ZipFile(ak3) as archive:
+            data = {name: archive.read(name) for name in archive.namelist()}
+        image = bytearray(data['Image'])
+        struct.pack_into('<I', image, 0, 0x14000400)
+        data['Image'] = bytes(image)
+        document['image_sha256'] = hashlib.sha256(image).hexdigest()
+        data['META-INF/gki/build.json'] = json.dumps(document).encode('utf-8')
+        with zipfile.ZipFile(ak3, 'w') as archive:
+            for name, value in data.items():
+                archive.writestr(name, value)
+        with self.assertRaisesRegex(ValueError, 'outside Image'):
+            prepare_release.prepare(self.source, self.output, expected_kernel_count=1)
         self.assert_no_output()
 
     def test_multiple_targets_keep_one_complete_configuration_table(self):

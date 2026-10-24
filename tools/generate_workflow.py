@@ -503,12 +503,34 @@ echo 'CONFIG_IKCONFIG=y' >> "$DEFCONFIG"
         'if': "inputs.enable_susfs && inputs.ksu_variant != 'None'",
         'run': 'python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"',
     })
+    kpm = step_named(steps, '应用 KPM 补丁 (SukiSU/BakaSU)')
+    steps.insert(steps.index(compile_step), {
+        'name': '编译前核实官方 KPM 工具及真实载荷', 'if': kpm['if'],
+        'run': '''python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \\
+  --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV"
+''',
+    })
+    kpm['env'] = {'KPM_PASSWORD': '${{ inputs.kpm_password }}',
+                  'GKI_ANDROID': '${{ matrix.android_version }}', 'GKI_KERNEL': '${{ matrix.kernel_version }}'}
+    kpm['run'] = '''set -euo pipefail
+case "$GKI_ANDROID" in
+  android12|android13) target="$KERNEL_ROOT/out/$GKI_ANDROID-$GKI_KERNEL/dist" ;;
+  *) target="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64" ;;
+esac
+target="$(realpath -e "$target")"
+python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" patch \\
+  --image "$target/Image" --cache-dir "$KPM_CACHE_DIR" --report "$target/gki-kpm-patch.json"
+'''
 
     image = step_named(steps, '准备 Boot 镜像')
     image['name'] = '准备 AK3 内核文件'
     image['run'] = PREPARE_IMAGE
     image['env'] = {'GKI_ANDROID': '${{ matrix.android_version }}', 'GKI_KERNEL': '${{ matrix.kernel_version }}',
                     'ARTIFACT_MODE': '${{ inputs.artifact_mode }}'}
+    steps.insert(steps.index(image) + 1, {
+        'name': '核对最终 ARM64 启动入口',
+        'run': 'python3 "$GITHUB_WORKSPACE/tools/validate_arm64_image.py" --image "$GITHUB_WORKSPACE/Image"',
+    })
     ak3 = step_named(steps, '创建 AnyKernel3 压缩包')
     ak3['name'] = '准备 AnyKernel3 刷机包'
     ak3['run'] = PREPARE_AK3

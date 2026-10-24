@@ -14,6 +14,7 @@ import subprocess
 import sys
 
 from validate_susfs_hooks import inspect_c_source
+from validate_arm64_image import validate_image
 
 
 def parse_config(text: str) -> dict[str, str]:
@@ -58,6 +59,7 @@ def collect(kernel_root: Path, image_path: Path, context: dict[str, str]) -> dic
         raise ValueError('Unexpectedly large kernel Image')
     image = image_path.read_bytes()
     config, origin, config_sha = kernel_config(kernel_root, image)
+    entry = validate_image(image)
     susfs = config.get('CONFIG_KSU_SUSFS') == 'y'
     variant = context.get('ksu_variant', 'None')
     ksu = config.get('CONFIG_KSU') == 'y'
@@ -118,6 +120,7 @@ def collect(kernel_root: Path, image_path: Path, context: dict[str, str]) -> dic
         'built_at_utc': dt.datetime.now(dt.timezone.utc).isoformat(),
         'image_sha256': hashlib.sha256(image).hexdigest(), 'config_sha256': config_sha,
         'config_source': origin,
+        'image_entry': entry,
     }
 
 

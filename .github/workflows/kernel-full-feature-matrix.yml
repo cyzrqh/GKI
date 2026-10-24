@@ -6335,6 +6335,13 @@ jobs:
     - name: 检查 SUSFS 与 KernelSU 接口配套
       if: inputs.enable_susfs && inputs.kernelsu_variant != 'None'
       run: python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"
+    - name: 编译前核实官方 KPM 工具及真实载荷
+      if: (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch
+        == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) && (inputs.kernelsu_variant
+        == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+      run: |
+        python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \
+          --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV"
     - name: 编译内核
       id: compile-kernel
       uses: nick-fields/retry@v4
@@ -6675,52 +6682,20 @@ jobs:
         == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))) && (inputs.kernelsu_variant
         == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       env:
-        BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
-          || '' }}
-        ABK_FEATURE_ID: kpm
-        ABK_FEATURE_END: 'true'
-        ABK_FEATURE_FAILURE_MESSAGE: KPM image patch failed and the image was restored
         KPM_PASSWORD: ${{ (inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU'
           && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch
           == 'Custom(自定义)'))) && inputs.kpm_password || '') }}
+        GKI_ANDROID: ${{ matrix.android_version }}
+        GKI_KERNEL: ${{ matrix.kernel_version }}
       run: |
         set -euo pipefail
-        if [ "${{ 'aosp' }}" = "custom_git" ] && [ -f "$ABK_CUSTOM_SOURCE_TRANSACTION_DIR/kpm.disabled" ]; then
-          echo "KPM was skipped during source integration; no image patch will be applied."
-          exit 0
-        fi
-        case "${{ matrix.android_version }}" in
-          "android12"|"android13")
-            if [ "${{ matrix.kernel_version }}" != "6.6" ]; then
-              TARGET_PATH="$KERNEL_ROOT/out/${{ matrix.android_version }}-${{ matrix.kernel_version }}/dist"
-            fi
-            ;;
-          "android14"|"android15"|"android16")
-            TARGET_PATH="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64/"
-            ;;
+        case "$GKI_ANDROID" in
+          android12|android13) target="$KERNEL_ROOT/out/$GKI_ANDROID-$GKI_KERNEL/dist" ;;
+          *) target="$KERNEL_ROOT/bazel-bin/common/kernel_aarch64" ;;
         esac
-
-        image_backup="$TARGET_PATH/Image.abk-kpm-backup"
-        cp "$TARGET_PATH/Image" "$image_backup"
-        cp -r $SUKISU_PATCHES/kpm/patch_linux "$TARGET_PATH/patch"
-        cd "$TARGET_PATH"
-        chmod 777 patch
-        patch_ok=true
-        if ! { if [ -n "$KPM_PASSWORD" ]; then ./patch -s "$KPM_PASSWORD"; else ./patch; fi; }; then
-          patch_ok=false
-        fi
-        [ -f oImage ] || patch_ok=false
-        if [ "$patch_ok" != true ]; then
-          if [ "${{ 'aosp' }}" = "custom_git" ]; then
-            mv "$image_backup" Image
-            echo "::warning::KPM image patch failed; original Image restored."
-            exit 1
-          fi
-          exit 1
-        fi
-        rm -rf Image
-        mv oImage Image
-        rm -f "$image_backup"
+        target="$(realpath -e "$target")"
+        python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" patch \
+          --image "$target/Image" --cache-dir "$KPM_CACHE_DIR" --report "$target/gki-kpm-patch.json"
     - name: 准备 AK3 内核文件
       run: |
         set -euo pipefail
@@ -6741,6 +6716,8 @@ jobs:
         GKI_ANDROID: ${{ matrix.android_version }}
         GKI_KERNEL: ${{ matrix.kernel_version }}
         ARTIFACT_MODE: ${{ inputs.artifact_mode }}
+    - name: 核对最终 ARM64 启动入口
+      run: python3 "$GITHUB_WORKSPACE/tools/validate_arm64_image.py" --image "$GITHUB_WORKSPACE/Image"
     - name: 准备 AnyKernel3 刷机包
       run: |
         set -euo pipefail
@@ -6784,7 +6761,7 @@ jobs:
         $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
         cp ./boot-lz4.img ../${{ matrix.android_version }}-${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-boot-lz4.img
       env:
-        BOOT_OS_PATCH_LEVEL: ${{ matrix.os_patch_level == 'lts' && '2025-12' || matrix.os_patch_level }}
+        BOOT_OS_PATCH_LEVEL: ${{ matrix.os_patch_level == 'lts' && '2026-10' || matrix.os_patch_level }}
     - name: 构建 Boot 镜像 (Android 13+)
       if: inputs.artifact_mode != '仅 AK3' && ('aosp' != 'custom_git' && (matrix.android_version == 'android13' || matrix.android_version
         == 'android14' || matrix.android_version == 'android15' || matrix.android_version == 'android16'))

@@ -19,6 +19,7 @@ import cleanup_workflow_runs as cleanup
 WORKFLOW_ID = 701
 WORKFLOW = 'kernel-full-feature-matrix.yml'
 PREFIX = '/actions/workflows/' + WORKFLOW
+ALL_PREFIX = '/actions'
 
 
 def run(run_id, **changes):
@@ -43,7 +44,8 @@ class FakeGitHub:
         self.calls.append((method, resource, missing_ok))
         if resource == PREFIX and method == 'GET':
             return {'id': WORKFLOW_ID}
-        match = re.fullmatch(re.escape(PREFIX) + r'/runs\?per_page=100&page=([1-9][0-9]*)', resource)
+        match = re.fullmatch(r'(?:' + re.escape(PREFIX) + r'|' + re.escape(ALL_PREFIX)
+                             + r')/runs\?per_page=100&page=([1-9][0-9]*)', resource)
         if match and method == 'GET':
             start = (int(match[1]) - 1) * 100
             return {'total_count': len(self.runs), 'workflow_runs': copy.deepcopy(self.runs[start:start + 100])}
@@ -66,11 +68,11 @@ class FakeGitHub:
 
 
 class PlannerTests(unittest.TestCase):
-    def test_keeps_five_newest_completed_builds_with_unsorted_input(self):
+    def test_keeps_five_newest_runs_with_unsorted_input(self):
         plan = cleanup.plan_runs([run(value) for value in [3, 8, 1, 7, 4, 2, 6, 5]])
         self.assertEqual(plan.kept_ids, [8, 7, 6, 5, 4])
         self.assertEqual(plan.candidate_ids, [3, 2, 1])
-        self.assertEqual(plan.workflow_id, WORKFLOW_ID)
+        self.assertIsNone(plan.workflow_id)
 
     def test_sort_uses_creation_time_before_id_and_id_breaks_ties(self):
         runs = [run(99, created_at='2025-01-01T00:00:00Z'),
@@ -80,16 +82,34 @@ class PlannerTests(unittest.TestCase):
         self.assertEqual(plan.kept_ids, [2])
         self.assertEqual(plan.candidate_ids, [1, 99])
 
-    def test_protects_running_pending_sync_cleanup_other_events_and_current(self):
-        runs = [run(value) for value in range(1, 8)]
-        runs += [run(10, status='in_progress'), run(11, status='queued'),
-                 run(12, status='waiting'), run(13, event='push'),
-                 run(14, display_title='自动同步官方更新'),
-                 run(15, display_title='清理历史编译（保留5次）'), run(16)]
-        plan = cleanup.plan_runs(runs, current_run_id='16')
-        self.assertEqual(plan.kept_ids, [7, 6, 5, 4, 3])
-        self.assertEqual(plan.candidate_ids, [2, 1])
-        self.assertEqual(set(plan.preserved), set(range(10, 17)))
+    def test_mixed_workflows_events_and_current_all_count_towards_newest_five(self):
+        runs = [run(1), run(2, workflow_id=702, event='schedule', display_title='自动同步官方更新'),
+                run(3, workflow_id=703, display_title='清理历史编译（保留5次）'),
+                run(4, workflow_id=704, event='push', display_title='编译 APK'),
+                run(5, workflow_id=702, event='schedule', display_title='自动同步官方更新'),
+                run(6, status='queued'), run(7, status='in_progress'),
+                run(8, workflow_id=703, status='in_progress', display_title='清理历史记录（保留5条）')]
+        plan = cleanup.plan_runs(runs, current_run_id='8')
+        self.assertEqual(plan.kept_ids, [8, 7, 6, 5, 4])
+        self.assertEqual(plan.candidate_ids, [3, 2, 1])
+        self.assertEqual(plan.preserved, {})
+
+    def test_only_old_current_or_unfinished_runs_are_temporarily_extra(self):
+        runs = [run(value) for value in range(1, 11)]
+        runs[0]['status'] = 'in_progress'
+        runs[1]['status'] = 'queued'
+        runs[2]['status'] = 'waiting'
+        plan = cleanup.plan_runs(runs, current_run_id='4')
+        self.assertEqual(plan.kept_ids, [10, 9, 8, 7, 6])
+        self.assertEqual(plan.candidate_ids, [5])
+        self.assertEqual(plan.preserved, {4: 'current run', 3: 'not completed',
+                                          2: 'not completed', 1: 'not completed'})
+
+    def test_single_workflow_scope_still_requires_matching_workflow_ids(self):
+        plan = cleanup.plan_runs([run(1)], workflow_id=WORKFLOW_ID)
+        self.assertEqual(plan.workflow_id, WORKFLOW_ID)
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.plan_runs([run(1), run(2, workflow_id=99)], workflow_id=WORKFLOW_ID)
 
     def test_empty_and_fewer_than_five_have_no_candidates(self):
         for runs in ([], [run(1)], [run(value) for value in range(1, 6)]):
@@ -110,10 +130,9 @@ class PlannerTests(unittest.TestCase):
             with self.subTest(missing=key), self.assertRaises(cleanup.CleanupError):
                 cleanup.plan_runs([item])
 
-    def test_duplicate_ids_mixed_workflows_and_invalid_keep_are_refused(self):
-        for runs in ([run(1), run(1)], [run(1), run(2, workflow_id=99)]):
-            with self.subTest(runs=runs), self.assertRaises(cleanup.CleanupError):
-                cleanup.plan_runs(runs)
+    def test_duplicate_ids_and_invalid_keep_are_refused(self):
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.plan_runs([run(1), run(1)])
         for keep in (0, -1, True, '5'):
             with self.subTest(keep=keep), self.assertRaises(cleanup.CleanupError):
                 cleanup.plan_runs([run(1)], keep=keep)
@@ -124,20 +143,19 @@ class CleanupTests(unittest.TestCase):
         client = FakeGitHub([run(value) for value in range(1, 8)])
         report = cleanup.cleanup(client)
         self.assertEqual(report.plan.candidate_ids, [2, 1])
-        self.assertEqual(client.calls, [('GET', PREFIX, False),
-                                       ('GET', PREFIX + '/runs?per_page=100&page=1', False)])
+        self.assertEqual(client.calls, [('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False)])
         self.assertEqual(report.as_dict()['mode'], 'dry-run')
+        self.assertEqual(report.as_dict()['workflow'], 'all')
 
     def test_paginates_all_runs_before_deleting_only_candidate_paths(self):
         client = FakeGitHub([run(value) for value in range(1, 106)])
         report = cleanup.cleanup(client, execute=True)
         self.assertEqual(report.plan.kept_ids, [105, 104, 103, 102, 101])
         self.assertEqual(report.deleted_ids, list(range(100, 0, -1)))
-        self.assertEqual(client.calls[:3], [('GET', PREFIX, False),
-                                          ('GET', PREFIX + '/runs?per_page=100&page=1', False),
-                                          ('GET', PREFIX + '/runs?per_page=100&page=2', False)])
+        self.assertEqual(client.calls[:2], [('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False),
+                                          ('GET', ALL_PREFIX + '/runs?per_page=100&page=2', False)])
         self.assertEqual(client.deleted, [f'/actions/runs/{value}' for value in range(100, 0, -1)])
-        for index in range(3, len(client.calls), 2):
+        for index in range(2, len(client.calls), 2):
             method, resource, missing_ok = client.calls[index]
             self.assertEqual((method, missing_ok), ('GET', True))
             self.assertEqual(client.calls[index + 1], ('DELETE', resource, False))
@@ -148,10 +166,33 @@ class CleanupTests(unittest.TestCase):
         client = FakeGitHub([run(value) for value in range(1, 101)])
         _, runs = cleanup.fetch_workflow_runs(client)
         self.assertEqual(len(runs), 100)
-        self.assertEqual(client.calls[-1][1], PREFIX + '/runs?per_page=100&page=2')
+        self.assertEqual(client.calls[-1][1], ALL_PREFIX + '/runs?per_page=100&page=2')
+
+    def test_single_workflow_option_validates_metadata_and_lists_only_that_workflow(self):
+        client = FakeGitHub([run(value) for value in range(1, 8)])
+        report = cleanup.cleanup(client, WORKFLOW)
+        self.assertEqual(report.plan.workflow_id, WORKFLOW_ID)
+        self.assertEqual(client.calls, [('GET', PREFIX, False),
+                                       ('GET', PREFIX + '/runs?per_page=100&page=1', False)])
+        client = FakeGitHub([])
+        with patch.object(client, 'request', return_value={}), self.assertRaises(cleanup.CleanupError):
+            cleanup.cleanup(client, WORKFLOW, execute=True)
+
+    def test_repository_scope_deletes_old_mixed_workflows_and_maintenance_runs(self):
+        runs = [run(value, workflow_id=WORKFLOW_ID + value % 3,
+                    event='schedule' if value % 2 else 'push',
+                    display_title='自动同步官方更新' if value % 2 else '清理历史记录（保留5条）')
+                for value in range(1, 9)]
+        runs[-1]['status'] = 'in_progress'
+        client = FakeGitHub(runs)
+        report = cleanup.cleanup(client, execute=True, current_run_id='8')
+        self.assertIsNone(report.plan.workflow_id)
+        self.assertEqual(report.plan.kept_ids, [8, 7, 6, 5, 4])
+        self.assertEqual(report.deleted_ids, [3, 2, 1])
+        self.assertEqual(report.plan.preserved, {})
 
     def test_incomplete_second_page_or_request_failure_prevents_every_deletion(self):
-        for failure in ('missing', 'count_changed', 'duplicate', 'wrong_workflow', 'request'):
+        for failure in ('missing', 'count_changed', 'duplicate', 'invalid_workflow', 'request'):
             client = FakeGitHub([run(value) for value in range(1, 102)])
             original = client.request
 
@@ -166,8 +207,8 @@ class CleanupTests(unittest.TestCase):
                         document['total_count'] += 1
                     elif failure == 'duplicate':
                         document['workflow_runs'][0] = run(1)
-                    elif failure == 'wrong_workflow':
-                        document['workflow_runs'][0]['workflow_id'] = 999
+                    elif failure == 'invalid_workflow':
+                        document['workflow_runs'][0]['workflow_id'] = None
                     return document
                 return original(resource, **kwargs)
 
@@ -175,6 +216,13 @@ class CleanupTests(unittest.TestCase):
                 with self.assertRaises(cleanup.CleanupError):
                     cleanup.cleanup(client, execute=True)
                 self.assertEqual(client.deleted, [])
+
+    def test_wrong_workflow_on_later_single_scope_page_prevents_every_deletion(self):
+        client = FakeGitHub([run(value) for value in range(1, 102)])
+        client.runs[-1]['workflow_id'] = 999
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.cleanup(client, WORKFLOW, execute=True)
+        self.assertEqual(client.deleted, [])
 
     def test_listing_metadata_and_fields_fail_closed(self):
         documents = [None, {}, {'total_count': True, 'workflow_runs': []},
@@ -206,6 +254,23 @@ class CleanupTests(unittest.TestCase):
             with self.subTest(change=change), self.assertRaises(cleanup.CleanupError):
                 cleanup.cleanup(client, execute=True)
             self.assertEqual(client.deleted, [])
+
+    def test_repository_scope_revalidation_uses_each_candidates_original_workflow(self):
+        client = FakeGitHub([run(value, workflow_id=WORKFLOW_ID + value % 2)
+                             for value in range(1, 9)])
+        client.before_delete[3] = run(3, workflow_id=WORKFLOW_ID)
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.cleanup(client, execute=True)
+        self.assertEqual(client.deleted, [])
+
+    def test_old_unfinished_run_is_skipped_without_reserving_five_other_builds(self):
+        client = FakeGitHub([run(value, status='in_progress' if value == 2 else 'completed')
+                             for value in range(1, 9)])
+        report = cleanup.cleanup(client, execute=True)
+        self.assertEqual(report.plan.kept_ids, [8, 7, 6, 5, 4])
+        self.assertEqual(report.plan.preserved, {2: 'not completed'})
+        self.assertEqual(report.deleted_ids, [3, 1])
+        self.assertNotIn('/actions/runs/2', [resource for _, resource, _ in client.calls])
 
     def test_delete_failure_stops_and_preserves_partial_results(self):
         client = FakeGitHub([run(value) for value in range(1, 9)])
@@ -258,6 +323,14 @@ class Opener:
 
 
 class TransportTests(unittest.TestCase):
+    def test_repository_listing_is_allowed_only_as_a_fixed_read_only_paginated_path(self):
+        opener = Opener(Response(body=b'{"total_count":0,"workflow_runs":[]}'))
+        client = cleanup.GitHub('owner/gki', 'secret-token', opener)
+        self.assertEqual(client.request('/actions/runs?per_page=100&page=1'),
+                         {'total_count': 0, 'workflow_runs': []})
+        self.assertEqual(opener.requests[0][0].full_url,
+                         'https://api.github.com/repos/owner/gki/actions/runs?per_page=100&page=1')
+
     def test_transport_uses_fixed_https_host_headers_and_handles_empty_204(self):
         opener = Opener(Response(204))
         client = cleanup.GitHub('owner/gki', 'secret-token', opener)
@@ -295,6 +368,10 @@ class TransportTests(unittest.TestCase):
         for path, method in [('/releases/1', 'DELETE'), ('/actions/caches/1', 'DELETE'),
                              ('/branches/main', 'DELETE'), ('/actions/artifacts/1', 'DELETE'),
                              (PREFIX, 'DELETE'), ('/actions/runs/1', 'POST'),
+                             ('/actions/runs?per_page=100&page=1', 'DELETE'),
+                             ('/actions/runs?per_page=100&page=1&event=push', 'GET'),
+                             ('/actions/runs?per_page=10&page=1', 'GET'),
+                             ('/actions/runs?per_page=100&page=0', 'GET'),
                              ('https://evil.example/actions/runs/1', 'GET'),
                              ('/actions/runs/1?redirect=evil', 'GET')]:
             with self.subTest(path=path, method=method), self.assertRaises(cleanup.CleanupError):
@@ -354,6 +431,9 @@ class CLITests(unittest.TestCase):
         self.assertEqual(client.deleted, [])
         factory.assert_called_once_with('owner/gki', 'secret-token')
         self.assertIn('模式：仅预览', summary.read_text(encoding='utf-8'))
+        self.assertEqual(data['workflow'], 'all')
+        self.assertIn('范围：仓库全部工作流', summary.read_text(encoding='utf-8'))
+        self.assertIn('最新列表条数：5 条', summary.read_text(encoding='utf-8'))
 
     def test_explicit_execute_records_partial_failure_and_summary(self):
         summary = self.directory / 'summary.md'
@@ -368,8 +448,8 @@ class CLITests(unittest.TestCase):
         self.assertIn('HTTP 403', error)
         text = summary.read_text(encoding='utf-8')
         self.assertIn('状态：失败', text)
-        self.assertIn('本次已删除：1 次', text)
-        self.assertIn('剩余候选：2 次', text)
+        self.assertIn('本次已删除：1 条', text)
+        self.assertIn('剩余候选：2 条', text)
         self.assertNotIn('secret-token', text)
 
     def test_gh_token_precedence_current_run_and_keep_option(self):
@@ -377,9 +457,23 @@ class CLITests(unittest.TestCase):
         client = FakeGitHub([run(value) for value in range(1, 9)])
         status, data, _, factory = self.invoke(['--keep', '2'], client)
         self.assertEqual(status, 0)
-        self.assertEqual(data['kept_ids'], [7, 6])
-        self.assertEqual(data['preserved'], {'8': 'current run'})
+        self.assertEqual(data['kept_ids'], [8, 7])
+        self.assertEqual(data['preserved'], {})
         factory.assert_called_once_with('owner/gki', 'preferred-token')
+
+    def test_summary_identifies_temporary_extra_protected_runs(self):
+        summary = self.directory / 'summary.md'
+        os.environ['GITHUB_RUN_ID'] = '2'
+        client = FakeGitHub([run(value, status='queued' if value == 1 else 'completed')
+                             for value in range(1, 9)])
+        status, data, _, _ = self.invoke(['--summary', str(summary)], client)
+        self.assertEqual(status, 0)
+        self.assertEqual(data['kept_ids'], [8, 7, 6, 5, 4])
+        self.assertEqual(data['preserved'], {'2': 'current run', '1': 'not completed'})
+        text = summary.read_text(encoding='utf-8')
+        self.assertIn('最新列表条数：5 条', text)
+        self.assertIn('暂时额外保留：2 条', text)
+        self.assertIn('暂时额外保留运行 ID：2, 1', text)
 
     def test_bad_arguments_fail_before_any_network_request(self):
         for arguments in (['--keep', '0'], ['--repo', 'https://evil/repo'], ['--workflow', '../other.yml']):

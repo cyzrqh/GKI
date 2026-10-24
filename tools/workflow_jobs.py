@@ -3,7 +3,7 @@
 
 def cleanup_history_job():
     return {
-        'name': '清理历史编译（保留5次）',
+        'name': '清理历史记录（保留5条）',
         'if': "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
         'permissions': {'contents': 'read', 'actions': 'write'},
@@ -11,10 +11,10 @@ def cleanup_history_job():
         'steps': [
             {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
              'with': {'ref': '${{ github.event.repository.default_branch }}', 'persist-credentials': False}},
-            {'name': '清理旧编译记录及其 Actions 产物',
+            {'name': '清理旧 Actions 记录及其产物',
              'env': {'GH_TOKEN': '${{ github.token }}'},
              'run': '''python3 tools/cleanup_workflow_runs.py \\
-  --repo "$GITHUB_REPOSITORY" --workflow kernel-full-feature-matrix.yml \\
+  --repo "$GITHUB_REPOSITORY" --workflow all \\
   --keep 5 --execute --summary "$GITHUB_STEP_SUMMARY"
 '''},
         ],
@@ -23,8 +23,8 @@ def cleanup_history_job():
 
 def cleanup_history_workflow():
     return {
-        'name': '清理历史编译（保留5次）',
-        'run-name': '清理历史编译（保留5次）',
+        'name': '清理历史记录（保留5条）',
+        'run-name': '清理历史记录（保留5条）',
         'on': {'workflow_dispatch': {}},
         'permissions': {'contents': 'read'},
         'jobs': {'cleanup-history': cleanup_history_job()},

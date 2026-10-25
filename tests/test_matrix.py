@@ -16,10 +16,14 @@ IDENTITY_FIELDS = ("android_version", "kernel_version", "sub_level", "os_patch_l
 
 
 def expected_identities(root):
-    """Read the declared version/month identities independently of matrix.py."""
+    """Independently select the largest declared month for every full version."""
     document = json.loads((root / "data/kernels.json").read_text(encoding="utf-8"))
-    return {(entry["android_version"], entry["kernel_version"], entry["kernel"].rsplit(".", 1)[1], entry["date"])
-            for entry in document["entries"] if entry["date"] != "lts"}
+    versions = {}
+    for entry in document["entries"]:
+        if entry["date"] != "lts":
+            version = entry["android_version"], entry["kernel_version"], entry["kernel"].rsplit(".", 1)[1]
+            versions[version] = max(versions.get(version, ""), entry["date"])
+    return {(*version, date) for version, date in versions.items()}
 
 
 def row_identities(rows):
@@ -48,24 +52,69 @@ class MatrixTests(unittest.TestCase):
         document["entries"] = preserved + selected["entries"]
         path.write_text(json.dumps(document), encoding="utf-8")
 
-    def test_self_contained_catalog_preserves_every_declared_monthly_identity(self):
+    def test_self_contained_catalog_keeps_every_full_version_with_only_its_latest_month(self):
         for root in (ROOT, self.root):
             with self.subTest(root=root):
                 rows = matrix.build_matrix(root)
                 declared = expected_identities(root)
                 self.assertEqual(declared, row_identities(rows))
                 self.assertEqual(len(declared), len(rows))
-                self.assertGreaterEqual(len(rows), 128)
+                raw = json.loads((root / "data/kernels.json").read_text(encoding="utf-8"))["entries"]
+                self.assertLess(len(rows), sum(entry["date"] != "lts" for entry in raw))
                 self.assertEqual(rows, matrix.build_matrix(root))
 
-    def test_same_sublevel_preserves_different_months(self):
+    def test_same_sublevel_uses_only_latest_month_and_its_source(self):
         rows = matrix.build_matrix(self.root, targets="6.1.145")
-        months = sorted((identity[3] for identity in expected_identities(self.root)
-                         if identity[1:3] == ("6.1", "145")))
-        self.assertEqual(months, [row["os_patch_level"] for row in rows])
-        by_month = {row["os_patch_level"]: row for row in rows}
-        self.assertTrue(by_month["2025-08"]["kernel_ref"].startswith("refs/tags/"))
-        self.assertTrue(by_month["2025-09"]["kernel_ref"].startswith("refs/heads/"))
+        self.assertEqual(["2025-09"], [row["os_patch_level"] for row in rows])
+        self.assertTrue(rows[0]["kernel_ref"].startswith("refs/heads/"))
+        with self.assertRaisesRegex(ValueError, "not found"):
+            matrix.build_matrix(self.root, targets="6.1.145@2025-08")
+
+    def test_unsorted_latest_month_keeps_its_exact_source_and_revision_without_losing_other_versions(self):
+        self.edit("5.10", lambda data: data.update(entries=[
+            {"kernel": "5.10.100", "date": "2024-12", "ref": "a" * 40, "revision": "r2"},
+            {"kernel": "5.10.100", "date": "2025-02", "ref": "b" * 40, "revision": "r77"},
+            {"kernel": "5.10.101", "date": "2023-01", "ref": "c" * 40, "revision": "r3"},
+            {"kernel": "5.10.100", "date": "2025-01", "ref": "d" * 40, "revision": "r4"},
+        ]))
+        rows = matrix.build_matrix(self.root, "5.10")
+        self.assertEqual([
+            ("100", "2025-02", "b" * 40, "r77"),
+            ("101", "2023-01", "c" * 40, "r3"),
+        ], [(row["sub_level"], row["os_patch_level"], row["kernel_ref"], row["revision"]) for row in rows])
+
+    def test_newer_month_replaces_existing_version_and_updates_full_release_scope(self):
+        original = matrix.build_matrix(self.root)
+        self.edit("6.1", lambda data: data["entries"].append(
+            {"kernel": "6.1.145", "date": "2026-11", "ref": "b" * 40, "revision": "r55"}))
+        updated = matrix.build_matrix(self.root)
+        self.assertEqual(len(original), len(updated))
+        self.assertFalse(matrix.covers_full_catalog(self.root, original))
+        self.assertTrue(matrix.covers_full_catalog(self.root, updated))
+        chosen = matrix.build_matrix(self.root, targets="6.1.145")[0]
+        self.assertEqual(("2026-11", "b" * 40, "r55"),
+                         (chosen["os_patch_level"], chosen["kernel_ref"], chosen["revision"]))
+        with self.assertRaisesRegex(ValueError, "not found"):
+            matrix.build_matrix(self.root, targets="6.1.145,6.1.145@2025-09")
+
+    def test_repeated_plain_and_latest_month_selectors_build_only_once(self):
+        rows = matrix.build_matrix(self.root, targets="6.1.145,6.1.145@2025-09,6.1.145")
+        self.assertEqual(1, len(rows))
+        self.assertEqual("2025-09", rows[0]["os_patch_level"])
+
+    def test_repeated_lts_series_remains_one_independent_target(self):
+        path = self.root / "data/kernels.json"
+        document = json.loads(path.read_text(encoding="utf-8"))
+        original_lts = next(entry for entry in document["entries"]
+                            if entry["date"] == "lts" and entry["kernel_version"] == "5.10")
+        document["entries"].append({**original_lts, "kernel": "5.10.999", "ref": "b" * 40})
+        path.write_text(json.dumps(document), encoding="utf-8")
+        monthly = matrix.build_matrix(self.root, "5.10")
+        with_lts = matrix.build_matrix(self.root, "5.10", include_lts=True)
+        self.assertEqual(len(monthly) + 1, len(with_lts))
+        lts = [row for row in with_lts if row["os_patch_level"] == "lts"]
+        self.assertEqual(1, len(lts))
+        self.assertEqual("b" * 40, lts[0]["kernel_ref"])
 
     def test_all_groups_families_with_smallest_target_first_and_keeps_history(self):
         rows = matrix.build_matrix(self.root)
@@ -96,19 +145,19 @@ class MatrixTests(unittest.TestCase):
             json.dumps({"schema_version": 1, "entries": entries}), encoding="utf-8")
         rows = matrix.build_matrix(self.root, include_lts=True)
         self.assertEqual([
-            ("5.10", "90", "2023-01"), ("5.10", "100", "2024-01"),
+            ("5.10", "90", "2023-01"),
             ("5.10", "100", "2024-02"), ("5.10", "X", "lts"),
             ("5.15", "20", "2023-09"), ("5.15", "21", "2023-01"),
             ("6.1", "5", "2023-02"),
         ], [(row["kernel_version"], row["sub_level"], row["os_patch_level"]) for row in rows])
         monthly = matrix.build_matrix(self.root)
         self.assertEqual(expected_identities(self.root), row_identities(monthly))
-        self.assertEqual(6, len(monthly))
+        self.assertEqual(5, len(monthly))
 
     def test_exact_target_and_kernel_filter(self):
-        rows = matrix.build_matrix(self.root, "6.1,6.12", "6.1.145@2025-08,6.12.92@2026-09")
+        rows = matrix.build_matrix(self.root, "6.1,6.12", "6.1.145@2025-09,6.12.92@2026-09")
         self.assertEqual(2, len(rows))
-        self.assertEqual("2025-08", rows[0]["os_patch_level"])
+        self.assertEqual("2025-09", rows[0]["os_patch_level"])
         self.assertEqual("6.12", rows[1]["kernel_version"])
 
     def test_lts_is_opt_in_and_adds_five_rows(self):
@@ -121,8 +170,8 @@ class MatrixTests(unittest.TestCase):
         self.assertTrue(all(row["os_patch_level"] == "lts" and row["kernel_ref"].endswith("-lts") for row in lts))
 
     def test_known_android12_revision(self):
-        rows = matrix.build_matrix(self.root, targets="5.10.101@2022-04")
-        self.assertEqual("r28", rows[0]["revision"])
+        rows = matrix.build_matrix(self.root, targets="5.10.66@2022-01")
+        self.assertEqual("r11", rows[0]["revision"])
 
     def test_unknown_and_outside_selected_targets_fail(self):
         absent_sublevel = max(int(identity[2]) for identity in expected_identities(self.root)
@@ -156,7 +205,7 @@ class MatrixTests(unittest.TestCase):
             matrix.build_matrix(self.root)
 
     def test_immutable_full_commit_refs_are_accepted_and_normalized(self):
-        self.edit("6.1", lambda data: data["entries"][0].update(ref="A" * 40))
+        self.edit("6.1", lambda data: max(data["entries"], key=lambda entry: entry["date"]).update(ref="A" * 40))
         rows = matrix.build_matrix(self.root, "6.1")
         self.assertTrue(any(row["kernel_ref"] == "a" * 40 for row in rows))
 
@@ -177,9 +226,9 @@ class MatrixTests(unittest.TestCase):
             {"date": date, "kernel": full,
              "ref": f"refs/heads/android14-6.1-{date}"} for date in months))
         stable = matrix.build_matrix(self.root)
-        self.assertEqual(len(before) + 2, len(stable))
+        self.assertEqual(len(before) + 1, len(stable))
         self.assertEqual(expected_identities(self.root), row_identities(stable))
-        self.assertEqual(months, [row["os_patch_level"] for row in
+        self.assertEqual(months[-1:], [row["os_patch_level"] for row in
                                                  matrix.build_matrix(self.root, targets=full)])
         self.assertEqual(len(stable) + 5, len(matrix.build_matrix(self.root, include_lts=True)))
 
@@ -199,8 +248,8 @@ class MatrixTests(unittest.TestCase):
         rows = matrix.build_matrix(self.root)
         self.assertEqual(len(before), len(rows))
         self.assertEqual(expected_identities(self.root), row_identities(rows))
-        existing = next(row for row in rows if row["kernel_version"] == "6.1" and row["os_patch_level"] == "2025-08")
-        self.assertTrue(existing["kernel_ref"].startswith("refs/tags/"))
+        existing = next(row for row in rows if row["kernel_version"] == "6.1" and row["os_patch_level"] == "2025-09")
+        self.assertTrue(existing["kernel_ref"].startswith("refs/heads/"))
 
     def test_changed_local_schema_and_bad_android_pair_fail(self):
         path = self.root / "data/kernels.json"
@@ -239,7 +288,7 @@ class MatrixTests(unittest.TestCase):
         self.assertIn(f"count={expected_count}\n", output.read_text(encoding="utf-8"))
         self.assertIn("full_catalog=false\n", output.read_text(encoding="utf-8"))
         self.assertIn("包含 LTS：否", summary.read_text(encoding="utf-8"))
-        self.assertIn("所选系列的全部历史版本与补丁月份", summary.read_text(encoding="utf-8"))
+        self.assertIn("所选系列的全部完整版本，每个版本只构建最新补丁月份", summary.read_text(encoding="utf-8"))
         self.assertIn("按 5.10、5.15、6.1、6.6、6.12 系列分组", summary.read_text(encoding="utf-8"))
 
     def cli_outputs(self, *arguments):
@@ -254,16 +303,15 @@ class MatrixTests(unittest.TestCase):
         self.assertEqual({"include"}, set(json.loads(complete["matrix"])))
         families = self.cli_outputs("--kernel-versions", "6.12,6.6,6.1,5.15,5.10")
         self.assertEqual("true", families["full_catalog"])
-        document = json.loads((self.root / "data/kernels.json").read_text(encoding="utf-8"))
-        targets = ",".join(entry["kernel"] + "@" + entry["date"] for entry in document["entries"]
-                           if entry["date"] != "lts")
+        targets = ",".join(f"{family}.{sublevel}@{date}" for _, family, sublevel, date
+                           in sorted(expected_identities(self.root)))
         specified = self.cli_outputs("--targets", targets)
         self.assertEqual("true", specified["full_catalog"])
         self.assertEqual(complete["count"], specified["count"])
         missing_one = self.cli_outputs("--targets", ",".join(targets.split(",")[1:]))
         self.assertEqual("false", missing_one["full_catalog"])
 
-    def test_full_catalog_requires_every_month_not_just_five_families_or_same_count(self):
+    def test_full_catalog_requires_every_full_version_not_just_five_families_or_same_count(self):
         rows = matrix.build_matrix(self.root)
         latest_each = [next(row for row in rows if row["kernel_version"] == family) for family in matrix.KERNELS]
         self.assertFalse(matrix.covers_full_catalog(self.root, latest_each))
@@ -288,8 +336,8 @@ class MatrixTests(unittest.TestCase):
         self.assertTrue(matrix.covers_full_catalog(self.root, with_lts, include_lts=True))
         self.assertEqual("true", self.cli_outputs("--include-lts", "true")["full_catalog"])
         document = json.loads((self.root / "data/kernels.json").read_text(encoding="utf-8"))
-        monthly_targets = ",".join(entry["kernel"] + "@" + entry["date"] for entry in document["entries"]
-                                   if entry["date"] != "lts")
+        monthly_targets = ",".join(f"{family}.{sublevel}@{date}" for _, family, sublevel, date
+                                   in sorted(expected_identities(self.root)))
         self.assertEqual("false", self.cli_outputs("--include-lts", "true", "--targets", monthly_targets)["full_catalog"])
         all_versions = ",".join(sorted({entry["kernel"] for entry in document["entries"]}))
         self.assertEqual("true", self.cli_outputs("--include-lts", "true", "--targets", all_versions)["full_catalog"])
@@ -314,12 +362,12 @@ class MatrixTests(unittest.TestCase):
         summary = self.root / "summary.md"
         capture = io.StringIO()
         with contextlib.redirect_stdout(capture):
-            matrix.main(["--root", str(self.root), "--targets", "6.1.145@2025-08",
+            matrix.main(["--root", str(self.root), "--targets", "6.1.145@2025-09",
                          "--summary", str(summary)])
         self.assertEqual(1, len(json.loads(capture.getvalue())["include"]))
         content = summary.read_text(encoding="utf-8")
         self.assertIn("构建任务：1", content)
-        self.assertIn("指定版本（6.1.145@2025-08）", content)
+        self.assertIn("指定版本（6.1.145@2025-09）", content)
         self.assertNotIn("全部历史版本", content)
 
 

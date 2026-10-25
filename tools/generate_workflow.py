@@ -95,7 +95,7 @@ def feature_inputs(source):
                       'options': ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'], 'default': '编译内核'},
         'kernel_versions': {'description': '内核系列（all 或逗号分隔：5.10,5.15,6.1,6.6,6.12）',
                             'required': True, 'type': 'string', 'default': 'all'},
-        'targets': {'description': '指定版本（留空全矩阵；例 6.1.145 或 6.1.145@2025-08，逗号分隔）',
+        'targets': {'description': '指定版本（同版本仅最新月份；留空全量；例 6.1.145，逗号分隔）',
                     'required': False, 'type': 'string', 'default': ''},
         'include_lts': {'description': '包含 LTS（默认关闭）', 'required': False, 'type': 'boolean', 'default': False},
         'artifact_mode': {'description': '产物模式', 'required': True, 'type': 'choice',

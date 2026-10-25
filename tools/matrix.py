@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the GKI matrix without collapsing distinct security-patch months."""
+"""Build each complete GKI version once, using its newest security-patch month."""
 
 from __future__ import annotations
 
@@ -93,7 +93,7 @@ def _selectors(kernel_versions: str, targets: str) -> tuple[set[str], list[tuple
             value = raw.strip()
             match = TARGET.fullmatch(value)
             if not match:
-                raise ValueError(f"invalid target {value!r}; use 6.1.145 or 6.1.145@2025-08")
+                raise ValueError(f"invalid target {value!r}; use 6.1.145 or its latest month, such as 6.1.145@2025-09")
             full, date = match.groups()
             if full.rsplit(".", 1)[0] not in KERNELS:
                 raise ValueError(f"unsupported target kernel {full!r}")
@@ -153,12 +153,29 @@ def validate_catalog(document: object, source: str = "kernel catalog") -> dict:
 
 
 def _catalog_candidates(root: Path, include_lts: bool) -> list[tuple[dict[str, str], str]]:
-    """Construct identical source/packaging rows for selection and full-scope checks."""
-    candidates: list[tuple[dict[str, str], str]] = []
+    """Choose newest monthly rows before either selection or full-scope checks.
+
+    Keep the original source ref and boot revision together with the chosen
+    date. LTS is a separate rolling target, rather than another monthly row.
+    """
+    latest: dict[tuple[str, str, str], dict] = {}
     for entry in load_catalog(root)["entries"]:
         date = entry["date"]
         if date == "lts" and not include_lts:
             continue
+        full, family, android = entry["kernel"], entry["kernel_version"], entry["android_version"]
+        key = (android, family, "lts" if date == "lts" else full)
+        previous = latest.get(key)
+        if previous is None:
+            latest[key] = entry
+        elif date == "lts":
+            if tuple(map(int, full.split("."))) > tuple(map(int, previous["kernel"].split("."))):
+                latest[key] = entry
+        elif date > previous["date"]:
+            latest[key] = entry
+    candidates: list[tuple[dict[str, str], str]] = []
+    for entry in latest.values():
+        date = entry["date"]
         full, family, android = entry["kernel"], entry["kernel_version"], entry["android_version"]
         row = _row(android, family, full, date, _kernel_ref(entry.get("ref", ""), "kernel catalog"))
         row["revision"] = entry.get("revision", row["revision"])
@@ -169,7 +186,7 @@ def _catalog_candidates(root: Path, include_lts: bool) -> list[tuple[dict[str, s
 
 
 def covers_full_catalog(root: Path, rows: list[dict[str, str]], include_lts: bool = False) -> bool:
-    """Compare actual selected targets with the complete five-family catalog.
+    """Compare actual targets with every version's newest month in all five families.
 
     Use the same LTS switch and duplicate handling as build_matrix, while not
     imposing the matrix job limit on this reference set: a large catalog must
@@ -195,9 +212,9 @@ def build_matrix(
     targets: str = "",
     include_lts: bool = False,
 ) -> list[dict[str, str]]:
-    """Return exact version/month combinations from the local kernel catalog.
-    A full-version target selects every available month for that version; add
-    ``@YYYY-MM`` to request one exact combination.
+    """Return one newest-month row for each complete version in the catalog.
+    A ``@YYYY-MM`` selector must match that version's retained newest month;
+    historical catalog rows cannot reintroduce duplicate-month builds.
     """
     if not isinstance(include_lts, bool):
         raise ValueError("include_lts must be a boolean")
@@ -223,8 +240,8 @@ def build_matrix(
     if len(output) > 256:
         raise ValueError(f"matrix has {len(output)} jobs; GitHub Actions allows at most 256 per matrix; narrow kernel versions or targets")
     # Keep each family together in the Actions task list, ascending within
-    # each family. All exact version/month identities remain present, including
-    # explicitly requested LTS. Concurrent execution is configured separately.
+    # each family. Each full monthly version appears once, with explicitly
+    # requested LTS independent. Concurrent execution is configured separately.
     return sorted(output.values(), key=kernel_key)
 
 
@@ -274,7 +291,7 @@ def main(argv: list[str] | None = None) -> int:
                 if args.targets.strip():
                     stream.write(f"- 选择范围：指定版本（{args.targets}）。\n")
                 else:
-                    stream.write("- 选择范围：所选系列的全部历史版本与补丁月份。\n")
+                    stream.write("- 选择范围：所选系列的全部完整版本，每个版本只构建最新补丁月份。\n")
                 stream.write("- 任务排列：按 5.10、5.15、6.1、6.6、6.12 系列分组，组内版本及补丁月份从小到大；实际任务仍并行执行。\n\n")
                 for kernel in KERNELS:
                     if counts[kernel]:

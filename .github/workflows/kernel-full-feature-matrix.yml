@@ -21,7 +21,7 @@ run-name: ${{ inputs.operation == '检查上游更新' && '检查并同步官方
         type: string
         default: all
       targets:
-        description: 指定版本（留空全矩阵；例 6.1.145 或 6.1.145@2025-08，逗号分隔）
+        description: 指定版本（同版本仅最新月份；留空全量；例 6.1.145，逗号分隔）
         required: false
         type: string
         default: ''

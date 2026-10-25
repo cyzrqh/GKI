@@ -64,6 +64,7 @@ class KernelCatalogTests(unittest.TestCase):
         self.original = self.path.read_bytes()
         self.total = len(json.loads(self.original)["entries"])
         self.stable_count = len(matrix.build_matrix(self.root))
+        self.lts_count = len(matrix.build_matrix(self.root, include_lts=True))
 
     def test_check_discovers_new_official_month_without_writing(self):
         provider = FakeProvider().branch()
@@ -87,8 +88,11 @@ class KernelCatalogTests(unittest.TestCase):
         self.assertEqual([entry["date"] for entry in added], ["2026-12", "2027-01"])
         self.assertEqual([entry["kernel"] for entry in added], ["6.1.999", "6.1.999"])
         self.assertEqual([entry["date"] for entry in after["entries"]].count("lts"), 5)
-        self.assertEqual(len(matrix.build_matrix(self.root)), self.stable_count + 2)
-        self.assertEqual(len(matrix.build_matrix(self.root, include_lts=True)), self.total + 2)
+        self.assertEqual(len(matrix.build_matrix(self.root)), self.stable_count + 1)
+        self.assertEqual(len(matrix.build_matrix(self.root, include_lts=True)), self.lts_count + 1)
+        latest = matrix.build_matrix(self.root, targets="6.1.999")
+        self.assertEqual(len(latest), 1)
+        self.assertEqual((latest[0]["os_patch_level"], latest[0]["kernel_ref"]), ("2027-01", "b" * 40))
         self.assertEqual(catalog.update_catalog(self.root, provider, write=True),
                          {"has_updates": False, "added": 0, "total": self.total + 2, "candidates_json": "[]"})
 
@@ -97,13 +101,33 @@ class KernelCatalogTests(unittest.TestCase):
         report = catalog.update_catalog(self.root, provider, write=True)
         self.assertFalse(report["has_updates"])
         self.assertEqual(self.path.read_bytes(), self.original)
-        row = matrix.build_matrix(self.root, targets="6.1.145@2025-08")[0]
-        self.assertTrue(row["kernel_ref"].startswith("refs/tags/"))
+        historical = next(entry for entry in matrix.load_catalog(self.root)["entries"]
+                          if entry["kernel"] == "6.1.145" and entry["date"] == "2025-08")
+        self.assertTrue(historical["ref"].startswith("refs/tags/"))
+        latest = matrix.build_matrix(self.root, targets="6.1.145")
+        self.assertEqual([row["os_patch_level"] for row in latest], ["2025-09"])
+
+    def test_new_month_for_existing_version_replaces_build_and_preserves_history(self):
+        before = matrix.build_matrix(self.root, targets="6.1.145")[0]
+        provider = FakeProvider().branch(month="2027-01", sublevel=145)
+        report = catalog.update_catalog(self.root, provider, write=True)
+        self.assertEqual((report["added"], report["total"]), (1, self.total + 1))
+        self.assertEqual(len(matrix.build_matrix(self.root)), self.stable_count)
+        latest = matrix.build_matrix(self.root, targets="6.1.145")
+        self.assertEqual(len(latest), 1)
+        self.assertEqual((latest[0]["os_patch_level"], latest[0]["kernel_ref"]), ("2027-01", "a" * 40))
+        history = matrix.load_catalog(self.root)["entries"]
+        self.assertEqual(history[:self.total], json.loads(self.original)["entries"])
+        self.assertIn(before["os_patch_level"], [entry["date"] for entry in history
+                                               if entry["kernel"] == "6.1.145"])
+        self.assertFalse(catalog.update_catalog(self.root, provider)["has_updates"])
 
     def test_new_sublevel_in_an_existing_month_is_preserved_as_another_choice(self):
         provider = FakeProvider().branch(month="2025-08", sublevel=999)
         self.assertEqual(catalog.update_catalog(self.root, provider, write=True)["added"], 1)
-        self.assertEqual(len(matrix.build_matrix(self.root, targets="6.1.145@2025-08,6.1.999@2025-08")), 2)
+        rows = matrix.build_matrix(self.root, targets="6.1.145,6.1.999@2025-08")
+        self.assertEqual([(row["sub_level"], row["os_patch_level"]) for row in rows],
+                         [("145", "2025-09"), ("999", "2025-08")])
 
     def test_only_months_with_both_manifest_and_common_branches_are_added(self):
         provider = FakeProvider().branch()
@@ -245,7 +269,9 @@ class KernelCatalogTests(unittest.TestCase):
         report = catalog.update_catalog(self.root, provider, snapshot_file=snapshot, write=True)
         self.assertEqual(report["added"], 1)
         self.assertEqual([item for item in provider.reads if item[0] == "makefile"], [("makefile", "b" * 40)])
-        self.assertEqual(len(matrix.build_matrix(self.root, targets="6.1.145@2025-08,6.1.999@2025-08")), 2)
+        rows = matrix.build_matrix(self.root, targets="6.1.145,6.1.999@2025-08")
+        self.assertEqual([(row["sub_level"], row["os_patch_level"]) for row in rows],
+                         [("145", "2025-09"), ("999", "2025-08")])
 
     def test_rate_limit_keeps_only_verified_reads_and_next_probe_resumes_without_bursting_again(self):
         snapshot = self.root / "refs.json"

@@ -14,6 +14,7 @@ import zipfile
 from embedded_build_metadata import APK_MEMBER, KERNEL_MEMBER, metadata_json, read_manager_apk
 from package_release_kernel import AK3_NAME, read_kernel_ak3
 from release_notes import asset_names, render_notes
+from kernel_order import kernel_key, natural_key
 
 
 def digest(path: Path) -> str:
@@ -194,7 +195,8 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
                         or digest(resolve(name)) != expected):
                     raise ValueError('Boot image SHA256 does not match its kernel metadata: ' + name)
     validate_bindings(manager, kernel_records, manager_verified=manager_verified)
-    kernel_documents = [document for document, _ in kernel_records]
+    kernel_documents = sorted((document for document, _ in kernel_records), key=kernel_key)
+    entries.sort(key=lambda path: natural_key(path.name))
     names = [path.name for path in entries]
     if not names or len(names) != len(set(names)):
         raise ValueError('Missing or duplicate public release filenames')

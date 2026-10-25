@@ -11,7 +11,7 @@ from pathlib import Path
 import yaml
 from workflow_jobs import updater_job, release_job, cleanup_history_workflow
 from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key,
-                              manager_lkm_job, source_cache_restore, source_backup_restore)
+                              manager_lkm_job, source_cache_restore, source_backup_restore, source_backup_recache)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
@@ -200,6 +200,7 @@ fi
 '''},
             source_cache_restore(),
             source_backup_restore(),
+            source_backup_recache(),
             {'name': '检出同一版本的 SukiSU 源码',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
@@ -402,6 +403,7 @@ PY
     steps[source_sync_index:source_sync_index] = [
         source_cache_restore(condition="inputs.ksu_variant == 'SukiSU'"),
         source_backup_restore(condition="inputs.ksu_variant == 'SukiSU'"),
+        source_backup_recache(),
         {'name': '检出内核配套的 SukiSU 快照', 'if': "inputs.ksu_variant == 'SukiSU'",
          'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
          'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
@@ -626,6 +628,7 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
                     'full_catalog': '${{ steps.matrix.outputs.full_catalog }}',
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
                     'source_cache_key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
+                    'source_identity': '${{ steps.source-identity.outputs.source_identity }}',
                     'source_backup_release_id': '${{ steps.source-backup.outputs.backup_release_id }}',
                     'ddk_matrix': '${{ steps.lkm-matrix.outputs.matrix }}',
                     'manager_package': '${{ steps.certificate.outputs.package }}',
@@ -696,6 +699,20 @@ key = '-'.join(('gki-source-v1', os.environ['RUNNER_OS'], os.environ['RUNNER_ARC
                 os.environ['GITHUB_RUN_ID'], os.environ['GITHUB_RUN_ATTEMPT'], reference))
 with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
     output.write('source_cache_key='+key+'\\n')
+PY
+'''},
+            {'name': '固定源码树和管理器版本身份', 'id': 'source-identity',
+             'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
+             'env': {'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}'},
+             'run': '''python3 - <<'PY'
+import json,os,pathlib,sys
+sys.path.insert(0,'tools')
+from checkout_ksu_snapshot import read_manifest
+from transfer_ksu_snapshot import prepared_identity
+manifest = read_manifest(pathlib.Path('ksu-source-bundle'),os.environ['KSU_REF'])
+identity = prepared_identity({key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')},os.environ['KSU_REF'])
+with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
+    output.write('source_identity='+json.dumps(identity,separators=(',',':'))+'\\n')
 PY
 '''},
             {'name': '保存本次源码的独立临时备份', 'id': 'source-backup',

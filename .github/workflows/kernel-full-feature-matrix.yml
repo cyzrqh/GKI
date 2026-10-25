@@ -171,6 +171,7 @@ jobs:
       full_catalog: ${{ steps.matrix.outputs.full_catalog }}
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       source_cache_key: ${{ steps.source-snapshot.outputs.source_cache_key }}
+      source_identity: ${{ steps.source-identity.outputs.source_identity }}
       source_backup_release_id: ${{ steps.source-backup.outputs.backup_release_id }}
       ddk_matrix: ${{ steps.lkm-matrix.outputs.matrix }}
       manager_package: ${{ steps.certificate.outputs.package }}
@@ -272,6 +273,22 @@ jobs:
         with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
             output.write('source_cache_key='+key+'\n')
         PY
+    - name: 固定源码树和管理器版本身份
+      id: source-identity
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
+      env:
+        KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
+      run: |
+        python3 - <<'PY'
+        import json,os,pathlib,sys
+        sys.path.insert(0,'tools')
+        from checkout_ksu_snapshot import read_manifest
+        from transfer_ksu_snapshot import prepared_identity
+        manifest = read_manifest(pathlib.Path('ksu-source-bundle'),os.environ['KSU_REF'])
+        identity = prepared_identity({key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')},os.environ['KSU_REF'])
+        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
+            output.write('source_identity='+json.dumps(identity,separators=(',',':'))+'\n')
+        PY
     - name: 保存本次源码的独立临时备份
       id: source-backup
       if: inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'
@@ -332,15 +349,29 @@ jobs:
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
         fail-on-cache-miss: false
     - name: 从本次临时备份恢复固定源码
+      id: source-backup
       if: steps.source-cache.outputs.cache-hit != 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+        KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore \
           --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
-          --output "$GITHUB_WORKSPACE/ksu-source-bundle"
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
+          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+    - name: 重新缓存本次已验证的固定源码
+      uses: actions/cache/save@v5
+      timeout-minutes: 3
+      continue-on-error: true
+      if: steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'
+      with:
+        path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
     - name: 还原并核实 SukiSU 源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -480,15 +511,29 @@ jobs:
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
         fail-on-cache-miss: false
     - name: 从本次临时备份恢复固定源码
+      id: source-backup
       if: steps.source-cache.outputs.cache-hit != 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+        KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore \
           --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
-          --output "$GITHUB_WORKSPACE/ksu-source-bundle"
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
+          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+    - name: 重新缓存本次已验证的固定源码
+      uses: actions/cache/save@v5
+      timeout-minutes: 3
+      continue-on-error: true
+      if: steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'
+      with:
+        path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
     - name: 检出同一版本的 SukiSU 源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -1316,15 +1361,29 @@ jobs:
         fail-on-cache-miss: false
       if: inputs.kernelsu_variant == 'SukiSU'
     - name: 从本次临时备份恢复固定源码
+      id: source-backup
       if: (inputs.kernelsu_variant == 'SukiSU') && steps.source-cache.outputs.cache-hit != 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+        KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore \
           --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
-          --output "$GITHUB_WORKSPACE/ksu-source-bundle"
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
+          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+    - name: 重新缓存本次已验证的固定源码
+      uses: actions/cache/save@v5
+      timeout-minutes: 3
+      continue-on-error: true
+      if: steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'
+      with:
+        path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
     - name: 检出内核配套的 SukiSU 快照
       if: inputs.kernelsu_variant == 'SukiSU'
       env:

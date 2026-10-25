@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import unittest
+import uuid
 from unittest import mock
 from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +21,22 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import checkout_ksu_snapshot as checkout
 import snapshot_ksu_source as snapshot
 import transfer_ksu_snapshot as transfer
+
+
+@contextlib.contextmanager
+def short_fixture_directory(parent):
+    parent = parent.resolve()
+    directory = parent / ('.st-' + uuid.uuid4().hex[:8])
+    directory.mkdir()
+    try:
+        yield directory
+    finally:
+        if directory.is_symlink() or directory.resolve().parent != parent:
+            raise AssertionError('Unsafe fixture cleanup target')
+        def readonly(function, name, error):
+            Path(name).chmod(0o600)
+            function(name)
+        shutil.rmtree(directory, onexc=readonly)
 
 
 class FakeGitHub:
@@ -86,7 +103,9 @@ class FakeGitHub:
 class SnapshotTransferTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
-        cls.temporary = snapshot.temporary_directory(ROOT / 'tests', '.snapshot-transfer-fixture-')
+        # Real recovery nests Git verification directories; keep fixture paths
+        # short enough for Windows' default filesystem path limit.
+        cls.temporary = short_fixture_directory(ROOT.parent)
         cls.fixture = cls.temporary.__enter__()
         cls.source = cls.fixture / 'official'
         cls.source.mkdir()
@@ -117,12 +136,131 @@ class SnapshotTransferTests(unittest.TestCase):
                               capture_output=True, text=True, encoding='utf-8').stdout.strip()
 
     def setUp(self):
-        self.temporary_test = snapshot.temporary_directory(self.fixture, '.case-')
-        self.root = self.temporary_test.__enter__()
-        self.addCleanup(self.temporary_test.__exit__, None, None, None)
+        self.root = self.fixture / ('c' + uuid.uuid4().hex[:6])
+        self.root.mkdir()
         self.output = self.root / 'ksu-source-bundle'
         self.api = FakeGitHub()
         self.expected = transfer.Expected('cyzrqh/gki', 123, 1, 'a' * 40, self.reference)
+
+    def identity(self):
+        return {field: self.manifest[field] for field in ('ref', 'git_tree', 'git_count', 'git_describe')}
+
+    def local_official_fetch(self, directory, *arguments, **kwargs):
+        if arguments[0] == 'fetch':
+            self.assertEqual(('fetch', '--quiet', '--no-recurse-submodules', '--tags', 'origin', self.reference), arguments)
+            # A real bundle transport avoids Git for Windows spawning sh for
+            # local upload-pack in restricted runners; Git/history stay real.
+            return snapshot.git(directory, 'fetch', '--quiet', '--tags', str(self.bundle / snapshot.BUNDLE_NAME), self.reference)
+        return snapshot.git(directory, *arguments, **kwargs)
+
+    def test_missing_draft_recovers_exact_official_commit_and_native_version(self):
+        with mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch):
+            result = transfer.restore(901, self.output, self.expected, self.api,
+                                      identity=self.identity(), root=self.root)
+        self.assertTrue(result['official_fallback'])
+        restored = checkout.checkout_snapshot(self.output, self.root / 'restored', self.reference)
+        self.assertEqual(self.identity(), {field: restored[field] for field in self.identity()})
+        self.assertFalse(any(call[0] in ('DELETE', 'POST') for call in self.api.calls))
+
+    def test_official_recovery_revalidates_susfs_before_installing_cache(self):
+        with mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch), \
+                mock.patch.object(snapshot, 'verify_susfs_compatibility') as verify:
+            transfer.restore(901, self.output, self.expected, self.api, identity=self.identity(),
+                             root=self.root, susfs=True, tier='Latest(最新)')
+        self.assertEqual(1, verify.call_count)
+        self.assertEqual((self.root.resolve(), 'Latest(最新)', True), verify.call_args.args[1:4])
+
+    def test_missing_backup_without_prepare_identity_never_fetches_upstream(self):
+        with mock.patch.object(transfer, 'git') as upstream:
+            with self.assertRaises(transfer.BackupUnavailable):
+                transfer.restore(901, self.output, self.expected, self.api)
+        upstream.assert_not_called()
+        self.assertFalse(self.output.exists())
+
+    def test_bad_backup_hash_or_foreign_owner_is_not_hidden_by_official_recovery(self):
+        self.create()
+        with mock.patch.object(transfer, 'restore_official') as upstream:
+            self.api.bad_download = True
+            with self.assertRaisesRegex(transfer.TransferError, 'SHA256'):
+                transfer.restore(901, self.output, self.expected, self.api, identity=self.identity())
+            self.api.bad_download = False
+            self.api.releases[901]['target_commitish'] = 'b' * 40
+            with self.assertRaisesRegex(transfer.TransferError, 'temporary draft'):
+                transfer.restore(901, self.output, self.expected, self.api, identity=self.identity())
+        upstream.assert_not_called()
+
+    def test_official_recovery_refuses_tree_history_or_version_drift(self):
+        for changes in ({'git_tree': 'b' * 40}, {'git_count': 999}, {'git_describe': 'different-tag'}):
+            with self.subTest(changes=changes), \
+                    mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch):
+                with self.assertRaisesRegex(transfer.TransferError, 'changed since prepare'):
+                    transfer.restore(901, self.output, self.expected, self.api,
+                                     identity={**self.identity(), **changes}, root=self.root)
+                self.assertFalse(self.output.exists())
+
+    def test_invalid_prepare_identity_and_unknown_local_files_are_preserved_without_fetch(self):
+        for changes in ({'ref': 'f' * 40}, {'git_count': True}, {'git_tree': '../unsafe'},
+                        {'git_describe': 'unsafe\nversion'}, {'extra': 'unexpected'}):
+            with self.subTest(changes=changes), mock.patch.object(transfer, 'git') as upstream:
+                with self.assertRaisesRegex(transfer.TransferError, 'exact source and native version identity'):
+                    transfer.restore(901, self.output, self.expected, self.api,
+                                     identity={**self.identity(), **changes}, root=self.root)
+                upstream.assert_not_called()
+        self.output.mkdir()
+        keep = self.output / 'user-owned.txt'
+        keep.write_text('preserve')
+        with mock.patch.object(transfer, 'git') as upstream:
+            with self.assertRaisesRegex(transfer.TransferError, 'unknown files'):
+                transfer.restore(901, self.output, self.expected, self.api, identity=self.identity(), root=self.root)
+            upstream.assert_not_called()
+        self.assertEqual('preserve', keep.read_text())
+
+    def test_temporarily_unavailable_backup_can_recover_but_integrity_errors_cannot(self):
+        with mock.patch.object(self.api, 'json', side_effect=transfer.BackupUnavailable('HTTP 503')), \
+                mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch):
+            self.assertTrue(transfer.restore(901, self.output, self.expected, self.api,
+                                            identity=self.identity(), root=self.root)['official_fallback'])
+
+    def test_second_download_disappearing_cleans_partial_recovery_and_uses_exact_source(self):
+        self.create()
+        self.output.mkdir()
+        (self.output / snapshot.BUNDLE_NAME).write_bytes(b'previous partial cache')
+        original = self.api.download
+        calls = []
+        def disappearing(asset_id, limit):
+            calls.append(asset_id)
+            if len(calls) == 2:
+                raise transfer.BackupUnavailable('asset HTTP 404')
+            return original(asset_id, limit)
+        with mock.patch.object(self.api, 'download', side_effect=disappearing), \
+                mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch):
+            self.assertTrue(transfer.restore(901, self.output, self.expected, self.api,
+                                            identity=self.identity(), root=self.root)['official_fallback'])
+        self.assertEqual(2, len(calls))
+        self.assertEqual(self.identity(), {field: checkout.read_manifest(self.output, self.reference)[field]
+                                          for field in self.identity()})
+        self.assertFalse(list(self.root.glob('.gki-source-recovery-*')))
+
+    def test_tag_drift_retains_previous_cache_and_official_fetch_has_bounded_retries(self):
+        self.output.mkdir()
+        previous = self.output / snapshot.BUNDLE_NAME
+        previous.write_bytes(b'original cache evidence')
+        calls = []
+        def changed_tags(directory, *arguments, **kwargs):
+            if arguments[0] == 'fetch':
+                calls.append(arguments)
+                if len(calls) < 3:
+                    raise snapshot.SnapshotError('temporary fetch failure')
+                result = self.local_official_fetch(directory, *arguments, **kwargs)
+                snapshot.git(directory, 'tag', 'new-official-tag', self.reference)
+                return result
+            return self.local_official_fetch(directory, *arguments, **kwargs)
+        with mock.patch.object(transfer, 'git', side_effect=changed_tags), mock.patch.object(transfer.time, 'sleep') as wait:
+            with self.assertRaisesRegex(transfer.TransferError, 'changed since prepare'):
+                transfer.restore(901, self.output, self.expected, self.api, identity=self.identity(), root=self.root)
+        self.assertEqual(3, len(calls))
+        self.assertEqual([mock.call(1), mock.call(2)], wait.call_args_list)
+        self.assertEqual(b'original cache evidence', previous.read_bytes())
 
     def create(self):
         return transfer.create(self.bundle, self.expected, self.api)
@@ -435,6 +573,18 @@ class SnapshotTransferTests(unittest.TestCase):
 
 
 class SnapshotHttpTests(unittest.TestCase):
+    def test_only_missing_or_transient_get_errors_are_recoverable(self):
+        with mock.patch.dict(os.environ, {'GH_TOKEN': 'private-token'}):
+            for status in (401, 403, 404, 408, 429, 500, 502, 503, 504):
+                opener = mock.Mock()
+                opener.open.side_effect = HTTPError('https://api.github.com/', status, 'fixture', {}, io.BytesIO())
+                api = transfer.GitHub('cyzrqh/gki', opener=opener)
+                with self.subTest(status=status), self.assertRaises(transfer.TransferError) as error:
+                    api.json('/releases/901')
+                self.assertEqual(status not in (401, 403), isinstance(error.exception, transfer.BackupUnavailable))
+            opener.open.side_effect = HTTPError('https://api.github.com/', 404, 'fixture', {}, io.BytesIO())
+            self.assertIsNone(api.json('/releases/901', missing=True))
+
     def test_http_errors_identify_public_api_path_without_query_or_download_url(self):
         def forbidden(request, timeout):
             raise HTTPError(request.full_url, 403, 'forbidden', {}, io.BytesIO())

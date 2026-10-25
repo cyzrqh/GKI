@@ -168,6 +168,32 @@ class DirectReleasePreparationTests(unittest.TestCase):
         self.assertIn(manager['file'], checksums)
         self.assertIn(kernel['file'], checksums)
 
+    def test_ak3_notes_and_checksums_use_numeric_versions_and_ascending_months(self):
+        names = []
+        # Input directory and filename lexicographic orders both differ from
+        # the version order: 100 must follow 43, and 6.12 must follow 6.6.
+        for index, (android, family, sublevel, month) in enumerate((
+            ('android16', '6.12', '58', '2025-12'),
+            ('android12', '5.10', '100', '2022-02'),
+            ('android12', '5.10', '43', '2021-09'),
+            ('android15', '6.6', '98', '2025-09'),
+            ('android12', '5.10', '43', '2021-08'),
+        )):
+            directory = self.source / str(index)
+            directory.mkdir()
+            name = f'{android}-{family}.{sublevel}-{month}-AnyKernel3.zip'
+            document = {'file': name, 'android_version': android, 'kernel_version': family,
+                        'sub_level': sublevel, 'os_patch_level': month, 'ksu_variant': 'None'}
+            (directory / 'kernel.json').write_text(json.dumps(document), encoding='utf-8')
+            (directory / name).write_bytes(b'verified kernel asset')
+            names.append(name)
+        prepare_release.prepare(self.source, self.output, expected_kernel_count=5)
+        expected = [names[index] for index in (4, 2, 1, 3, 0)]
+        lines = (self.output / 'assets/SHA256SUMS.txt').read_text(encoding='utf-8').splitlines()
+        self.assertEqual(expected, [line.split('  ', 1)[1] for line in lines])
+        body = (self.output / 'release.md').read_text(encoding='utf-8')
+        self.assertEqual(expected, sorted(expected, key=body.index))
+
     def test_flat_and_named_manager_metadata_cannot_hide_duplicate_managers(self):
         self.manager(flat=True)
         self.manager()

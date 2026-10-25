@@ -34,14 +34,29 @@ def source_backup_restore(*, condition: str | None = None) -> dict:
     if condition is not None:
         check = '(' + condition + ') && ' + check
     return {
-        'name': '从本次临时备份恢复固定源码', 'if': check,
+        'name': '从本次临时备份恢复固定源码', 'id': 'source-backup', 'if': check,
         'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
                 'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
-                'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}'},
+                'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}',
+                'PREPARED_SOURCE_IDENTITY': '${{ needs.prepare-matrix.outputs.source_identity }}',
+                'KSU_TIER': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
+                'ENABLE_SUSFS': "${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}"},
         'run': '''python3 tools/transfer_ksu_snapshot.py restore \\
   --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \\
-  --output "$GITHUB_WORKSPACE/ksu-source-bundle"
+  --output "$GITHUB_WORKSPACE/ksu-source-bundle" \\
+  --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \\
+  --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
 ''',
+    }
+
+
+def source_backup_recache() -> dict:
+    """An evicted cache is an accelerator, never the only surviving source copy."""
+    return {
+        'name': '重新缓存本次已验证的固定源码',
+        'uses': 'actions/cache/save@v5', 'timeout-minutes': 3, 'continue-on-error': True,
+        'if': "steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'",
+        'with': {'path': SOURCE_BUNDLE_PATH, 'key': SOURCE_CACHE_KEY},
     }
 
 
@@ -117,6 +132,7 @@ def manager_lkm_job(condition: str) -> dict:
              'with': {'persist-credentials': False}},
             source_cache_restore(),
             source_backup_restore(),
+            source_backup_recache(),
             {'name': '还原并核实 SukiSU 源码',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''set -euo pipefail

@@ -91,6 +91,25 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertNotIn("v2.3.0", body)
         self.assertNotIn("Magic", body)
 
+    def test_reverse_input_is_presented_in_numeric_target_order(self):
+        kernels = []
+        for android, family, sublevel, month in (
+            ('android16', '6.12', '58', '2025-12'),
+            ('android15', '6.6', '100', '2025-10'),
+            ('android15', '6.6', '98', '2025-09'),
+            ('android15', '6.6', '98', '2025-08'),
+        ):
+            document = copy.deepcopy(KERNEL)
+            document.update(android_version=android, kernel_version=family,
+                            sub_level=sublevel, os_patch_level=month,
+                            file=f'{android}-{family}.{sublevel}-{month}-AnyKernel3.zip')
+            kernels.append(document)
+        original_order = [document['file'] for document in kernels]
+        body = self.render(kernels=kernels)
+        expected = list(reversed(original_order))
+        self.assertEqual(expected, sorted(original_order, key=body.index))
+        self.assertEqual(original_order, [document['file'] for document in kernels])
+
     def test_proven_mount_value_is_reported_only_when_supplied(self):
         kernel = copy.deepcopy(KERNEL)
         kernel["features"]["mount"] = "Magic Mount"

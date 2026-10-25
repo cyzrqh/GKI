@@ -433,7 +433,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertFalse(lookup['with']['fail-on-cache-miss'])
         for name in ('build-sukisu-lkm', 'build-sukisu-manager', 'build-kernel'):
             consumers = [step for step in self.workflow['jobs'][name]['steps']
-                         if step.get('with', {}).get('path') == 'ksu-source-bundle']
+                         if step.get('with', {}).get('path') == 'ksu-source-bundle'
+                         and step.get('uses') == 'actions/cache/restore@v5']
             self.assertEqual(1, len(consumers), name)
             consumer = consumers[0]
             self.assertEqual('actions/cache/restore@v5', consumer['uses'])
@@ -470,6 +471,14 @@ class WorkflowTests(unittest.TestCase):
                              '${{ needs.prepare-matrix.outputs.source_backup_release_id }}')
             self.assertIn('--expected-ref "$KSU_REF"', fallback['run'])
             self.assertEqual(fallback['env']['GH_TOKEN'], '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}')
+            self.assertEqual('${{ needs.prepare-matrix.outputs.source_identity }}', fallback['env']['PREPARED_SOURCE_IDENTITY'])
+            self.assertIn('--prepared-identity "$PREPARED_SOURCE_IDENTITY"', fallback['run'])
+            self.assertIn('--susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"', fallback['run'])
+            recache = next(step for step in steps if step['name'] == '重新缓存本次已验证的固定源码')
+            self.assertLess(steps.index(fallback), steps.index(recache))
+            self.assertLess(steps.index(recache), steps.index(checkout))
+            self.assertEqual('${{ needs.prepare-matrix.outputs.source_cache_key }}', recache['with']['key'])
+            self.assertIn("steps.source-backup.outcome == 'success'", recache['if'])
         steps = self.workflow['jobs']['publish-release']['steps']
         checked = next(step for step in steps if 'cleanup_build_artifacts.py' in step.get('run', ''))
         cleanup = next(step for step in steps if 'transfer_ksu_snapshot.py delete' in step.get('run', ''))
@@ -493,6 +502,24 @@ class WorkflowTests(unittest.TestCase):
             keys.append(dict(line.split('=', 1) for line in output.read_text().splitlines())['source_cache_key'])
         self.assertEqual(4, len(set(keys)))
         self.assertEqual('gki-source-v1-Linux-X64-123-1-' + 'a' * 40, keys[0])
+
+    def test_prepare_exports_original_source_tree_history_and_native_version_for_recovery(self):
+        prepare = self.workflow['jobs']['prepare-matrix']
+        step = next(step for step in prepare['steps'] if step.get('id') == 'source-identity')
+        backup = next(step for step in prepare['steps'] if step.get('id') == 'source-backup')
+        self.assertLess(prepare['steps'].index(step), prepare['steps'].index(backup))
+        self.assertEqual('${{ steps.source-identity.outputs.source_identity }}', prepare['outputs']['source_identity'])
+        code = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+        directory = ROOT / 'tests' / ('.source-identity-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        output = directory / 'output'
+        identity = {'ref': 'a' * 40, 'git_tree': 'b' * 40, 'git_count': 1072,
+                    'git_describe': 'v4.2.1-r2-6-g72eea67'}
+        with patch.dict(os.environ, {'KSU_REF': 'a' * 40, 'GITHUB_OUTPUT': str(output)}), \
+                patch('checkout_ksu_snapshot.read_manifest', return_value={**identity, 'bundle_sha256': 'c' * 64}):
+            exec(compile(code, '<source-identity>', 'exec'), {})
+        self.assertEqual(identity, json.loads(output.read_text().split('=', 1)[1]))
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']

@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 import sys
 
+from kernel_order import kernel_key
+
 
 UNKNOWN = "未知"
 FILENAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._()+@ -]{0,249}\Z")
@@ -178,6 +180,7 @@ def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: dat
         raise ReleaseNotesError("Report kind must be 'release' or 'actions'")
     if (manager is not None and not isinstance(manager, dict)) or any(not isinstance(item, dict) for item in kernels):
         raise ReleaseNotesError("Each metadata file must contain one JSON object")
+    kernels = sorted(kernels, key=kernel_key)
     manager = {} if manager is None else manager
     manager_assets = asset_names(manager, manager=True)
     kernel_assets = [asset_names(item) for item in kernels]

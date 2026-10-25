@@ -15,7 +15,9 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import sys
+import time
 import uuid
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode, urlparse
@@ -24,7 +26,8 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 from checkout_ksu_snapshot import read_manifest
 from cleanup_build_artifacts import validate_release
 from snapshot_ksu_source import (BUNDLE_NAME, MANIFEST_NAME, MAX_BUNDLE_SIZE, MAX_MANIFEST_SIZE,
-                                 SnapshotError, expected_commit, file_digest)
+                                 REPOSITORY, ROOT, SnapshotError, expected_commit, file_digest,
+                                 git, snapshot_source, source_identity, temporary_directory)
 
 
 MARKER = '<!-- gki-internal-source:v1 -->\n'
@@ -38,6 +41,10 @@ PUBLIC_ASSET_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9._+@()-]{0,249}\Z')
 
 class TransferError(ValueError):
     pass
+
+
+class BackupUnavailable(TransferError):
+    """The transport is unavailable; this does not waive any integrity check."""
 
 
 def integer(value, label: str) -> int:
@@ -116,17 +123,22 @@ class GitHub:
                 # A fresh, unauthenticated request also uses NoRedirect. Thus
                 # even a second redirect cannot leak the repository token.
                 return self.request(location, limit=limit, authenticated=False, binary=True)
-            raise TransferError(f'Snapshot backup {operation} failed (HTTP {error.code})') from None
+            kind = BackupUnavailable if method == 'GET' and error.code in (404, 408, 429, 500, 502, 503, 504) else TransferError
+            raise kind(f'Snapshot backup {operation} failed (HTTP {error.code})') from None
         except (OSError, URLError, ValueError):
-            raise TransferError('Snapshot backup ' + operation + ' could not complete') from None
+            kind = BackupUnavailable if method == 'GET' else TransferError
+            raise kind('Snapshot backup ' + operation + ' could not complete') from None
         try:
             with response:
                 raw = response.read(limit + 1)
             if len(raw) > limit:
                 raise TransferError('Snapshot backup HTTP response exceeds its size limit')
             return raw
+        except TransferError:
+            raise
         except (OSError, URLError, ValueError):
-            raise TransferError('Snapshot backup ' + operation + ' response could not be read safely') from None
+            kind = BackupUnavailable if method == 'GET' else TransferError
+            raise kind('Snapshot backup ' + operation + ' response could not be read safely') from None
 
     def json(self, path: str, *, method='GET', document=None, missing=False):
         if not path.startswith('/') or any(char in path for char in '\r\n#'):
@@ -282,20 +294,112 @@ def recovery_directory(parent: Path):
             directory.rmdir()
 
 
-def restore(release_id: int, output: Path, expected: Expected, api: GitHub) -> dict:
+def validate_recovery_output(output: Path) -> None:
+    if output.name != 'ksu-source-bundle' or output.is_symlink() or not output.parent.is_dir():
+        raise TransferError('Snapshot recovery must use the dedicated ksu-source-bundle directory')
+    if output.exists() and (not output.is_dir() or any(
+            path.name not in FILES or path.is_symlink() or not path.is_file() for path in output.iterdir())):
+        raise TransferError('Refusing to overwrite unknown files or links in the source cache directory')
+    if output.parent.resolve() != output.parent:
+        raise TransferError('Snapshot recovery parent directory must not be linked')
+
+
+def install_snapshot(staged: Path, output: Path, recovery: dict) -> None:
+    """Install verified files atomically, retaining the previous cache on error."""
+    previous = recovery['path'] / 'partial-cache'
+    validate_recovery_output(output)
+    if output.exists():
+        output.rename(previous)
+    try:
+        staged.rename(output)
+    except BaseException as install_error:
+        if previous.exists():
+            try:
+                if output.exists() or output.is_symlink():
+                    raise OSError('The output path is occupied')
+                previous.rename(output)
+            except OSError:
+                recovery['preserve'] = True
+                raise TransferError('Snapshot installation and rollback failed; original cache preserved at '
+                                    + str(previous) + '; verified backup retained at ' + str(staged)) from install_error
+        raise
+
+
+def prepared_identity(document: dict, reference: str) -> dict:
+    """Keep native version and tree identities bound to the successful prepare job."""
+    if (not isinstance(document, dict) or set(document) != {'ref', 'git_tree', 'git_count', 'git_describe'}
+            or document.get('ref') != reference
+            or not isinstance(document.get('git_tree'), str)
+            or not re.fullmatch(r'[0-9a-f]{40}', document['git_tree'])
+            or type(document.get('git_count')) is not int or document['git_count'] < 1
+            or not isinstance(document.get('git_describe'), str) or not 1 <= len(document['git_describe']) <= 1024
+            or any(ord(char) < 32 or ord(char) == 127 for char in document['git_describe'])):
+        raise TransferError('Official recovery requires this prepare job’s exact source and native version identity')
+    return dict(document)
+
+
+def restore_official(output: Path, expected: Expected, identity: dict, *, root: Path,
+                     susfs: bool, tier: str) -> dict:
+    """Rebuild an unavailable snapshot from the fixed public commit, never a branch."""
+    identity = prepared_identity(identity, expected.ksu_ref)
+    output = output.absolute()
+    validate_recovery_output(output)
+    with temporary_directory(output.parent, '.gki-official-source-') as temporary:
+        source = temporary / 'official'
+        source.mkdir()
+        git(source, 'init', '--quiet')
+        git(source, 'remote', 'add', 'origin', 'https://github.com/' + REPOSITORY + '.git')
+        # No depth limit: both the native versionCode and versionName depend on
+        # complete history/tags. A missing or rewritten commit fails closed.
+        for attempt in range(3):
+            try:
+                git(source, 'fetch', '--quiet', '--no-recurse-submodules', '--tags', 'origin', expected.ksu_ref, timeout=120)
+                break
+            except SnapshotError:
+                if attempt == 2:
+                    raise
+                time.sleep(attempt + 1)
+        git(source, 'checkout', '--quiet', '--detach', expected.ksu_ref)
+        actual = {'ref': expected.ksu_ref, **source_identity(source, expected.ksu_ref)}
+        if actual != identity:
+            raise TransferError('Official source tree, history or version tags changed since prepare; refusing a mixed build')
+        recreated = temporary / 'recreated'
+        manifest = snapshot_source(source, recreated, expected.ksu_ref, root=root, susfs=susfs, tier=tier)
+        if {field: manifest[field] for field in identity} != identity:
+            raise TransferError('Recovered source identity changed during verification')
+        with recovery_directory(output.parent) as recovery:
+            staged = recovery['path'] / 'verified'
+            staged.mkdir()
+            for name in sorted(FILES):
+                shutil.copyfile(recreated / name, staged / name)
+            snapshot_files(staged, expected.ksu_ref)
+            install_snapshot(staged, output, recovery)
+    return {'restored': True, 'ksu_ref': expected.ksu_ref, 'official_fallback': True}
+
+
+def restore(release_id: int, output: Path, expected: Expected, api: GitHub, *,
+            identity: dict | None = None, root: Path = ROOT, susfs: bool = False,
+            tier: str = 'Custom(自定义)') -> dict:
     expected.validate()
     release_id = integer(release_id, 'backup release ID')
-    control, assets = validate_backup(api.json('/releases/' + str(release_id)), expected, release_id)
+    if identity is not None:
+        prepared_identity(identity, expected.ksu_ref)
+    try:
+        return restore_backup(release_id, output, expected, api)
+    except BackupUnavailable:
+        if identity is None:
+            raise
+        result = restore_official(output, expected, identity, root=root, susfs=susfs, tier=tier)
+        return {'backup_release_id': release_id, **result}
+
+
+def restore_backup(release_id: int, output: Path, expected: Expected, api: GitHub) -> dict:
+    release = api.json('/releases/' + str(release_id), missing=True)
+    if release is None:
+        raise BackupUnavailable('This run’s temporary source backup is unavailable (HTTP 404)')
+    control, assets = validate_backup(release, expected, release_id)
     output = output.absolute()
-    def validate_output():
-        if output.name != 'ksu-source-bundle' or output.is_symlink() or not output.parent.is_dir():
-            raise TransferError('Snapshot recovery must use the dedicated ksu-source-bundle directory')
-        if output.exists() and (not output.is_dir() or any(
-                path.name not in FILES or path.is_symlink() or not path.is_file() for path in output.iterdir())):
-            raise TransferError('Refusing to overwrite unknown files or links in the source cache directory')
-        if output.parent.resolve() != output.parent:
-            raise TransferError('Snapshot recovery parent directory must not be linked')
-    validate_output()
+    validate_recovery_output(output)
     with recovery_directory(output.parent) as recovery:
         temporary = recovery['path']
         staged = temporary / 'verified'
@@ -307,23 +411,7 @@ def restore(release_id: int, output: Path, expected: Expected, api: GitHub) -> d
                 raise TransferError('The downloaded source backup failed SHA256 verification: ' + name)
             (staged / name).write_bytes(raw)
         snapshot_files(staged, expected.ksu_ref)
-        previous = temporary / 'partial-cache'
-        validate_output()
-        if output.exists():
-            output.rename(previous)
-        try:
-            staged.rename(output)
-        except BaseException as install_error:
-            if previous.exists():
-                try:
-                    if output.exists() or output.is_symlink():
-                        raise OSError('The output path is occupied')
-                    previous.rename(output)
-                except OSError:
-                    recovery['preserve'] = True
-                    raise TransferError('Snapshot installation and rollback failed; original cache preserved at '
-                                        + str(previous) + '; verified backup retained at ' + str(staged)) from install_error
-            raise
+        install_snapshot(staged, output, recovery)
     return {'backup_release_id': release_id, 'restored': True, 'ksu_ref': expected.ksu_ref}
 
 
@@ -475,6 +563,10 @@ def main(argv=None) -> int:
             command.add_argument('--release-id', required=True)
         if name == 'restore':
             command.add_argument('--output', required=True, type=Path)
+            command.add_argument('--prepared-identity', help='Prepare-bound identity enabling exact official recovery')
+            command.add_argument('--root', type=Path, default=ROOT)
+            command.add_argument('--susfs', choices=('true', 'false'), default='false')
+            command.add_argument('--tier', default='Custom(自定义)')
         if name == 'delete':
             command.add_argument('--published-tag', required=True)
         if name == 'delete-actions':
@@ -488,7 +580,10 @@ def main(argv=None) -> int:
         if args.operation == 'create':
             result = create(args.source, expected, api)
         elif args.operation == 'restore':
-            result = restore(args.release_id, args.output, expected, api)
+            identity = (json.loads(args.prepared_identity, object_pairs_hook=unique_object)
+                        if args.prepared_identity is not None else None)
+            result = restore(args.release_id, args.output, expected, api, identity=identity,
+                             root=args.root, susfs=args.susfs == 'true', tier=args.tier)
         elif args.operation == 'delete':
             result = delete(args.release_id, args.published_tag, expected, api)
         else:

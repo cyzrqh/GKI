@@ -12,6 +12,8 @@ from pathlib import Path
 import re
 import sys
 
+from kernel_order import kernel_key
+
 
 KERNELS = {
     "5.10": "android12",
@@ -220,19 +222,10 @@ def build_matrix(
         raise ValueError("the selected kernels and targets produce an empty build matrix")
     if len(output) > 256:
         raise ValueError(f"matrix has {len(output)} jobs; GitHub Actions allows at most 256 per matrix; narrow kernel versions or targets")
-    # Keep each family together in the Actions task list, newest first within
+    # Keep each family together in the Actions task list, ascending within
     # each family. All exact version/month identities remain present, including
     # explicitly requested LTS. Concurrent execution is configured separately.
-    families = [sorted(
-        (row for row in output.values() if row["kernel_version"] == family),
-        key=lambda row: (
-            row["sub_level"] != "X",
-            int(row["sub_level"]) if row["sub_level"] != "X" else 0,
-            row["os_patch_level"],
-        ),
-        reverse=True,
-    ) for family in KERNELS]
-    return [row for family in families for row in family]
+    return sorted(output.values(), key=kernel_key)
 
 
 def _boolean(value: str) -> bool:
@@ -282,7 +275,7 @@ def main(argv: list[str] | None = None) -> int:
                     stream.write(f"- 选择范围：指定版本（{args.targets}）。\n")
                 else:
                     stream.write("- 选择范围：所选系列的全部历史版本与补丁月份。\n")
-                stream.write("- 任务排列：按 5.10、5.15、6.1、6.6、6.12 系列分组，组内版本及补丁月份从新到旧；实际任务仍并行执行。\n\n")
+                stream.write("- 任务排列：按 5.10、5.15、6.1、6.6、6.12 系列分组，组内版本及补丁月份从小到大；实际任务仍并行执行。\n\n")
                 for kernel in KERNELS:
                     if counts[kernel]:
                         stream.write(f"- {kernel}：{counts[kernel]}\n")

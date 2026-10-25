@@ -61,13 +61,13 @@ class MatrixTests(unittest.TestCase):
     def test_same_sublevel_preserves_different_months(self):
         rows = matrix.build_matrix(self.root, targets="6.1.145")
         months = sorted((identity[3] for identity in expected_identities(self.root)
-                         if identity[1:3] == ("6.1", "145")), reverse=True)
+                         if identity[1:3] == ("6.1", "145")))
         self.assertEqual(months, [row["os_patch_level"] for row in rows])
         by_month = {row["os_patch_level"]: row for row in rows}
         self.assertTrue(by_month["2025-08"]["kernel_ref"].startswith("refs/tags/"))
         self.assertTrue(by_month["2025-09"]["kernel_ref"].startswith("refs/heads/"))
 
-    def test_all_groups_families_with_newest_target_first_and_keeps_history(self):
+    def test_all_groups_families_with_smallest_target_first_and_keeps_history(self):
         rows = matrix.build_matrix(self.root)
         declared = expected_identities(self.root)
         families = ["5.10", "5.15", "6.1", "6.6", "6.12"]
@@ -75,10 +75,10 @@ class MatrixTests(unittest.TestCase):
                        if index == 0 or row["kernel_version"] != rows[index - 1]["kernel_version"]]
         self.assertEqual(families, transitions)
         for family in families:
-            newest = max((identity for identity in declared if identity[1] == family),
+            smallest = min((identity for identity in declared if identity[1] == family),
                          key=lambda identity: (int(identity[2]), identity[3]))
             first = next(row for row in rows if row["kernel_version"] == family)
-            self.assertEqual(newest, tuple(first[field] for field in IDENTITY_FIELDS))
+            self.assertEqual(smallest, tuple(first[field] for field in IDENTITY_FIELDS))
         self.assertEqual(declared, row_identities(rows))
         self.assertEqual(len(declared), len(rows))
 
@@ -96,9 +96,9 @@ class MatrixTests(unittest.TestCase):
             json.dumps({"schema_version": 1, "entries": entries}), encoding="utf-8")
         rows = matrix.build_matrix(self.root, include_lts=True)
         self.assertEqual([
-            ("5.10", "100", "2024-02"), ("5.10", "100", "2024-01"),
-            ("5.10", "90", "2023-01"), ("5.10", "X", "lts"),
-            ("5.15", "21", "2023-01"), ("5.15", "20", "2023-09"),
+            ("5.10", "90", "2023-01"), ("5.10", "100", "2024-01"),
+            ("5.10", "100", "2024-02"), ("5.10", "X", "lts"),
+            ("5.15", "20", "2023-09"), ("5.15", "21", "2023-01"),
             ("6.1", "5", "2023-02"),
         ], [(row["kernel_version"], row["sub_level"], row["os_patch_level"]) for row in rows])
         monthly = matrix.build_matrix(self.root)
@@ -179,7 +179,7 @@ class MatrixTests(unittest.TestCase):
         stable = matrix.build_matrix(self.root)
         self.assertEqual(len(before) + 2, len(stable))
         self.assertEqual(expected_identities(self.root), row_identities(stable))
-        self.assertEqual(list(reversed(months)), [row["os_patch_level"] for row in
+        self.assertEqual(months, [row["os_patch_level"] for row in
                                                  matrix.build_matrix(self.root, targets=full)])
         self.assertEqual(len(stable) + 5, len(matrix.build_matrix(self.root, include_lts=True)))
 

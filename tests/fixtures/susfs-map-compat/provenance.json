@@ -1,0 +1,54 @@
+{
+  "files": [
+    {
+      "fixture": "2024-07-fs_proc_task_mmu.c",
+      "repository": "https://android.googlesource.com/kernel/common",
+      "commit": "c5bb31908c12dfded18679d8b4a6633c1c073bce",
+      "path": "fs/proc/task_mmu.c",
+      "sha256": "4ac7587ae5ca5c43de5244f68a41e9cdc5a79d97436f4841ebc505ac9f33a68d"
+    },
+    {
+      "fixture": "2024-07-include_linux_page_size_compat.h",
+      "repository": "https://android.googlesource.com/kernel/common",
+      "commit": "c5bb31908c12dfded18679d8b4a6633c1c073bce",
+      "path": "include/linux/page_size_compat.h",
+      "sha256": "1d525431669b1ba24031f780a42adfa230a2b909f82f6f54f92c0c72b6b14143"
+    },
+    {
+      "fixture": "2024-07-mm_page_size_compat.c",
+      "repository": "https://android.googlesource.com/kernel/common",
+      "commit": "c5bb31908c12dfded18679d8b4a6633c1c073bce",
+      "path": "mm/page_size_compat.c",
+      "sha256": "307226e31862c1c7d9317b1ee7a8cdd5f67bd659861d8ea432b812f6bd7a0d19"
+    },
+    {
+      "fixture": "2024-08-fs_proc_task_mmu.c",
+      "repository": "https://android.googlesource.com/kernel/common",
+      "commit": "394605f7e8266e836a8acf09a8deabd4ab6d7e70",
+      "path": "fs/proc/task_mmu.c",
+      "sha256": "c50130190c385d22a656561a639127a74166897121e55e67abe85507076502e2"
+    },
+    {
+      "fixture": "2024-08-include_linux_page_size_compat.h",
+      "repository": "https://android.googlesource.com/kernel/common",
+      "commit": "394605f7e8266e836a8acf09a8deabd4ab6d7e70",
+      "path": "include/linux/page_size_compat.h",
+      "sha256": "60a945a179bd6081dfd2c4c30e5df49a54e8b4f194293d2fa8ea453b27699cce"
+    },
+    {
+      "fixture": "2024-08-mm_page_size_compat.c",
+      "repository": "https://android.googlesource.com/kernel/common",
+      "commit": "394605f7e8266e836a8acf09a8deabd4ab6d7e70",
+      "path": "mm/page_size_compat.c",
+      "sha256": "a9d24e05e31a3574ecb43ba2b0c33f204c1b8856e04883e7ab0ae3d12869fd7c"
+    }
+  ],
+  "susfs_patch": {
+    "repository": "https://gitlab.com/simonpunk/susfs4ksu",
+    "commit": "4a4cb1be85a4694372d3efb9420de69982eac29a",
+    "path": "kernel_patches/50_add_susfs_in_gki-android15-6.6.patch",
+    "selection": "First three unchanged fs/proc/task_mmu.c hunks",
+    "fixture": "susfs23-task_mmu.patch",
+    "sha256": "b6bee5783a16a1ede73d266515372f9c13520c8f2e7ddf46006bb28513981635"
+  }
+}

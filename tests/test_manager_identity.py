@@ -1,3 +1,4 @@
+import contextlib
 import copy
 import hashlib
 import io
@@ -309,6 +310,133 @@ class ManagerIdentityTests(unittest.TestCase):
                 metadata = json.loads(output.read_text(encoding='utf-8'))
                 self.assertEqual(metadata['susfs_version'], expected)
                 identity.validate_metadata(metadata, self.expected)
+
+
+class GitHubIdentityReaderTests(unittest.TestCase):
+    def response(self, *, status=0, stdout=b'{"artifacts":[]}', stderr=b''):
+        return subprocess.CompletedProcess([], status, stdout=stdout, stderr=stderr)
+
+    def test_transient_http_reads_retry_same_endpoint_with_short_bounded_delays(self):
+        errors = [self.response(status=1, stderr=b'gh: unavailable (HTTP 502) SECRET'),
+                  self.response(status=1, stderr=b'gh: unavailable (HTTP 503) SECRET'),
+                  self.response()]
+        diagnostics = io.StringIO()
+        with patch.object(identity.subprocess, 'run', side_effect=errors) as run, \
+                patch.object(identity.time, 'sleep') as sleep, contextlib.redirect_stderr(diagnostics):
+            result = identity.GitHubReader('cyzrqh/gki').get('actions/runs/123/artifacts')
+        self.assertEqual({'artifacts': []}, result)
+        self.assertEqual(3, run.call_count)
+        self.assertEqual([1, 2], [call.args[0] for call in sleep.call_args_list])
+        self.assertTrue(all(call.args == run.call_args_list[0].args for call in run.call_args_list))
+        self.assertIn('APK artifact listing', diagnostics.getvalue())
+        self.assertIn('HTTP 502', diagnostics.getvalue())
+        self.assertNotIn('SECRET', diagnostics.getvalue())
+
+    def test_recognized_network_failures_recover_without_exposing_signed_urls(self):
+        for message in (b'TLS handshake timeout', b'connection reset by peer', b'i/o timeout',
+                        b'temporary failure in name resolution', b'no such host', b'unexpected EOF',
+                        b'http2: client connection lost'):
+            error = self.response(status=1, stderr=message + b' https://asset.example/a?token=SECRET')
+            diagnostics = io.StringIO()
+            with self.subTest(message=message), patch.object(identity.subprocess, 'run',
+                    side_effect=[error, self.response(stdout=b'APK')]) as run, \
+                    patch.object(identity.time, 'sleep') as sleep, contextlib.redirect_stderr(diagnostics):
+                self.assertEqual(b'APK', identity.GitHubReader('cyzrqh/gki').get(
+                    'actions/artifacts/7/zip', binary=True))
+            self.assertEqual(2, run.call_count)
+            sleep.assert_called_once_with(1)
+            self.assertIn('signed APK download', diagnostics.getvalue())
+            self.assertNotIn('asset.example', diagnostics.getvalue())
+            self.assertNotIn('SECRET', diagnostics.getvalue())
+
+    def test_permanent_http_and_unknown_cli_failures_are_not_retried(self):
+        for message, category in (
+            (b'gh: denied (HTTP 401) SECRET', 'HTTP 401'),
+            (b'gh: denied (HTTP 403) SECRET connection reset', 'HTTP 403'),
+            (b'gh: secondary rate limit (HTTP 403) SECRET', r'HTTP 403 \(rate limited\)'),
+            (b'gh: missing (HTTP 404) SECRET', 'HTTP 404'),
+            (b'gh: invalid (HTTP 422) SECRET', 'HTTP 422'),
+            (b'gh: unavailable (HTTP 501) SECRET', 'HTTP 501'),
+            (b'gh: opaque private error SECRET', 'GitHub CLI request failed'),
+        ):
+            with self.subTest(message=message), patch.object(identity.subprocess, 'run',
+                    return_value=self.response(status=1, stderr=message)) as run, \
+                    patch.object(identity.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(identity.IdentityError, category) as raised:
+                    identity.GitHubReader('cyzrqh/gki').get('actions/runs/123/jobs')
+            self.assertEqual(1, run.call_count)
+            sleep.assert_not_called()
+            self.assertIn('manager producer lookup', str(raised.exception))
+            self.assertNotIn('SECRET', str(raised.exception))
+
+    def test_every_allowlisted_transient_http_status_is_bounded_at_three_attempts(self):
+        for code in (408, 429, 500, 502, 503, 504):
+            diagnostics = io.StringIO()
+            error = self.response(status=1, stderr=f'gh: private response (HTTP {code}) SECRET'.encode())
+            with self.subTest(code=code), patch.object(identity.subprocess, 'run', return_value=error) as run, \
+                    patch.object(identity.time, 'sleep') as sleep, contextlib.redirect_stderr(diagnostics):
+                with self.assertRaisesRegex(identity.IdentityError, rf'HTTP {code}.*attempt 3/3') as raised:
+                    identity.GitHubReader('cyzrqh/gki').get('actions/runs/123/attempts/1')
+            self.assertEqual(3, run.call_count)
+            self.assertEqual([1, 2], [call.args[0] for call in sleep.call_args_list])
+            self.assertIn('workflow provenance lookup', str(raised.exception))
+            self.assertNotIn('SECRET', str(raised.exception) + diagnostics.getvalue())
+
+    def test_timeouts_recover_or_stop_after_three_without_exception_payloads(self):
+        timeout = subprocess.TimeoutExpired(['gh', 'api', 'SECRET'], 60,
+                                            output=b'private response SECRET', stderr=b'private URL SECRET')
+        for attempts in (1, 3):
+            effects = [timeout, self.response()] if attempts == 1 else [timeout] * 3
+            diagnostics = io.StringIO()
+            with self.subTest(attempts=attempts), patch.object(identity.subprocess, 'run', side_effect=effects) as run, \
+                    patch.object(identity.time, 'sleep') as sleep, contextlib.redirect_stderr(diagnostics):
+                if attempts == 1:
+                    self.assertEqual({'artifacts': []}, identity.GitHubReader('cyzrqh/gki').get('actions/runs/123/jobs'))
+                else:
+                    with self.assertRaisesRegex(identity.IdentityError, r'request timeout.*attempt 3/3') as raised:
+                        identity.GitHubReader('cyzrqh/gki').get('actions/runs/123/jobs')
+                    self.assertNotIn('SECRET', str(raised.exception))
+            self.assertEqual(2 if attempts == 1 else 3, run.call_count)
+            self.assertNotIn('SECRET', diagnostics.getvalue())
+            self.assertTrue(all(call.kwargs['timeout'] == 60 for call in run.call_args_list))
+
+    def test_cli_execution_failure_and_invalid_success_payloads_fail_without_retry(self):
+        with patch.object(identity.subprocess, 'run', side_effect=FileNotFoundError('SECRET')) as run, \
+                patch.object(identity.time, 'sleep') as sleep:
+            with self.assertRaisesRegex(identity.IdentityError, 'CLI could not execute') as raised:
+                identity.GitHubReader('cyzrqh/gki').get('actions/runs/123/jobs')
+        self.assertEqual(1, run.call_count)
+        sleep.assert_not_called()
+        self.assertNotIn('SECRET', str(raised.exception))
+        cases = ((b'SECRET', False, 'API response'),
+                 (b'\xff', False, 'API response'),
+                 (b'x' * 11, False, 'size limit'),
+                 (b'x' * 11, True, 'size limit'))
+        for payload, binary, message in cases:
+            with self.subTest(binary=binary, message=message), \
+                    patch.object(identity, 'MAX_API_BYTES', 10), patch.object(identity, 'MAX_ARCHIVE_BYTES', 10), \
+                    patch.object(identity.subprocess, 'run', return_value=self.response(stdout=payload)) as run, \
+                    patch.object(identity.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(identity.IdentityError, message) as raised:
+                    identity.GitHubReader('cyzrqh/gki').get('actions/artifacts/7/zip', binary=binary)
+            self.assertEqual(1, run.call_count)
+            sleep.assert_not_called()
+            self.assertNotIn('SECRET', str(raised.exception))
+
+    def test_transport_retries_do_not_skip_signed_apk_or_source_verification(self):
+        fixture = ManagerIdentityTests()
+        fixture.setUp()
+        apk = fixture.zip()
+        bad_source = {**fixture.metadata, 'ksu_ref': 'e' * 40}
+        malformed_apk = fixture.zip(bad_source)
+        response = self.response(stdout=malformed_apk)
+        with patch.object(identity.subprocess, 'run', side_effect=[
+                self.response(status=1, stderr=b'gh: temporarily unavailable (HTTP 503)'), response]), \
+                patch.object(identity.time, 'sleep'), contextlib.redirect_stderr(io.StringIO()):
+            raw = identity.GitHubReader('cyzrqh/gki').get('actions/artifacts/7/zip', binary=True)
+        with self.assertRaisesRegex(identity.IdentityError, 'source commits differ'):
+            identity.read_identity_archive(raw, fixture.expected)
+        self.assertNotEqual(apk, raw)
 
 
 if __name__ == '__main__':

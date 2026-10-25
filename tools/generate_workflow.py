@@ -655,6 +655,12 @@ PY
 python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \\
   --include-lts "$INCLUDE_LTS" --github-output --summary
 '''},
+            {'name': '校验旧版内核 SUSFS 映射兼容性',
+             'if': BUILD_IF + ' && inputs.enable_susfs',
+             'run': '''set -euo pipefail
+command -v cc >/dev/null
+python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+'''},
             {'name': '固定本次 KernelSU 与管理器源码', 'id': 'sources',
              'env': {'KSU_VARIANT': "${{ inputs.operation == '仅编译 SukiSU 安装包' && 'SukiSU' || inputs.kernelsu_variant }}",
                      'KSU_TIER': '${{ inputs.kernelsu_branch }}',

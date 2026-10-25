@@ -2551,6 +2551,7 @@ job:
         fix_task_mmu_vma_pad_start
       fi
       python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_headers.py" --kernel-root "$KERNEL_ROOT"
+      python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_map_compat.py" --kernel-root "$KERNEL_ROOT"
       python3 "$GITHUB_WORKSPACE/tools/historical_susfs23.py" --kernel-root "$KERNEL_ROOT" \
         --version "$SUSFS_VERSION" --kernel "$ABK_KERNEL_VERSION" --sublevel "$ABK_SUB_LEVEL" --phase finish
   - name: 确保 SUSFS Kconfig 与核心对象

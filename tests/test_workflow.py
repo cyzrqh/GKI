@@ -117,6 +117,18 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual('write', job['permissions']['actions'])
         self.assertNotIn('workflow_run', self.workflow['on'])
 
+    def test_susfs_map_compatibility_is_checked_with_a_real_compiler_before_expanding_jobs(self):
+        prepare = self.workflow['jobs']['prepare-matrix']
+        steps = prepare['steps']
+        check = next(step for step in steps if step['name'] == '校验旧版内核 SUSFS 映射兼容性')
+        self.assertIn("inputs.operation == '编译内核'", check['if'])
+        self.assertIn('inputs.enable_susfs', check['if'])
+        self.assertIn('command -v cc', check['run'])
+        self.assertIn('test_susfs_map_compat.py', check['run'])
+        source = next(step for step in steps if step.get('id') == 'sources')
+        self.assertLess(steps.index(check), steps.index(source))
+        self.assertNotIn('continue-on-error', check)
+
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.workflow['jobs']['check-upstream']
         self.assertEqual(job['if'], "github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")

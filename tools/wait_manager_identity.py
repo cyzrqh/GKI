@@ -22,6 +22,15 @@ from embedded_build_metadata import MAX_APK_BYTES, read_manager_apk, validate_me
 
 MAX_ARCHIVE_BYTES = MAX_APK_BYTES
 MAX_METADATA_BYTES = 16 * 1024
+MAX_API_BYTES = 4 * 1024 * 1024
+READ_ATTEMPTS = 3
+TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504))
+NETWORK_FAILURES = (
+    b'tls handshake timeout', b'connection reset', b'connection refused',
+    b'connection timed out', b'i/o timeout', b'temporary failure in name resolution',
+    b'no such host', b'network is unreachable', b'failed to connect',
+    b'unexpected eof', b'client connection lost',
+)
 SHA40 = re.compile(r"[0-9a-f]{40}\Z")
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 PACKAGE = re.compile(r"[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+\Z")
@@ -175,6 +184,32 @@ class GitHubReader:
     def __init__(self, repository: str):
         self.repository = validate_repository(repository)
 
+    @staticmethod
+    def _stage(suffix: str) -> str:
+        if suffix.startswith('actions/artifacts/'):
+            return 'signed APK download'
+        if '/artifacts' in suffix:
+            return 'APK artifact listing'
+        if '/jobs' in suffix:
+            return 'manager producer lookup'
+        return 'workflow provenance lookup'
+
+    @staticmethod
+    def _failure(stderr: bytes) -> tuple[str, bool]:
+        # Inspect diagnostics locally, but return only a fixed category or a
+        # numeric HTTP status. CLI output can contain tokens and signed URLs.
+        status = re.search(rb'\bHTTP\s+([1-5][0-9]{2})\b', stderr, re.I)
+        if status:
+            code = int(status[1])
+            if code == 403 and any(marker in stderr.lower() for marker in (
+                    b'rate limit', b'rate-limit', b'secondary limit')):
+                return 'HTTP 403 (rate limited)', False
+            return f'HTTP {code}', code in TRANSIENT_HTTP
+        lower = stderr.lower()
+        if any(marker in lower for marker in NETWORK_FAILURES):
+            return 'temporary network failure', True
+        return 'GitHub CLI request failed', False
+
     def get(self, suffix: str, *, binary: bool = False):
         if not re.fullmatch(r"actions/[A-Za-z0-9_/?=&.-]+", suffix) or ".." in suffix:
             raise IdentityError("Invalid workflow API path")
@@ -183,23 +218,37 @@ class GitHubReader:
         # Only public metadata leaves this process; signing secrets are absent.
         environment = {key: value for key, value in os.environ.items()
                        if key not in ("SUKISU_APK_KEYSTORE", "SUKISU_APK_PASSWORD")}
-        try:
-            response = subprocess.run(
-                ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint],
-                capture_output=True, timeout=60, env=environment,
-            )
-        except (OSError, subprocess.TimeoutExpired):
-            raise IdentityError("GitHub could not read this workflow's manager identity") from None
-        if response.returncode:
-            raise IdentityError("GitHub could not read this workflow's manager identity")
+        stage = self._stage(suffix)
+        for attempt in range(1, READ_ATTEMPTS + 1):
+            try:
+                response = subprocess.run(
+                    ["gh", "api", "--hostname", "github.com", "--method", "GET", endpoint],
+                    capture_output=True, timeout=60, env=environment,
+                )
+            except subprocess.TimeoutExpired:
+                reason, retry = 'request timeout', True
+            except OSError:
+                raise IdentityError(f'Manager identity {stage} failed: GitHub CLI could not execute') from None
+            else:
+                if not response.returncode:
+                    break
+                reason, retry = self._failure(response.stderr)
+            if not retry or attempt == READ_ATTEMPTS:
+                raise IdentityError(f'Manager identity {stage} failed: {reason} '
+                                    f'(attempt {attempt}/{READ_ATTEMPTS})') from None
+            print(f'::warning::Manager identity {stage}: {reason}; '
+                  f'retrying ({attempt + 1}/{READ_ATTEMPTS}).', file=sys.stderr)
+            time.sleep(attempt)
         if binary:
             if len(response.stdout) > MAX_ARCHIVE_BYTES:
                 raise IdentityError("Manager APK exceeds the size limit")
             return response.stdout
+        if len(response.stdout) > MAX_API_BYTES:
+            raise IdentityError(f'Manager identity {stage} response exceeds the size limit')
         try:
             return json.loads(response.stdout)
         except (ValueError, UnicodeError):
-            raise IdentityError("Invalid workflow API response") from None
+            raise IdentityError(f'Invalid manager identity {stage} API response') from None
 
 
 def _pages(reader, suffix: str, key: str):

@@ -136,15 +136,27 @@ def fetch_snapshot(current: dict) -> dict:
                 raise UpdateError('SukiSU release ancestry: invalid comparison baseline or ancestry status')
             newer = comparison['status'] in ('ahead', 'diverged')
         release = {'tag': tag, 'commit': commit, 'newer_than_baseline': newer}
-    return validate_snapshot({'schema_version': 1, 'sukisu': {'branch': branch, 'head': head, 'release': release},
+    development = {'branch': 'dev', 'head': head} if branch == 'dev' else None
+    if branch != 'dev':
+        document = github_lookup('SukiSU development branch', github_json, SUKISU, '/branches/dev', missing=True)
+        if document is not None:
+            commit = document.get('commit') if isinstance(document, dict) else None
+            if (not isinstance(commit, dict) or document.get('name') != 'dev'
+                    or not isinstance(commit.get('sha'), str) or not SHA.fullmatch(commit['sha'])):
+                raise UpdateError('Official SukiSU development branch did not return its exact branch and full commit SHA')
+            development = {'branch': 'dev', 'head': commit['sha'].lower()}
+    return validate_snapshot({'schema_version': 1,
+                              'sukisu': {'branch': branch, 'head': head, 'release': release, 'development': development},
                               'susfs': {target: gitlab_head(target) for target in TARGETS}})
 
 
 def validate_snapshot(value: object) -> dict:
-    if not isinstance(value, dict) or set(value) != {'schema_version', 'sukisu', 'susfs'} or value['schema_version'] != 1:
+    if (not isinstance(value, dict) or set(value) != {'schema_version', 'sukisu', 'susfs'}
+            or type(value['schema_version']) is not int or value['schema_version'] != 1):
         raise UpdateError('Unsupported official candidate snapshot schema')
     suki, susfs = value['sukisu'], value['susfs']
-    if not isinstance(suki, dict) or set(suki) != {'branch', 'head', 'release'}:
+    if not isinstance(suki, dict) or set(suki) not in ({'branch', 'head', 'release'},
+                                                      {'branch', 'head', 'release', 'development'}):
         raise UpdateError('Invalid official SukiSU snapshot')
     validate_ref(suki['branch'])
     if not isinstance(suki['head'], str) or not SHA.fullmatch(suki['head']):
@@ -156,20 +168,35 @@ def validate_snapshot(value: object) -> dict:
                 or type(release['newer_than_baseline']) is not bool):
             raise UpdateError('Invalid official SukiSU release snapshot')
         validate_ref(release['tag'])
+    development = suki.get('development')
+    if development is not None:
+        if (not isinstance(development, dict) or set(development) != {'branch', 'head'}
+                or development.get('branch') != 'dev' or not isinstance(development.get('head'), str)
+                or not SHA.fullmatch(development['head'])):
+            raise UpdateError('Invalid official SukiSU development snapshot')
     if (not isinstance(susfs, dict) or set(susfs) != set(TARGETS)
             or any(not isinstance(commit, str) or not SHA.fullmatch(commit) for commit in susfs.values())):
         raise UpdateError('Invalid official SUSFS snapshot')
-    return {'schema_version': 1,
-            'sukisu': {'branch': suki['branch'], 'head': suki['head'].lower(),
-                       'release': {**release, 'commit': release['commit'].lower()} if release else None},
-            'susfs': {target: susfs[target].lower() for target in TARGETS}}
+    result = {'schema_version': 1,
+              'sukisu': {'branch': suki['branch'], 'head': suki['head'].lower(),
+                         'release': {**release, 'commit': release['commit'].lower()} if release else None},
+              'susfs': {target: susfs[target].lower() for target in TARGETS}}
+    # Existing acknowledgements remain byte-for-byte compatible. Only new
+    # probes carry the additional development observation and marker identity.
+    if 'development' in suki:
+        result['sukisu']['development'] = ({'branch': 'dev', 'head': development['head'].lower()}
+                                           if development else None)
+    return result
 
 
 def head_state(snapshot: dict) -> dict:
     release = snapshot['sukisu']['release']
-    return {'sukisu_branch': snapshot['sukisu']['branch'], 'sukisu_head': snapshot['sukisu']['head'],
-            'sukisu_release': {'tag': release['tag'], 'commit': release['commit']} if release else None,
-            'susfs': snapshot['susfs']}
+    result = {'sukisu_branch': snapshot['sukisu']['branch'], 'sukisu_head': snapshot['sukisu']['head'],
+              'sukisu_release': {'tag': release['tag'], 'commit': release['commit']} if release else None,
+              'susfs': snapshot['susfs']}
+    if 'development' in snapshot['sukisu']:
+        result['sukisu_development'] = snapshot['sukisu']['development']
+    return result
 
 
 def heads_marker(snapshot: dict) -> str:
@@ -212,6 +239,11 @@ def changes(current: dict, snapshot: dict) -> list[dict[str, str]]:
     if release and release['newer_than_baseline'] and release['commit'] != current['sukisu']:
         selected.append({'source': 'SukiSU release', 'ref': release['tag'], 'current': current['sukisu'],
                          'candidate': release['commit'], 'url': f'https://github.com/{SUKISU}/releases/tag/' + quote(release['tag'], safe='')})
+    development = suki.get('development')
+    if development and development['head'] not in (current['sukisu'], suki['head']):
+        selected.append({'source': 'SukiSU development', 'ref': 'dev', 'current': current['sukisu'],
+                         'candidate': development['head'],
+                         'url': f'https://github.com/{SUKISU}/commit/' + development['head']})
     for target in TARGETS:
         if snapshot['susfs'][target] != current['susfs'][target]:
             selected.append({'source': 'SUSFS', 'ref': 'gki-' + target, 'current': current['susfs'][target],

@@ -99,6 +99,50 @@ class OfficialCandidateTests(unittest.TestCase):
         result, values = self.invoke('--check-only')
         self.assertEqual(values['has_updates'], 'true')
 
+    def test_development_updates_are_recorded_and_acknowledged_without_rewriting_legacy_snapshot(self):
+        # Deployed schema-1 records remain valid without a development field.
+        self.assertEqual(self.snapshot, updates.validate_snapshot(copy.deepcopy(self.snapshot)))
+        self.assertNotIn('sukisu_development', updates.head_state(self.snapshot))
+        self.snapshot['sukisu']['head'] = NEW
+        self.invoke('--prepare', fixed=True)
+        legacy = json.loads((self.root / updates.CANDIDATE_PATH).read_text(encoding='utf-8'))
+        self.assertEqual(legacy['acknowledged_heads'], updates.acknowledged(self.root))
+        old_marker = updates.heads_marker(self.snapshot)
+        self.snapshot['sukisu']['development'] = {'branch': 'dev', 'head': 'e' * 40}
+        result, values = self.invoke('--prepare', fixed=True)
+        self.assertEqual((0, 'true'), (result, values['has_updates']))
+        self.assertNotEqual(old_marker, values['heads_marker'])
+        candidate = json.loads((self.root / updates.CANDIDATE_PATH).read_text(encoding='utf-8'))
+        self.assertEqual({'branch': 'dev', 'head': 'e' * 40}, candidate['acknowledged_heads']['sukisu_development'])
+        self.assertEqual('SukiSU development', candidate['changes'][-1]['source'])
+        self.assertEqual('dev', candidate['changes'][-1]['ref'])
+        self.assertEqual('false', self.invoke('--check-only')[1]['has_updates'])
+        self.snapshot['sukisu']['development']['head'] = 'f' * 40
+        self.assertEqual('true', self.invoke('--check-only')[1]['has_updates'])
+
+    def test_development_only_change_is_detected_and_identical_commits_are_not_duplicated(self):
+        self.snapshot['sukisu']['development'] = {'branch': 'dev', 'head': NEW}
+        selected = updates.changes(updates.baseline(self.root), self.snapshot)
+        self.assertEqual(1, len(selected))
+        self.assertEqual(('SukiSU development', 'dev', NEW),
+                         tuple(selected[0][key] for key in ('source', 'ref', 'candidate')))
+        self.snapshot['sukisu']['head'] = NEW
+        self.assertEqual(['SukiSU'], [item['source'] for item in updates.changes(updates.baseline(self.root), self.snapshot)])
+
+    def test_development_snapshot_accepts_only_fixed_official_dev_and_preserves_legacy_ack(self):
+        for value in ({'branch': 'main', 'head': NEW}, {'branch': 'dev', 'head': 'moving-dev'},
+                      {'branch': 'dev', 'head': NEW, 'command': 'unused'}, 'dev', True):
+            invalid = copy.deepcopy(self.snapshot)
+            invalid['sukisu']['development'] = value
+            with self.subTest(value=value), self.assertRaises(updates.UpdateError):
+                updates.validate_snapshot(invalid)
+        self.snapshot['sukisu']['development'] = {'branch': 'dev', 'head': NEW.upper()}
+        normalized = updates.validate_snapshot(self.snapshot)
+        self.assertEqual(NEW, normalized['sukisu']['development']['head'])
+        self.snapshot['sukisu']['development'] = None
+        self.assertIsNone(updates.validate_snapshot(self.snapshot)['sukisu']['development'])
+        self.assertIsNone(updates.head_state(self.snapshot)['sukisu_development'])
+
     def test_older_official_release_is_not_announced_as_an_upgrade(self):
         self.snapshot['sukisu']['release'] = {'tag': 'v4.0.0', 'commit': OLD_RELEASE, 'newer_than_baseline': False}
         _, values = self.invoke('--check-only')
@@ -155,7 +199,8 @@ class OfficialCandidateTests(unittest.TestCase):
     def test_fetch_reads_default_head_release_and_all_five_official_susfs_branches(self):
         current = updates.baseline(self.root)
         with patch.object(updates, 'github_json', side_effect=[{'default_branch': 'main'}, {'tag_name': 'v4.0.0'},
-                                                             {'status': 'behind', 'base_commit': {'sha': BASE}}]) as github:
+                                                             {'status': 'behind', 'base_commit': {'sha': BASE}},
+                                                             {'name': 'dev', 'commit': {'sha': 'e' * 40}}]) as github:
             with patch.object(updates, 'github_commit', side_effect=[NEW, OLD_RELEASE]) as commit:
                 with patch.object(updates, 'gitlab_head', side_effect=lambda target: PINS[target]) as gitlab:
                     snapshot = updates.fetch_snapshot(current)
@@ -166,13 +211,48 @@ class OfficialCandidateTests(unittest.TestCase):
                          '/compare/' + BASE + '...' + OLD_RELEASE + '?per_page=1&page=2')
         self.assertEqual(commit.call_args_list[0].args, (updates.SUKISU, 'main'))
         self.assertEqual(commit.call_args_list[1].args, (updates.SUKISU, 'v4.0.0'))
+        self.assertEqual(snapshot['sukisu']['development'], {'branch': 'dev', 'head': 'e' * 40})
+        self.assertEqual(github.call_args_list[3].args, (updates.SUKISU, '/branches/dev'))
+        self.assertEqual(github.call_args_list[3].kwargs, {'missing': True})
         self.assertEqual([call.args[0] for call in gitlab.call_args_list], list(updates.TARGETS))
 
     def test_no_official_release_is_supported_without_inventing_a_release(self):
-        with patch.object(updates, 'github_json', side_effect=[{'default_branch': 'main'}, None]):
+        with patch.object(updates, 'github_json', side_effect=[{'default_branch': 'main'}, None, None]):
             with patch.object(updates, 'github_commit', return_value=BASE):
                 with patch.object(updates, 'gitlab_head', side_effect=lambda target: PINS[target]):
                     self.assertIsNone(updates.fetch_snapshot(updates.baseline(self.root))['sukisu']['release'])
+
+    def test_missing_development_branch_is_explicit_and_existing_default_dev_is_reused(self):
+        for branch in ('main', 'dev'):
+            reader = MagicMock(side_effect=[{'default_branch': branch}, None, None])
+            with self.subTest(branch=branch), patch.object(updates, 'github_json', reader), \
+                    patch.object(updates, 'github_commit', return_value=BASE) as commit, \
+                    patch.object(updates, 'gitlab_head', side_effect=lambda target: PINS[target]):
+                found = updates.fetch_snapshot(updates.baseline(self.root))
+            expected = {'branch': 'dev', 'head': BASE} if branch == 'dev' else None
+            self.assertEqual(expected, found['sukisu']['development'])
+            self.assertEqual(2 if branch == 'dev' else 3, reader.call_count)
+            commit.assert_called_once_with(updates.SUKISU, branch)
+
+    def test_invalid_or_unavailable_development_probe_never_announces_no_updates(self):
+        for document in ({'name': 'main', 'commit': {'sha': NEW}}, {'name': 'dev', 'commit': {'sha': 'dev'}},
+                         {'name': 'dev'}, []):
+            with self.subTest(document=document), patch.object(updates, 'github_json',
+                    side_effect=[{'default_branch': 'main'}, None, document]), \
+                    patch.object(updates, 'github_commit', return_value=BASE):
+                with self.assertRaisesRegex(updates.UpdateError, 'development branch'):
+                    updates.fetch_snapshot(updates.baseline(self.root))
+        def unavailable(repository, resource='', **keywords):
+            if not resource:
+                return {'default_branch': 'main'}
+            if resource == '/releases/latest':
+                return None
+            self.assertEqual('/branches/dev', resource)
+            raise updates.SourceResolutionError('Official GitHub source lookup failed')
+        with patch.object(updates, 'github_json', side_effect=unavailable), \
+                patch.object(updates, 'github_commit', return_value=BASE), patch.object(updates.time, 'sleep'):
+            with self.assertRaisesRegex(updates.UpdateError, 'development branch.*3 attempts'):
+                updates.fetch_snapshot(updates.baseline(self.root))
 
     def test_release_ancestry_avoids_large_first_page_diff_and_requires_exact_baseline(self):
         def github(repository, resource='', **kwargs):
@@ -180,6 +260,8 @@ class OfficialCandidateTests(unittest.TestCase):
                 return {'default_branch': 'main'}
             if resource == '/releases/latest':
                 return {'tag_name': 'v4.2.1-r2'}
+            if resource == '/branches/dev':
+                return None
             if resource == '/compare/' + BASE + '...' + NEW + '?per_page=1&page=2':
                 return {'status': 'ahead', 'base_commit': {'sha': BASE}, 'total_commits': 30}
             # The unpaginated r2 response is 1.4 MB and is correctly rejected

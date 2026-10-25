@@ -201,6 +201,35 @@ class MergeTests(unittest.TestCase):
             self.api.refresh()
             with self.subTest(change=change): self.refused()
 
+    def test_development_candidates_can_merge_with_exact_extended_acknowledgement(self):
+        for development in (None, {'branch': 'dev', 'head': '9' * 40}):
+            self.api = FakeAPI()
+            candidate = self.api.documents[CANDIDATES, HEAD]
+            candidate['sources']['sukisu']['development'] = development
+            candidate['acknowledged_heads'] = merge.head_state(candidate['sources'])
+            candidate['changes'] = merge.changes(candidate['baseline'], candidate['sources'])
+            self.api.refresh()
+            with self.subTest(development=development):
+                self.assertTrue(self.sync()['merged'])
+            self.assertEqual([('/pulls/1/merge', {'sha': HEAD, 'merge_method': 'squash'})], self.api.mutations)
+
+    def test_development_field_cannot_hide_wrong_branch_unpinned_source_or_missing_acknowledgement(self):
+        for change in ('branch', 'head', 'extra', 'ack', 'changes'):
+            self.api = FakeAPI()
+            candidate = self.api.documents[CANDIDATES, HEAD]
+            candidate['sources']['sukisu']['development'] = {'branch': 'dev', 'head': '9' * 40}
+            candidate['acknowledged_heads'] = copy.deepcopy(merge.head_state(candidate['sources']))
+            candidate['changes'] = merge.changes(candidate['baseline'], candidate['sources'])
+            development = candidate['sources']['sukisu']['development']
+            if change == 'branch': development['branch'] = 'arbitrary-feature'
+            if change == 'head': development['head'] = 'dev'
+            if change == 'extra': development['command'] = 'never execute'
+            if change == 'ack': candidate['acknowledged_heads'].pop('sukisu_development')
+            if change == 'changes': candidate['changes'] = [item for item in candidate['changes']
+                                                            if item['source'] != 'SukiSU development']
+            self.api.refresh()
+            with self.subTest(change=change): self.refused()
+
     def test_changed_head_or_actual_base_during_validation_blocks_merge(self):
         for drift in ('pr', 'base', 'head'):
             self.api = FakeAPI()

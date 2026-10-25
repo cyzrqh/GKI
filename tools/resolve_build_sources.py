@@ -112,6 +112,54 @@ def default_branch(repository: str) -> str:
     return validate_ref(branch)
 
 
+def sukisu_latest_selection(repository: str, *, branch: str | None = None,
+                            main_commit: str | None = None) -> tuple[str, str]:
+    """Choose the newer official main/dev history, without guessing a version.
+
+    SukiSU derives its native versionCode from the complete ancestor count.
+    The fixed-SHA comparison's ahead-minus-behind count is exactly the change
+    in that count, including when the two official branches have diverged.
+    Ties keep the default branch. Version strings and movable CI tags are not
+    used to select a source; the selected source supplies the APK's own version.
+    """
+    if repository != REPOSITORIES['SukiSU']:
+        raise SourceResolutionError('Latest main/dev selection requires the official SukiSU repository')
+    branch = default_branch(repository) if branch is None else validate_ref(branch)
+    main_commit = github_commit(repository, branch) if main_commit is None else main_commit
+    if not isinstance(main_commit, str) or not SHA.fullmatch(main_commit):
+        raise SourceResolutionError('Official main branch did not return a full commit SHA')
+    main_commit = main_commit.lower()
+    if branch == 'dev':
+        return main_commit, branch
+    development = github_json(repository, '/branches/dev', missing=True)
+    if development is None:
+        return main_commit, branch
+    commit_document = development.get('commit')
+    dev_commit = commit_document.get('sha') if isinstance(commit_document, dict) else None
+    if (development.get('name') != 'dev' or not isinstance(dev_commit, str)
+            or not SHA.fullmatch(dev_commit)):
+        raise SourceResolutionError('Official dev branch identity or full commit SHA is invalid')
+    dev_commit = dev_commit.lower()
+    if dev_commit == main_commit:
+        return main_commit, branch
+    path = '/compare/' + main_commit + '...' + dev_commit
+    # Page 1 embeds every changed file and patch even with per_page=1. Page 2
+    # retains the comparison identity and counts, without a potentially huge diff.
+    comparison = github_json(repository, path + '?per_page=1&page=2')
+    base = comparison.get('base_commit')
+    ahead, behind, total = (comparison.get(key) for key in ('ahead_by', 'behind_by', 'total_commits'))
+    status = comparison.get('status')
+    if (comparison.get('url') != 'https://api.github.com/repos/' + repository + path
+            or not isinstance(base, dict) or base.get('sha') != main_commit
+            or any(type(count) is not int or not 0 <= count <= 2147483647 for count in (ahead, behind, total))
+            or total != ahead
+            or not ((status == 'ahead' and ahead > 0 and behind == 0)
+                    or (status == 'behind' and ahead == 0 and behind > 0)
+                    or (status == 'diverged' and ahead > 0 and behind > 0))):
+        raise SourceResolutionError('Official main/dev comparison identity or history counts are invalid')
+    return (dev_commit, 'dev') if ahead > behind else (main_commit, branch)
+
+
 def official_selection(repository: str, tier: str, custom_ref: str) -> tuple[str, str]:
     if tier == 'Custom(自定义)':
         if not custom_ref:
@@ -142,6 +190,8 @@ def official_selection(repository: str, tier: str, custom_ref: str) -> tuple[str
             raise SourceResolutionError('Official Stable has no published release; select Dev, Latest, or an explicit Custom ref')
         validate_ref(tag)
         return github_commit(repository, tag), tag
+    if repository == REPOSITORIES['SukiSU'] and tier == 'Latest(最新)':
+        return sukisu_latest_selection(repository)
     branch = default_branch(repository)
     if tier == 'Dev(开发)':
         development = github_json(repository, '/branches/dev', missing=True)

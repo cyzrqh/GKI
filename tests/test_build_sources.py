@@ -79,16 +79,82 @@ class BuildSourceTests(unittest.TestCase):
         self.assertEqual([call.args[1] for call in api.call_args_list],
                          ['/releases/latest', '/commits/v4.2.1-r1'])
 
-    def test_sukisu_latest_alias_tracks_default_branch_without_dev_lookup(self):
+    def test_sukisu_latest_alias_uses_default_branch_when_dev_is_absent(self):
         for branch in ('main', 'next'):
             with self.subTest(branch=branch), patch.object(sources, 'github_json') as api:
-                api.side_effect = [{'default_branch': branch}, {'sha': NEW_KSU}]
+                api.side_effect = [{'default_branch': branch}, {'sha': NEW_KSU}, None]
                 result = self.resolve(tier='SukiSU 最新版')
             self.assertEqual(result['ksu_ref'], NEW_KSU)
             self.assertEqual(result['ksu_source_branch'], branch)
             self.assertEqual(result['effective_ksu_branch'], 'Latest(最新)')
             self.assertEqual(api.call_args_list[1].args[1], '/commits/' + branch)
-            self.assertEqual(api.call_count, 2)
+            self.assertEqual(api.call_args_list[2].args[1], '/branches/dev')
+            self.assertEqual(api.call_args_list[2].kwargs, {'missing': True})
+            self.assertEqual(api.call_count, 3)
+
+    def comparison(self, *, ahead=1, behind=0, status='ahead'):
+        return {'url': f'https://api.github.com/repos/{REPO}/compare/{KSU}...{NEW_KSU}',
+                'base_commit': {'sha': KSU}, 'ahead_by': ahead, 'behind_by': behind,
+                'total_commits': ahead, 'status': status}
+
+    def test_sukisu_latest_selects_higher_native_history_count_from_main_or_dev(self):
+        for ahead, behind, status, expected, branch in (
+                (1, 0, 'ahead', NEW_KSU, 'dev'),
+                (0, 1, 'behind', KSU, 'main'),
+                (4, 2, 'diverged', NEW_KSU, 'dev'),
+                (2, 4, 'diverged', KSU, 'main'),
+                (2, 2, 'diverged', KSU, 'main')):
+            for tier in ('Latest(最新)', 'SukiSU 最新版'):
+                with self.subTest(ahead=ahead, behind=behind, tier=tier), patch.object(sources, 'github_json') as api:
+                    api.side_effect = [{'default_branch': 'main'}, {'sha': KSU},
+                                       {'name': 'dev', 'commit': {'sha': NEW_KSU.upper()}},
+                                       self.comparison(ahead=ahead, behind=behind, status=status)]
+                    result = self.resolve(tier=tier)
+                self.assertEqual(expected, result['ksu_ref'])
+                self.assertEqual(branch, result['ksu_source_branch'])
+                self.assertEqual('Latest(最新)', result['effective_ksu_branch'])
+                self.assertEqual(f'/compare/{KSU}...{NEW_KSU}?per_page=1&page=2',
+                                 api.call_args_list[3].args[1])
+                self.assertFalse(any('/actions/' in str(call) or '/releases/' in str(call)
+                                     for call in api.call_args_list))
+
+    def test_sukisu_latest_same_head_or_default_dev_needs_no_comparison(self):
+        for default, responses, count in (
+                ('main', [{'default_branch': 'main'}, {'sha': KSU},
+                          {'name': 'dev', 'commit': {'sha': KSU}}], 3),
+                ('dev', [{'default_branch': 'dev'}, {'sha': KSU}], 2)):
+            with self.subTest(default=default), patch.object(sources, 'github_json', side_effect=responses) as api:
+                result = self.resolve(tier='Latest(最新)')
+            self.assertEqual(KSU, result['ksu_ref'])
+            self.assertEqual(default, result['ksu_source_branch'])
+            self.assertEqual(count, api.call_count)
+
+    def test_sukisu_latest_rejects_wrong_branch_invalid_commit_or_comparison(self):
+        for development in ({'name': 'feature', 'commit': {'sha': NEW_KSU}},
+                            {'name': 'dev', 'commit': {'sha': 'main'}},
+                            {'name': 'dev'}, {'commit': {'sha': NEW_KSU}}):
+            with self.subTest(development=development), patch.object(sources, 'github_json') as api:
+                api.side_effect = [{'default_branch': 'main'}, {'sha': KSU}, development]
+                with self.assertRaisesRegex(sources.SourceResolutionError, 'dev branch'):
+                    self.resolve(tier='SukiSU 最新版')
+        for changes in ({'url': f'https://api.github.com/repos/{REPO}/compare/{KSU}...' + 'e' * 40},
+                        {'base_commit': {'sha': NEW_KSU}}, {'ahead_by': True}, {'behind_by': -1},
+                        {'ahead_by': '1'}, {'total_commits': 2}, {'status': 'behind'}, {'status': 'identical'}):
+            comparison = {**self.comparison(), **changes}
+            with self.subTest(changes=changes), patch.object(sources, 'github_json') as api:
+                api.side_effect = [{'default_branch': 'main'}, {'sha': KSU},
+                                   {'name': 'dev', 'commit': {'sha': NEW_KSU}}, comparison]
+                with self.assertRaisesRegex(sources.SourceResolutionError, 'comparison'):
+                    self.resolve(tier='Latest(最新)')
+
+    def test_sukisu_latest_does_not_silently_fall_back_on_lookup_failure(self):
+        for responses in (
+                [{'default_branch': 'main'}, {'sha': KSU}, sources.SourceResolutionError('dev lookup failed')],
+                [{'default_branch': 'main'}, {'sha': KSU}, {'name': 'dev', 'commit': {'sha': NEW_KSU}},
+                 sources.SourceResolutionError('comparison failed')]):
+            with self.subTest(responses=responses), patch.object(sources, 'github_json', side_effect=responses):
+                with self.assertRaises(sources.SourceResolutionError):
+                    self.resolve(tier='Latest(最新)')
 
     def test_sukisu_aliases_cannot_silently_select_a_different_variant(self):
         for variant in ('Official', 'BakaSU', 'None'):
@@ -100,7 +166,7 @@ class BuildSourceTests(unittest.TestCase):
 
     def test_cli_accepts_latest_alias_but_shares_only_canonical_tier(self):
         with patch.object(sources, 'github_json') as api, redirect_stdout(io.StringIO()):
-            api.side_effect = [{'default_branch': 'main'}, {'sha': NEW_KSU}]
+            api.side_effect = [{'default_branch': 'main'}, {'sha': NEW_KSU}, None]
             status = sources.main(['--root', str(self.root), '--variant', 'SukiSU',
                                    '--tier', 'SukiSU 最新版', '--susfs', 'true'])
         self.assertEqual(status, 0)
@@ -120,7 +186,8 @@ class BuildSourceTests(unittest.TestCase):
         self.profile.unlink()
         for variant in sources.REPOSITORIES:
             with self.subTest(variant=variant), patch.object(sources, 'github_json') as api:
-                api.side_effect = [{'default_branch': 'next'}, {'sha': NEW_KSU.upper()}]
+                responses = [{'default_branch': 'next'}, {'sha': NEW_KSU.upper()}]
+                api.side_effect = responses + ([None] if variant == 'SukiSU' else [])
                 result = self.resolve(variant=variant, tier='Latest(最新)')
                 self.assertEqual(result['ksu_ref'], NEW_KSU)
                 self.assertEqual(result['ksu_source_branch'], 'next')

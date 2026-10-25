@@ -1,9 +1,19 @@
 """Build, update, release, and standalone history-cleanup workflow jobs."""
 
 
+def successful_cleanup_sweep_step():
+    return {
+        'name': '自动删除已成功的清理记录',
+        'if': 'always() && !cancelled()',
+        'continue-on-error': True, 'timeout-minutes': 2,
+        'env': {'GH_TOKEN': '${{ github.token }}'},
+        'run': 'python3 tools/remove_successful_cleanup_runs.py --repo "$GITHUB_REPOSITORY" --execute',
+    }
+
+
 def cleanup_history_job():
     return {
-        'name': '清理历史记录（保留5条）',
+        'name': '清理历史记录（保留2条成功记录）',
         'if': "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
         'permissions': {'contents': 'read', 'actions': 'write'},
@@ -15,7 +25,7 @@ def cleanup_history_job():
              'env': {'GH_TOKEN': '${{ github.token }}'},
              'run': '''python3 tools/cleanup_workflow_runs.py \\
   --repo "$GITHUB_REPOSITORY" --workflow all \\
-  --keep 5 --execute --summary "$GITHUB_STEP_SUMMARY"
+  --keep 2 --exclude-workflow cleanup-build-history.yml --execute --summary "$GITHUB_STEP_SUMMARY"
 '''},
         ],
     }
@@ -23,8 +33,8 @@ def cleanup_history_job():
 
 def cleanup_history_workflow():
     return {
-        'name': '清理历史记录（保留5条）',
-        'run-name': '清理历史记录（保留5条）',
+        'name': '清理历史记录（保留2条成功记录）',
+        'run-name': '清理历史记录（保留2条成功记录）',
         'on': {'workflow_dispatch': {}},
         'permissions': {'contents': 'read'},
         'jobs': {'cleanup-history': cleanup_history_job()},
@@ -36,7 +46,7 @@ def updater_job():
         'name': '检查并自动同步官方更新',
         'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)",
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
-        'permissions': {'contents': 'read', 'pull-requests': 'write'},
+        'permissions': {'contents': 'read', 'pull-requests': 'write', 'actions': 'write'},
         'concurrency': {'group': '${{ github.repository }}-official-sync', 'cancel-in-progress': False},
         'steps': [
             {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
@@ -161,6 +171,7 @@ if [ "$OFFICIAL_RESULT" != success ] || [ "$CATALOG_RESULT" != success ]; then
   printf '\\n部分官方检查未完成：SukiSU/SUSFS=%s，Android GKI=%s。仅同步成功检查且通过校验的数据，失败部分须重试；不能确认全部官方源是否更新。\\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"
 fi
 '''},
+            successful_cleanup_sweep_step(),
             {'name': '提示未完成的官方检查',
              'if': "always() && !cancelled() && (steps.official.outcome == 'failure' || steps.catalog.outcome == 'failure')",
              'run': '''echo '::error::部分官方源检查失败；请查看失败步骤并重试。仅成功检查且通过校验的数据可能已自动同步。'

@@ -9,7 +9,7 @@ import re
 from pathlib import Path
 
 import yaml
-from workflow_jobs import updater_job, release_job, cleanup_history_workflow
+from workflow_jobs import updater_job, release_job, cleanup_history_workflow, successful_cleanup_sweep_step
 from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key,
                               manager_lkm_job, source_cache_restore, source_backup_restore, source_backup_recache)
 
@@ -623,7 +623,7 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
     prepare = {
         'name': '选择内核版本与补丁月份', 'runs-on': 'ubuntu-24.04',
         'if': PREPARE_IF,
-        'permissions': {'contents': 'write'},
+        'permissions': {'contents': 'write', 'actions': 'write'},
         'outputs': {'matrix': '${{ steps.matrix.outputs.matrix }}', 'count': '${{ steps.matrix.outputs.count }}',
                     'full_catalog': '${{ steps.matrix.outputs.full_catalog }}',
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
@@ -730,6 +730,7 @@ PY
              'if': "inputs.kernelsu_variant == 'SukiSU' || inputs.operation == '仅编译 SukiSU 安装包'",
              'with': {'path': SOURCE_BUNDLE_PATH, 'key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
                       'lookup-only': True, 'fail-on-cache-miss': False}},
+            successful_cleanup_sweep_step(),
         ],
     }
     workflow = {

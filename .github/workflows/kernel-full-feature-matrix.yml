@@ -165,6 +165,7 @@ jobs:
     if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译 SukiSU 安装包')
     permissions:
       contents: write
+      actions: write
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       count: ${{ steps.matrix.outputs.count }}
@@ -316,6 +317,13 @@ jobs:
         key: ${{ steps.source-snapshot.outputs.source_cache_key }}
         lookup-only: true
         fail-on-cache-miss: false
+    - name: 自动删除已成功的清理记录
+      if: always() && !cancelled()
+      continue-on-error: true
+      timeout-minutes: 2
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 tools/remove_successful_cleanup_runs.py --repo "$GITHUB_REPOSITORY" --execute
   build-sukisu-lkm:
     name: SukiSU 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
@@ -7057,6 +7065,7 @@ jobs:
     permissions:
       contents: read
       pull-requests: write
+      actions: write
     concurrency:
       group: ${{ github.repository }}-official-sync
       cancel-in-progress: false
@@ -7216,6 +7225,13 @@ jobs:
         if [ "$OFFICIAL_RESULT" != success ] || [ "$CATALOG_RESULT" != success ]; then
           printf '\n部分官方检查未完成：SukiSU/SUSFS=%s，Android GKI=%s。仅同步成功检查且通过校验的数据，失败部分须重试；不能确认全部官方源是否更新。\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"
         fi
+    - name: 自动删除已成功的清理记录
+      if: always() && !cancelled()
+      continue-on-error: true
+      timeout-minutes: 2
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 tools/remove_successful_cleanup_runs.py --repo "$GITHUB_REPOSITORY" --execute
     - name: 提示未完成的官方检查
       if: always() && !cancelled() && (steps.official.outcome == 'failure' || steps.catalog.outcome == 'failure')
       run: |

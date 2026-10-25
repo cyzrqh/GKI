@@ -82,7 +82,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_history_cleanup_requires_explicit_default_branch_manual_operation(self):
         standalone = generator.cleanup_history_workflow()
-        self.assertEqual(standalone['name'], '清理历史记录（保留5条）')
+        self.assertEqual(standalone['name'], '清理历史记录（保留2条成功记录）')
         self.assertEqual(standalone['run-name'], standalone['name'])
         self.assertEqual(standalone['on'], {'workflow_dispatch': {}})
         self.assertEqual(set(standalone['jobs']), {'cleanup-history'})
@@ -97,17 +97,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
         self.assertIs(checkout['with']['persist-credentials'], False)
         self.assertEqual(execute['env'], {'GH_TOKEN': '${{ github.token }}'})
-        self.assertIn('--keep 5 --execute', execute['run'])
+        self.assertIn('--keep 2 --exclude-workflow cleanup-build-history.yml --execute', execute['run'])
         self.assertIn('--workflow all', execute['run'])
         self.assertIn('--summary "$GITHUB_STEP_SUMMARY"', execute['run'])
         self.assertNotIn('schedule', cleanup['if'])
         self.assertNotIn('upload-artifact', str(cleanup))
 
+    def test_build_and_sync_remove_successful_cleanup_records_without_another_workflow(self):
+        for name in ('prepare-matrix', 'check-upstream'):
+            with self.subTest(job=name):
+                job = self.workflow['jobs'][name]
+                steps = [step for step in job['steps']
+                         if 'remove_successful_cleanup_runs.py' in step.get('run', '')]
+                self.assertEqual(1, len(steps))
+                self.assertIs(steps[0]['continue-on-error'], True)
+                self.assertEqual('always() && !cancelled()', steps[0]['if'])
+                self.assertIn('--execute', steps[0]['run'])
+                self.assertEqual({'GH_TOKEN': '${{ github.token }}'}, steps[0]['env'])
+                self.assertEqual('write', job['permissions']['actions'])
+        self.assertNotIn('workflow_run', self.workflow['on'])
+
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.workflow['jobs']['check-upstream']
         self.assertEqual(job['if'], "github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
         self.assertNotIn('schedule', self.workflow['run-name'])
-        self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'write'})
+        self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'write', 'actions': 'write'})
         checkout = job['steps'][0]
         self.assertIs(checkout['with']['persist-credentials'], False)
         self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
@@ -450,7 +464,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_snapshot_backup_survives_cache_misses_and_is_deleted_only_after_public_files_match(self):
         prepare = self.workflow['jobs']['prepare-matrix']
-        self.assertEqual(prepare['permissions'], {'contents': 'write'})
+        self.assertEqual(prepare['permissions'], {'contents': 'write', 'actions': 'write'})
         backup = next(step for step in prepare['steps'] if step.get('id') == 'source-backup')
         save = next(step for step in prepare['steps'] if step['name'] == '保存本次不可变源码缓存')
         self.assertLess(prepare['steps'].index(backup), prepare['steps'].index(save))

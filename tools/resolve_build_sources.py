@@ -19,7 +19,12 @@ REPOSITORIES = {
     "SukiSU": "SukiSU-Ultra/SukiSU-Ultra",
     "BakaSU": "Baka-SU/BakaSU",
 }
-TIER_ALIASES = {"SukiSU 正式版": "Stable(标准)", "SukiSU 最新版": "Latest(最新)"}
+TIER_ALIASES = {
+    "正式版": "Stable(标准)", "最新版": "Latest(最新)",
+    # Preserve older workflow_dispatch payloads without exposing these labels
+    # in the simplified shared manager menu.
+    "SukiSU 正式版": "Stable(标准)", "SukiSU 最新版": "Latest(最新)",
+}
 TIERS = frozenset(("Stable(标准)", "Dev(开发)", "Latest(最新)", "Custom(自定义)", *TIER_ALIASES))
 
 
@@ -187,7 +192,9 @@ def official_selection(repository: str, tier: str, custom_ref: str) -> tuple[str
         release = github_json(repository, '/releases/latest', missing=True)
         tag = release.get('tag_name') if release else None
         if not isinstance(tag, str):
-            raise SourceResolutionError('Official Stable has no published release; select Dev, Latest, or an explicit Custom ref')
+            raise SourceResolutionError('Official Stable has no published release; 官方尚未发布正式版，请选择“最新版”。候选版不会作为正式版。')
+        if release.get('draft') is not False or release.get('prerelease') is not False:
+            raise SourceResolutionError('Official Stable requires a published non-prerelease release; 正式版不接受草稿或预发行版。')
         validate_ref(tag)
         return github_commit(repository, tag), tag
     if repository == REPOSITORIES['SukiSU'] and tier == 'Latest(最新)':
@@ -214,7 +221,7 @@ def resolve_sources(root: Path, variant: str, tier: str, custom_ref: str = "", s
     if tier not in TIERS:
         raise SourceResolutionError("Unknown KernelSU tier")
     if tier in TIER_ALIASES:
-        if variant != 'SukiSU':
+        if tier.startswith('SukiSU ') and variant != 'SukiSU':
             raise SourceResolutionError('SukiSU release options require the SukiSU variant')
         tier = TIER_ALIASES[tier]
     validate_custom_ref(custom_ref)

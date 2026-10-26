@@ -1,5 +1,6 @@
 import copy
 from contextlib import redirect_stderr, redirect_stdout
+import hashlib
 import io
 import json
 import os
@@ -41,6 +42,12 @@ class OfficialCandidateTests(unittest.TestCase):
                          'sukisu': {'branch': 'main', 'head': BASE, 'release': {
                              'tag': 'v4.2.1', 'commit': BASE, 'newer_than_baseline': False}},
                          'susfs': copy.deepcopy(PINS)}
+        # Existing SukiSU/SUSFS transport tests stay independent of the new
+        # official BakaSU probe, which has its own complete API tests below.
+        baka = patch.object(updates, 'fetch_bakasu_snapshot', return_value={
+            'branch': 'main', 'head': '8' * 40, 'release': None, 'prerelease': None})
+        baka.start()
+        self.addCleanup(baka.stop)
 
     def invoke(self, mode, snapshot=None, fixed=False):
         snapshot = snapshot or self.snapshot
@@ -128,6 +135,60 @@ class OfficialCandidateTests(unittest.TestCase):
                          tuple(selected[0][key] for key in ('source', 'ref', 'candidate')))
         self.snapshot['sukisu']['head'] = NEW
         self.assertEqual(['SukiSU'], [item['source'] for item in updates.changes(updates.baseline(self.root), self.snapshot)])
+
+    def test_optional_baka_snapshot_is_acknowledged_once_and_tracks_head_formal_and_prerelease(self):
+        baseline = updates.baseline(self.root)
+        self.snapshot['bakasu'] = {'branch': 'main', 'head': '8' * 40, 'release': None,
+                                   'prerelease': {'tag': 'v4.2.0-rc3', 'commit': '9' * 40}}
+        result, values = self.invoke('--prepare', fixed=True)
+        self.assertEqual((0, 'true'), (result, values['has_updates']))
+        document = json.loads((self.root / updates.CANDIDATE_PATH).read_text())
+        self.assertEqual(baseline, document['baseline'])
+        self.assertEqual(['BakaSU', 'BakaSU prerelease'], [item['source'] for item in document['changes']])
+        self.assertIsNone(document['sources']['bakasu']['release'])
+        self.assertEqual(document['sources']['bakasu'], document['acknowledged_heads']['bakasu'])
+        self.assertEqual('false', self.invoke('--check-only')[1]['has_updates'])
+        for field, value in (('head', '7' * 40),
+                             ('release', {'tag': 'v4.2.0', 'commit': '6' * 40}),
+                             ('prerelease', {'tag': 'v4.2.1-rc1', 'commit': '5' * 40})):
+            self.snapshot['bakasu'][field] = value
+            with self.subTest(field=field):
+                self.assertEqual('true', self.invoke('--prepare', fixed=True)[1]['has_updates'])
+                self.assertEqual('false', self.invoke('--check-only')[1]['has_updates'])
+
+    def test_legacy_marker_and_ack_remain_exact_without_optional_baka(self):
+        state = {'sukisu_branch': 'main', 'sukisu_head': BASE,
+                 'sukisu_release': {'tag': 'v4.2.1', 'commit': BASE}, 'susfs': PINS}
+        expected = '<!-- gki-official-heads:sha256=' + hashlib.sha256(
+            json.dumps(state, sort_keys=True, separators=(',', ':')).encode()).hexdigest() + ' -->'
+        self.assertEqual(state, updates.head_state(self.snapshot))
+        self.assertEqual(expected, updates.heads_marker(self.snapshot))
+        self.snapshot['sukisu']['head'] = NEW
+        self.invoke('--prepare', fixed=True)
+        previous = updates.acknowledged(self.root)
+        self.assertNotIn('bakasu', previous)
+        self.assertEqual('false', self.invoke('--check-only')[1]['has_updates'])
+        self.snapshot['bakasu'] = {'branch': 'main', 'head': '8' * 40, 'release': None, 'prerelease': None}
+        self.assertEqual('true', self.invoke('--prepare', fixed=True)[1]['has_updates'])
+        self.assertEqual('false', self.invoke('--check-only')[1]['has_updates'])
+
+    def test_baka_snapshot_rejects_unpinned_unknown_or_injected_fields(self):
+        valid = {'branch': 'main', 'head': '8' * 40, 'release': None, 'prerelease': None}
+        for value in (None, True, {}, {**valid, 'head': 'moving-main'}, {**valid, 'branch': '../main'},
+                      {**valid, 'repository': 'other/repo'}, {**valid, 'release': {'tag': 'v4', 'commit': 'main'}},
+                      {**valid, 'prerelease': {'tag': 'v4-rc', 'commit': '9' * 40, 'command': 'ignored'}}):
+            source = {**self.snapshot, 'bakasu': value}
+            with self.subTest(value=value), self.assertRaises((updates.UpdateError, updates.SourceResolutionError)):
+                updates.validate_snapshot(source)
+
+    def test_baka_marker_tracks_tag_identity_even_when_commit_is_unchanged(self):
+        self.snapshot['bakasu'] = {'branch': 'main', 'head': '8' * 40, 'release': None,
+                                   'prerelease': {'tag': 'v4-rc1', 'commit': '9' * 40}}
+        marker = updates.heads_marker(self.snapshot)
+        self.snapshot['bakasu']['head'] = ('8' * 40).upper()
+        self.assertEqual(marker, updates.heads_marker(self.snapshot))
+        self.snapshot['bakasu']['prerelease']['tag'] = 'v4-rc2'
+        self.assertNotEqual(marker, updates.heads_marker(self.snapshot))
 
     def test_development_snapshot_accepts_only_fixed_official_dev_and_preserves_legacy_ack(self):
         for value in ({'branch': 'main', 'head': NEW}, {'branch': 'dev', 'head': 'moving-dev'},
@@ -319,6 +380,129 @@ class OfficialCandidateTests(unittest.TestCase):
                 self.assertEqual(updates.main(arguments), 1)
         self.assertIn('JSON or snapshot metadata is invalid', output.getvalue())
         self.assertNotIn('secret-response-token', output.getvalue())
+
+
+class BakaOfficialProbeTests(unittest.TestCase):
+    @staticmethod
+    def release(number=1, *, tag='v4.2.0-rc3', prerelease=True, draft=False,
+                published='2026-10-20T12:00:00Z'):
+        return {'id': number, 'tag_name': tag, 'draft': draft,
+                'prerelease': prerelease, 'published_at': published}
+
+    def fetch(self, *, formal=None, releases=None, commits=None):
+        releases = [self.release()] if releases is None else releases
+        def repository(repo, resource='', **keywords):
+            self.assertEqual(updates.BAKASU, repo)
+            if not resource:
+                return {'full_name': updates.BAKASU, 'default_branch': 'main'}
+            self.assertEqual('/releases/latest', resource)
+            self.assertTrue(keywords['missing'])
+            return formal
+        with patch.object(updates, 'github_json', side_effect=repository), \
+                patch.object(updates, 'github_commit', side_effect=lambda repo, ref: (commits or {}).get(ref, NEW)) as lookup, \
+                patch.object(updates, 'bakasu_release_page', return_value=releases) as pages:
+            result = updates.fetch_bakasu_snapshot()
+        return result, lookup, pages
+
+    def test_tracks_real_default_head_and_rc_without_inventing_formal_release(self):
+        result, lookup, pages = self.fetch(commits={'main': BASE, 'v4.2.0-rc3': NEW})
+        self.assertEqual({'branch': 'main', 'head': BASE, 'release': None,
+                          'prerelease': {'tag': 'v4.2.0-rc3', 'commit': NEW}}, result)
+        self.assertEqual([(updates.BAKASU, 'main'), (updates.BAKASU, 'v4.2.0-rc3')],
+                         [call.args for call in lookup.call_args_list])
+        pages.assert_called_once_with(1)
+
+    def test_formal_and_most_recent_published_prerelease_are_kept_distinct(self):
+        releases = [self.release(1, tag='v4-rc-old', published='2026-10-01T00:00:00Z'),
+                    self.release(2, tag='draft-new', draft=True, published=None),
+                    self.release(3, tag='v4-rc-new', published='2026-10-22T00:00:00Z'),
+                    self.release(4, tag='v4', prerelease=False, published='2026-10-23T00:00:00Z')]
+        result, _, _ = self.fetch(formal={'tag_name': 'v4', 'draft': False, 'prerelease': False},
+                                  releases=releases, commits={'main': BASE, 'v4': NEW, 'v4-rc-new': OLD_RELEASE})
+        self.assertEqual({'tag': 'v4', 'commit': NEW}, result['release'])
+        self.assertEqual({'tag': 'v4-rc-new', 'commit': OLD_RELEASE}, result['prerelease'])
+        empty, _, _ = self.fetch(releases=[])
+        self.assertIsNone(empty['prerelease'])
+
+    def test_release_flags_dates_and_resolved_commits_are_strict(self):
+        for formal in ({'tag_name': 'v4-rc', 'draft': False, 'prerelease': True},
+                       {'tag_name': 'v4', 'draft': False, 'prerelease': 'false'},
+                       {'tag_name': 'v4', 'draft': True, 'prerelease': False}):
+            with self.subTest(formal=formal), self.assertRaises(updates.UpdateError):
+                self.fetch(formal=formal)
+        for changes in ({'draft': 'false'}, {'prerelease': 1}, {'published_at': None},
+                        {'published_at': '2026-10-20T12:00:00'}, {'id': True}, {'tag_name': '../v4'}):
+            entry = self.release()
+            entry.update(changes)
+            with self.subTest(changes=changes), self.assertRaises((updates.UpdateError, updates.SourceResolutionError)):
+                self.fetch(releases=[entry])
+        for ref in ('main', 'v4.2.0-rc3'):
+            with self.subTest(ref=ref), self.assertRaises(updates.UpdateError):
+                self.fetch(commits={ref: 'moving-ref'})
+
+    def test_pagination_is_bounded_and_duplicate_listing_fails_closed(self):
+        with patch.object(updates, 'RELEASE_PAGE_SIZE', 1), patch.object(updates, 'MAX_RELEASE_PAGES', 2), \
+                patch.object(updates, 'github_json', side_effect=[{'default_branch': 'main'}, None]), \
+                patch.object(updates, 'github_commit', return_value=BASE), \
+                patch.object(updates, 'bakasu_release_page', side_effect=[
+                    [self.release(1, tag='v1')], [self.release(2, tag='v2')]]) as pages:
+            with self.assertRaisesRegex(updates.UpdateError, 'pagination did not finish'):
+                updates.fetch_bakasu_snapshot()
+            self.assertEqual([1, 2], [call.args[0] for call in pages.call_args_list])
+        with self.assertRaisesRegex(updates.UpdateError, 'duplicate'):
+            self.fetch(releases=[self.release(), self.release()])
+
+    def response(self, document=None):
+        url = f'https://api.github.com/repos/{updates.BAKASU}/releases?per_page={updates.RELEASE_PAGE_SIZE}&page=1'
+        response = MagicMock()
+        response.__enter__.return_value = response
+        response.status = 200
+        response.geturl.return_value = url
+        response.read.return_value = json.dumps([self.release()] if document is None else document).encode()
+        opener = MagicMock()
+        opener.open.return_value = response
+        return response, opener
+
+    def test_release_transport_is_fixed_host_get_bounded_and_does_not_follow_redirects(self):
+        response, opener = self.response()
+        with patch.dict(os.environ, {'GH_TOKEN': 'private-token'}), \
+                patch.object(updates, 'build_opener', return_value=opener) as build:
+            self.assertEqual([self.release()], updates.bakasu_release_page(1))
+        request = opener.open.call_args.args[0]
+        self.assertEqual(response.geturl.return_value, request.full_url)
+        self.assertEqual('GET', request.get_method())
+        self.assertIsInstance(build.call_args.args[0], updates.GitHubNoRedirect)
+        self.assertEqual(updates.MAX_RELEASE_BYTES + 1, response.read.call_args.args[0])
+        with self.assertRaises(updates.SourceResolutionError):
+            updates.GitHubNoRedirect().redirect_request(None, None, 302, '', {}, 'https://untrusted/')
+        for page in (0, True, updates.MAX_RELEASE_PAGES + 1, '1'):
+            with self.subTest(page=page), self.assertRaises(updates.UpdateError):
+                updates.bakasu_release_page(page)
+
+    def test_transport_failure_is_not_reported_as_no_releases_and_retries_only_network_failures(self):
+        response, opener = self.response()
+        opener.open.side_effect = [HTTPError('https://private-url', 503, 'private-body', {}, None), response]
+        with patch.object(updates, 'build_opener', return_value=opener), patch.object(updates.time, 'sleep') as sleep:
+            result = updates.github_lookup('BakaSU release list', updates.bakasu_release_page, 1)
+        self.assertEqual([self.release()], result)
+        self.assertEqual(1, sleep.call_count)
+        for raw, url, message in ((b'x' * (updates.MAX_RELEASE_BYTES + 1), None, 'too large'),
+                                  (b'{private-token', None, 'invalid JSON'),
+                                  (b'[]', 'https://untrusted/', 'unexpected URL')):
+            response, opener = self.response()
+            response.read.return_value = raw
+            if url:
+                response.geturl.return_value = url
+            with self.subTest(message=message), patch.object(updates, 'build_opener', return_value=opener), \
+                    patch.object(updates.time, 'sleep') as sleep:
+                with self.assertRaisesRegex(updates.UpdateError, message) as error:
+                    updates.github_lookup('BakaSU release list', updates.bakasu_release_page, 1)
+                self.assertNotIn('private-token', str(error.exception))
+                sleep.assert_not_called()
+        with patch.object(updates, 'build_opener') as build, patch.object(updates.time, 'sleep'):
+            build.return_value.open.side_effect = HTTPError('https://private-url', 429, 'private-body', {}, None)
+            with self.assertRaisesRegex(updates.UpdateError, 'BakaSU release list.*3 attempts'):
+                updates.github_lookup('BakaSU release list', updates.bakasu_release_page, 1)
 
 
 class OfficialGitLabSecurityTests(unittest.TestCase):

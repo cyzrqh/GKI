@@ -1,4 +1,4 @@
-"""Build and privately transfer same-source, same-certificate native SukiSU LKMs."""
+"""Build and privately transfer same-source, same-certificate manager LKMs."""
 from __future__ import annotations
 
 import json
@@ -13,6 +13,7 @@ KMIS = (
 DDK_IMAGE = re.compile(r'ghcr\.io/ylarod/ddk-min(?::[A-Za-z0-9._-]+)?@sha256:([0-9a-f]{64})\Z')
 SOURCE_BUNDLE_PATH = 'ksu-source-bundle'
 SOURCE_CACHE_KEY = '${{ needs.prepare-matrix.outputs.source_cache_key }}'
+MANAGER_VARIANT = '${{ inputs.kernelsu_variant }}'
 
 
 def source_cache_restore(*, condition: str | None = None) -> dict:
@@ -36,6 +37,7 @@ def source_backup_restore(*, condition: str | None = None) -> dict:
     return {
         'name': '从本次临时备份恢复固定源码', 'id': 'source-backup', 'if': check,
         'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
+                'KSU_VARIANT': MANAGER_VARIANT,
                 'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
                 'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}',
                 'PREPARED_SOURCE_IDENTITY': '${{ needs.prepare-matrix.outputs.source_identity }}',
@@ -110,6 +112,7 @@ def manager_lkm_job(condition: str) -> dict:
     cache_key = lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
     cache_path = 'manager-lkm/${{ matrix.kmi }}'
     public_env = {
+        'KSU_VARIANT': MANAGER_VARIANT,
         'MANAGER_PACKAGE': '${{ needs.prepare-matrix.outputs.manager_package }}',
         'MANAGER_CERT_SIZE': '${{ needs.prepare-matrix.outputs.manager_cert_size }}',
         'MANAGER_CERT_SHA256': '${{ needs.prepare-matrix.outputs.manager_cert_sha256 }}',
@@ -120,9 +123,10 @@ def manager_lkm_job(condition: str) -> dict:
         'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
     }
     return {
-        'name': 'SukiSU 原生模块 / ${{ matrix.kmi }}',
+        'name': MANAGER_VARIANT + ' 原生模块 / ${{ matrix.kmi }}',
         'needs': 'prepare-matrix', 'if': condition,
         'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'},
+        'env': {'KSU_VARIANT': MANAGER_VARIANT},
         'timeout-minutes': 30,
         'defaults': {'run': {'shell': 'bash'}},
         'strategy': {'fail-fast': False, 'max-parallel': 8,
@@ -133,8 +137,8 @@ def manager_lkm_job(condition: str) -> dict:
             source_cache_restore(),
             source_backup_restore(),
             source_backup_recache(),
-            {'name': '还原并核实 SukiSU 源码',
-             'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
+            {'name': '还原并核实管理器源码',
+             'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}', 'KSU_VARIANT': MANAGER_VARIANT},
              'run': '''set -euo pipefail
 git config --global --add safe.directory "$GITHUB_WORKSPACE/manager-source"
 python3 tools/checkout_ksu_snapshot.py --input ksu-source-bundle \
@@ -184,12 +188,17 @@ docker run --rm --network none \
   --env KSU_EXPECTED_SIZE="$MANAGER_CERT_SIZE" \
   --env KSU_EXPECTED_HASH="$MANAGER_CERT_SHA256" --env KSU_VERSION="$KSU_VERSION" \
   --env MODULE_OUTPUT="$GITHUB_WORKSPACE/lkm-output/${KMI}_kernelsu.ko" \
-  --entrypoint /bin/bash "$DDK_IMAGE" -euo pipefail -c '
+  --env KSU_MANAGER_PACKAGE="$MANAGER_PACKAGE" --env KSU_VARIANT="$KSU_VARIANT" --entrypoint /bin/bash "$DDK_IMAGE" -euo pipefail -c '
     umask 022
     git config --global --add safe.directory "$(dirname "$PWD")"
+    extra=()
+    if [ "$KSU_VARIANT" = BakaSU ]; then
+      extra+=(CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y)
+      extra+=(KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
+    fi
     CONFIG_KSU=m CC=clang make -j "$(nproc)" \
       KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME" KSU_EXPECTED_SIZE="$KSU_EXPECTED_SIZE" \
-      KSU_EXPECTED_HASH="$KSU_EXPECTED_HASH" KSU_VERSION="$KSU_VERSION"
+      KSU_EXPECTED_HASH="$KSU_EXPECTED_HASH" KSU_VERSION="$KSU_VERSION" "${extra[@]}"
     cp kernelsu.ko "$MODULE_OUTPUT"
     llvm-strip -d "$MODULE_OUTPUT"
     chmod a+r "$MODULE_OUTPUT"

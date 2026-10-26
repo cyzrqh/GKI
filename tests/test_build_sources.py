@@ -17,6 +17,7 @@ import resolve_build_sources as sources
 KSU = 'c' * 40
 NEW_KSU = 'd' * 40
 REPO = 'SukiSU-Ultra/SukiSU-Ultra'
+BAKA_REPO = 'Baka-SU/BakaSU'
 PROFILE = {'schema_version': 1, 'sukisu_susfs': {
     'ksu_commits': [KSU], 'tiers': ['Stable(标准)', 'Dev(开发)'],
     'version': 'v2.3.0', 'pins': {'android14-6.1': 'a' * 40}}}
@@ -44,7 +45,7 @@ class BuildSourceTests(unittest.TestCase):
 
     def test_sukisu_stable_and_dev_follow_official_source_with_or_without_susfs(self):
         for tier, branch, responses in (
-                ('Stable(标准)', 'v4.2.1-r1', [{'tag_name': 'v4.2.1-r1'}, {'sha': NEW_KSU.upper()}]),
+                ('Stable(标准)', 'v4.2.1-r1', [{'tag_name': 'v4.2.1-r1', 'draft': False, 'prerelease': False}, {'sha': NEW_KSU.upper()}]),
                 ('Dev(开发)', 'dev', [{'default_branch': 'main'}, {'commit': {'sha': NEW_KSU.upper()}}])):
             for susfs in (True, False):
                 with self.subTest(tier=tier, susfs=susfs), patch.object(sources, 'github_json') as api:
@@ -59,7 +60,7 @@ class BuildSourceTests(unittest.TestCase):
     def test_sukisu_resolution_does_not_read_compatibility_profile(self):
         self.profile.write_text('invalid compatibility profile', encoding='utf-8')
         for tier, responses in (
-                ('Stable(标准)', [{'tag_name': 'v4.2.1-r1'}, {'sha': NEW_KSU}]),
+                ('Stable(标准)', [{'tag_name': 'v4.2.1-r1', 'draft': False, 'prerelease': False}, {'sha': NEW_KSU}]),
                 ('Dev(开发)', [{'default_branch': 'main'}, None, {'sha': NEW_KSU}])):
             with self.subTest(tier=tier), patch.object(sources, 'github_json') as api:
                 api.side_effect = responses
@@ -71,13 +72,50 @@ class BuildSourceTests(unittest.TestCase):
 
     def test_sukisu_formal_alias_uses_latest_release_and_exports_canonical_tier(self):
         with patch.object(sources, 'github_json') as api:
-            api.side_effect = [{'tag_name': 'v4.2.1-r1'}, {'sha': NEW_KSU}]
+            api.side_effect = [{'tag_name': 'v4.2.1-r1', 'draft': False, 'prerelease': False}, {'sha': NEW_KSU}]
             result = self.resolve(tier='SukiSU 正式版')
         self.assertEqual(result['ksu_ref'], NEW_KSU)
         self.assertEqual(result['ksu_source_branch'], 'v4.2.1-r1')
         self.assertEqual(result['effective_ksu_branch'], 'Stable(标准)')
         self.assertEqual([call.args[1] for call in api.call_args_list],
                          ['/releases/latest', '/commits/v4.2.1-r1'])
+
+    def test_shared_formal_option_resolves_each_managers_own_published_release(self):
+        for variant, repository in (('SukiSU', REPO), ('BakaSU', BAKA_REPO)):
+            with self.subTest(variant=variant), patch.object(sources, 'github_json') as api:
+                api.side_effect = [{'tag_name': 'v4.2.1', 'draft': False, 'prerelease': False},
+                                   {'sha': NEW_KSU.upper()}]
+                result = self.resolve(variant=variant, tier='正式版')
+            self.assertEqual(result['ksu_ref'], NEW_KSU)
+            self.assertEqual(result['ksu_repo'], repository)
+            self.assertEqual(result['ksu_source_branch'], 'v4.2.1')
+            self.assertEqual(result['effective_ksu_branch'], 'Stable(标准)')
+            self.assertEqual([(repository, '/releases/latest'), (repository, '/commits/v4.2.1')],
+                             [call.args for call in api.call_args_list])
+
+    def test_bakasu_latest_uses_its_default_branch_without_sukisu_history_heuristics(self):
+        for branch in ('main', 'future-default'):
+            with self.subTest(branch=branch), patch.object(sources, 'github_json') as api:
+                api.side_effect = [{'default_branch': branch}, {'sha': NEW_KSU.upper()}]
+                result = self.resolve(variant='BakaSU', tier='最新版')
+            self.assertEqual(result['ksu_ref'], NEW_KSU)
+            self.assertEqual(result['ksu_repo'], BAKA_REPO)
+            self.assertEqual(result['ksu_source_branch'], branch)
+            self.assertEqual(result['effective_ksu_branch'], 'Latest(最新)')
+            self.assertEqual([(BAKA_REPO,), (BAKA_REPO, '/commits/' + branch)],
+                             [call.args for call in api.call_args_list])
+
+    def test_formal_option_never_relabels_a_release_candidate_or_falls_back_to_main(self):
+        for variant in ('SukiSU', 'BakaSU'):
+            for release in (None, {'tag_name': 'v4.2.0-rc3', 'draft': False, 'prerelease': True},
+                            {'tag_name': 'v4.2.1', 'draft': True, 'prerelease': False},
+                            {'tag_name': 'v4.2.1'},
+                            {'tag_name': 'v4.2.1', 'draft': 0, 'prerelease': 0}):
+                with self.subTest(variant=variant, release=release), \
+                        patch.object(sources, 'github_json', return_value=release) as api, \
+                        self.assertRaisesRegex(sources.SourceResolutionError, '正式版'):
+                    self.resolve(variant=variant, tier='正式版')
+                api.assert_called_once_with(sources.REPOSITORIES[variant], '/releases/latest', missing=True)
 
     def test_sukisu_latest_alias_uses_default_branch_when_dev_is_absent(self):
         for branch in ('main', 'next'):
@@ -104,7 +142,7 @@ class BuildSourceTests(unittest.TestCase):
                 (4, 2, 'diverged', NEW_KSU, 'dev'),
                 (2, 4, 'diverged', KSU, 'main'),
                 (2, 2, 'diverged', KSU, 'main')):
-            for tier in ('Latest(最新)', 'SukiSU 最新版'):
+            for tier in ('Latest(最新)', 'SukiSU 最新版', '最新版'):
                 with self.subTest(ahead=ahead, behind=behind, tier=tier), patch.object(sources, 'github_json') as api:
                     api.side_effect = [{'default_branch': 'main'}, {'sha': KSU},
                                        {'name': 'dev', 'commit': {'sha': NEW_KSU.upper()}},
@@ -158,7 +196,7 @@ class BuildSourceTests(unittest.TestCase):
 
     def test_sukisu_aliases_cannot_silently_select_a_different_variant(self):
         for variant in ('Official', 'BakaSU', 'None'):
-            for tier in sources.TIER_ALIASES:
+            for tier in ('SukiSU 正式版', 'SukiSU 最新版'):
                 with self.subTest(variant=variant, tier=tier), patch.object(sources, 'github_json') as api:
                     with self.assertRaisesRegex(sources.SourceResolutionError, 'require the SukiSU variant'):
                         self.resolve(variant=variant, tier=tier)
@@ -173,6 +211,17 @@ class BuildSourceTests(unittest.TestCase):
         output = self.output.read_text(encoding='utf-8')
         self.assertIn('effective_ksu_branch=Latest(最新)\n', output)
         self.assertNotIn('SukiSU 最新版', output)
+
+    def test_cli_accepts_shared_latest_for_bakasu_and_exports_its_immutable_source(self):
+        with patch.object(sources, 'github_json') as api, redirect_stdout(io.StringIO()):
+            api.side_effect = [{'default_branch': 'main'}, {'sha': NEW_KSU}]
+            status = sources.main(['--root', str(self.root), '--variant', 'BakaSU',
+                                   '--tier', '最新版', '--susfs', 'true'])
+        self.assertEqual(status, 0)
+        output = self.output.read_text(encoding='utf-8')
+        self.assertIn(f'ksu_repo={BAKA_REPO}\n', output)
+        self.assertIn(f'ksu_ref={NEW_KSU}\n', output)
+        self.assertIn('effective_ksu_branch=Latest(最新)\n', output)
 
     def test_none_needs_no_profile_or_network(self):
         self.profile.unlink()
@@ -198,7 +247,7 @@ class BuildSourceTests(unittest.TestCase):
         self.profile.unlink()
         for variant in sources.REPOSITORIES:
             with self.subTest(variant=variant), patch.object(sources, 'github_json') as api:
-                api.side_effect = [{'tag_name': 'v4.2.1'}, {'sha': NEW_KSU}]
+                api.side_effect = [{'tag_name': 'v4.2.1', 'draft': False, 'prerelease': False}, {'sha': NEW_KSU}]
                 result = self.resolve(variant=variant, tier='Stable(标准)')
                 self.assertEqual(result['ksu_source_branch'], 'v4.2.1')
                 self.assertEqual(api.call_args_list[0].args[1], '/releases/latest')

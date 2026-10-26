@@ -89,6 +89,44 @@ class KsuSourceSnapshotTests(unittest.TestCase):
         self.restore()
         self.assertNotIn(secret, self.git(self.destination, "config", "--list"))
 
+    def test_bakasu_snapshot_preserves_original_history_without_applying_sukisu_port(self):
+        repository = 'Baka-SU/BakaSU'
+        self.git(self.source, 'remote', 'set-url', 'origin', f'https://github.com/{repository}.git')
+        original = (self.source / 'kernel/Kbuild').read_bytes()
+        with mock.patch.object(snapshot, 'verify_susfs_compatibility') as sukisu_port:
+            manifest = self.create(variant='BakaSU', susfs=True, tier='Latest(最新)')
+        sukisu_port.assert_not_called()
+        self.assertEqual(repository, manifest['repository'])
+        self.assertEqual(2, manifest['git_count'])
+        restored = checkout.checkout_snapshot(self.output, self.destination, self.reference, variant='BakaSU')
+        self.assertEqual(manifest, restored)
+        self.assertEqual(original, (self.source / 'kernel/Kbuild').read_bytes())
+        self.assertEqual(original, (self.destination / 'kernel/Kbuild').read_bytes())
+        self.assertEqual(f'https://github.com/{repository}.git',
+                         self.git(self.destination, 'remote', 'get-url', 'origin'))
+
+    def test_selected_variant_rejects_other_official_origin_and_manifest(self):
+        with self.assertRaisesRegex(snapshot.SnapshotError, 'official public repository'):
+            self.create(variant='BakaSU')
+        self.assertFalse(self.output.exists())
+        self.git(self.source, 'remote', 'set-url', 'origin', 'https://github.com/Baka-SU/BakaSU.git')
+        self.create(variant='BakaSU')
+        with self.assertRaisesRegex(snapshot.SnapshotError, 'selected official source'):
+            checkout.read_manifest(self.output, self.reference)
+        with self.assertRaisesRegex(snapshot.SnapshotError, 'selected official source'):
+            checkout.checkout_snapshot(self.output, self.destination, self.reference)
+        self.assertFalse(self.destination.exists())
+        self.assertEqual('Baka-SU/BakaSU', checkout.read_manifest(self.output, self.reference,
+                                                               variant='BakaSU')['repository'])
+
+    def test_sukisu_snapshot_cannot_be_accepted_as_a_bakasu_snapshot(self):
+        self.create()
+        with self.assertRaisesRegex(snapshot.SnapshotError, 'selected official source'):
+            checkout.read_manifest(self.output, self.reference, variant='BakaSU')
+        with self.assertRaisesRegex(snapshot.SnapshotError, 'selected official source'):
+            checkout.checkout_snapshot(self.output, self.destination, self.reference, variant='BakaSU')
+        self.assertFalse(self.destination.exists())
+
     def test_mismatched_expected_head_fails_before_export(self):
         with self.assertRaisesRegex(snapshot.SnapshotError, "HEAD does not match"):
             snapshot.snapshot_source(self.source, self.output, "a" * 40, root=self.root)

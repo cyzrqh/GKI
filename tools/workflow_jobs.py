@@ -184,14 +184,27 @@ exit 1
     }
 
 
+def updater_workflow():
+    job = updater_job()
+    job['if'] = "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
+    return {
+        'name': '检查并同步官方更新',
+        'run-name': '检查并同步官方更新',
+        'on': {'workflow_dispatch': {}},
+        'permissions': {'contents': 'read'},
+        'jobs': {'check-upstream': job},
+    }
+
+
 def release_job():
     condition = ("always() && !cancelled() && github.event_name == 'workflow_dispatch' && "
                  "needs.prepare-matrix.result == 'success' && "
                  "((inputs.operation == '编译内核' && needs.build-kernel.result == 'success' && "
-                 "(inputs.kernelsu_variant != 'SukiSU' || needs.build-sukisu-manager.result == 'success')) || "
-                 "(inputs.operation == '仅编译 SukiSU 安装包' && needs.build-sukisu-manager.result == 'success'))")
+                 "((inputs.kernelsu_variant != 'SukiSU' && inputs.kernelsu_variant != 'BakaSU') || needs.build-sukisu-manager.result == 'success')) || "
+                 "(inputs.operation == '仅编译管理器安装包' && needs.build-sukisu-manager.result == 'success'))")
     return {
         'name': '整理产物与校验（全量成功才发行）', 'if': condition,
+        'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}'},
         'needs': ['prepare-matrix', 'build-sukisu-manager', 'build-kernel'],
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
         'permissions': {'contents': 'write', 'actions': 'write'},
@@ -203,7 +216,7 @@ def release_job():
              'with': {'pattern': "{${{ needs.build-sukisu-manager.outputs.apk_filename || '__NO_MANAGER_APK__' }},*-AnyKernel3.zip,*-boot*.img}",
                       'path': 'release-input', 'merge-multiple': False, 'skip-decompress': True}},
             {'name': '整理直接下载文件与实际配置', 'id': 'assets',
-             'env': {'EXPECTED_KERNEL_COUNT': "${{ inputs.operation == '仅编译 SukiSU 安装包' && '0' || needs.prepare-matrix.outputs.count }}",
+             'env': {'EXPECTED_KERNEL_COUNT': "${{ inputs.operation == '仅编译管理器安装包' && '0' || needs.prepare-matrix.outputs.count }}",
                      'REPORT_KIND': "${{ inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true' && 'release' || 'actions' }}"},
              'run': 'python3 tools/prepare_release.py --input release-input --output release-publish --expected-kernel-count "$EXPECTED_KERNEL_COUNT" --report-kind "$REPORT_KIND"'},
             {'name': '上传同名校验文件', 'uses': 'actions/upload-artifact@v7',
@@ -251,7 +264,7 @@ printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' 
              'run': '''if [ "$ASSETS_RESULT" = success ]; then
   if [ "$RELEASE_RESULT" = success ]; then
     echo '完整内核目录全部构建成功，已发布 Release。' >> "$GITHUB_STEP_SUMMARY"
-  elif [ "$OPERATION" = '仅编译 SukiSU 安装包' ]; then
+  elif [ "$OPERATION" = '仅编译管理器安装包' ]; then
     echo '本次仅构建 APK，安装包和校验文件在 Actions 下载。' >> "$GITHUB_STEP_SUMMARY"
   elif [ "$FULL_CATALOG" != true ]; then
     echo '本次为单版本或部分版本构建，文件和校验信息在 Actions 下载；完整目录全部成功才发布 Release。' >> "$GITHUB_STEP_SUMMARY"

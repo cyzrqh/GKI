@@ -213,6 +213,35 @@ class MergeTests(unittest.TestCase):
                 self.assertTrue(self.sync()['merged'])
             self.assertEqual([('/pulls/1/merge', {'sha': HEAD, 'merge_method': 'squash'})], self.api.mutations)
 
+    def test_baka_optional_candidates_merge_without_changing_the_legacy_baseline(self):
+        candidate = self.api.documents[CANDIDATES, HEAD]
+        original_baseline = copy.deepcopy(candidate['baseline'])
+        candidate['sources']['bakasu'] = {'branch': 'main', 'head': '8' * 40, 'release': None,
+                                          'prerelease': {'tag': 'v4.2.0-rc3', 'commit': '9' * 40}}
+        candidate['acknowledged_heads'] = merge.head_state(candidate['sources'])
+        candidate['changes'] = merge.changes(candidate['baseline'], candidate['sources'])
+        self.api.refresh()
+        self.assertTrue(self.sync()['merged'])
+        self.assertEqual(original_baseline, candidate['baseline'])
+        self.assertEqual([('/pulls/1/merge', {'sha': HEAD, 'merge_method': 'squash'})], self.api.mutations)
+
+    def test_baka_extra_fields_unpinned_sources_or_wrong_ack_never_merge(self):
+        for change in ('head', 'extra', 'release', 'ack', 'changes'):
+            self.api = FakeAPI()
+            candidate = self.api.documents[CANDIDATES, HEAD]
+            candidate['sources']['bakasu'] = {'branch': 'main', 'head': '8' * 40,
+                                              'release': None, 'prerelease': None}
+            candidate['acknowledged_heads'] = copy.deepcopy(merge.head_state(candidate['sources']))
+            candidate['changes'] = merge.changes(candidate['baseline'], candidate['sources'])
+            baka = candidate['sources']['bakasu']
+            if change == 'head': baka['head'] = 'main'
+            if change == 'extra': baka['repository'] = 'untrusted/other'
+            if change == 'release': baka['release'] = {'tag': 'v4', 'commit': 'moving-tag'}
+            if change == 'ack': candidate['acknowledged_heads'].pop('bakasu')
+            if change == 'changes': candidate['changes'] = [item for item in candidate['changes'] if item['source'] != 'BakaSU']
+            self.api.refresh()
+            with self.subTest(change=change): self.refused()
+
     def test_development_field_cannot_hide_wrong_branch_unpinned_source_or_missing_acknowledgement(self):
         for change in ('branch', 'head', 'extra', 'ack', 'changes'):
             self.api = FakeAPI()

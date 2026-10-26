@@ -28,6 +28,7 @@ from manager_lkm_jobs import KMIS
 from prepare_manager_lkm import (LkmError, atomic_json, inspect_module, public_identity,
                                  read_json, selected_source)
 from snapshot_ksu_source import SnapshotError, git
+from manager_variants import manager_profile, selected_variant
 
 
 HOST = "x86_64-unknown-linux-gnu"
@@ -161,9 +162,19 @@ def digest(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def protected_host_sources(variant: str | None = None) -> tuple[str, ...]:
+    common = ('userspace/ksud/src/boot_patch.rs', 'userspace/ksud/src/assets.rs',
+              'userspace/ksud/src/cli_non_android.rs', 'userspace/ksud/build.rs',
+              'userspace/ksud/Cargo.toml')
+    if selected_variant(variant) == 'BakaSU':
+        return (*common, 'userspace/ksud/Cargo.lock', 'userspace/ksuinit/Cargo.toml',
+                'userspace/ksuinit/Cargo.lock')
+    return (*common, 'Cargo.toml', 'Cargo.lock')
+
+
 def validate_assets(source: Path, report_path: Path, reference: str) -> tuple[dict, dict[str, bytes], bytes]:
     provenance = selected_source(source, reference)
-    git(source, "diff", "--quiet", "HEAD", "--", "userspace/ksud/src", "userspace/ksud/Cargo.toml", "Cargo.toml", "Cargo.lock")
+    git(source, "diff", "--quiet", "HEAD", "--", "userspace/ksud/src", *protected_host_sources())
     report = read_json(report_path)
     identity = public_identity(report_path)
     if (type(report.get("schema_version")) is not int or report["schema_version"] != 1
@@ -211,6 +222,7 @@ def host_environment(source: Path) -> dict[str, str]:
         environment.pop(key, None)
     environment["CARGO_TARGET_DIR"] = str(source / "target")
     environment["CARGO_TERM_COLOR"] = "never"
+    environment['KSU_PACKAGE_NAME'] = manager_profile(selected_variant())['package']
     return environment
 
 
@@ -229,9 +241,7 @@ def prepare_host_copy(source: Path, destination: Path, reference: str,
     git(destination, "checkout", "--quiet", "--detach", reference)
     if selected_source(destination, reference) != selected_source(source, reference):
         raise VerificationError("Host copy did not preserve the selected official source identity")
-    protected = ("userspace/ksud/src/boot_patch.rs", "userspace/ksud/src/assets.rs",
-                 "userspace/ksud/src/cli_non_android.rs", "userspace/ksud/build.rs",
-                 "userspace/ksud/Cargo.toml", "Cargo.toml", "Cargo.lock")
+    protected = protected_host_sources()
     for relative in protected:
         if regular_bytes(destination / relative, 4 * 1024 * 1024) != regular_bytes(source / relative, 4 * 1024 * 1024):
             raise VerificationError("Host verification must use unmodified official shared Rust code: " + relative)
@@ -250,11 +260,24 @@ def prepare_host_copy(source: Path, destination: Path, reference: str,
     return patches
 
 
-def apply_host_cfg(source: Path) -> list[dict]:
+def apply_host_cfg(source: Path, *, variant: str | None = None) -> list[dict]:
     path = source / "userspace/ksud/src/main.rs"
     original = regular_bytes(path, 1024 * 1024)
     lines = original.splitlines(keepends=True)
     declarations = [index for index, line in enumerate(lines) if line.strip() == b"mod feature;"]
+    if selected_variant(variant) == 'BakaSU':
+        # BakaSU's Android modules are already gated in the official source.
+        # Verify that layout without applying SukiSU's unrelated feature fix.
+        guards = {b'mod android;': b'#[cfg(target_os = "android")]',
+                  b'mod anykernel3;': b'#[cfg(target_os = "android")]',
+                  b'mod cli_non_android;': b'#[cfg(not(target_os = "android"))]'}
+        if declarations:
+            raise VerificationError('Review the changed BakaSU native module layout before verification')
+        for declaration, guard in guards.items():
+            found = [index for index, line in enumerate(lines) if line.strip() == declaration]
+            if len(found) != 1 or found[0] == 0 or lines[found[0] - 1].strip() != guard:
+                raise VerificationError('BakaSU native verification requires its official Android module guards')
+        return []
     if len(declarations) != 1:
         raise VerificationError("Review upstream feature module declaration before native verification")
     index = declarations[0]
@@ -323,7 +346,7 @@ def verify(source: Path, report_path: Path, reference: str, output: Path) -> dic
         raise VerificationError("Real native ksud verification requires an x86_64 Linux runner")
     source = source.resolve(strict=True)
     provenance, modules, init = validate_assets(source, report_path, reference)
-    for path in (source / "userspace/ksud/Cargo.toml", source / "Cargo.toml", source / "Cargo.lock"):
+    for path in (source / relative for relative in protected_host_sources()):
         regular_bytes(path, 4 * 1024 * 1024)
     target = source / "target"
     if target.resolve() != target:
@@ -341,9 +364,10 @@ def verify(source: Path, report_path: Path, reference: str, output: Path) -> dic
     fixture_bytes = boot_v4(synthetic_kernel(), newc({"init": Entry(stat.S_IFREG | 0o755, FIXTURE_INIT)}))
     fixture.write_bytes(fixture_bytes)
     environment = host_environment(source)
-    command(["cargo", "clean", "--manifest-path", str(manifest), "-p", "ksud", "--target", HOST, "--release"],
+    cargo = ['cargo', '+nightly'] if selected_variant() == 'BakaSU' else ['cargo']
+    command([*cargo, "clean", "--manifest-path", str(manifest), "-p", "ksud", "--target", HOST, "--release"],
             native_source, environment)
-    command(["cargo", "build", "--locked", "--target", HOST, "--release", "--manifest-path", str(manifest)],
+    command([*cargo, "build", "--locked", "--target", HOST, "--release", "--manifest-path", str(manifest)],
             native_source, environment, timeout=1800)
     ksud = target / HOST / "release/ksud"
     host_binary = regular_bytes(ksud, MAX_IMAGE)

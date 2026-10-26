@@ -18,6 +18,7 @@ from typing import Callable
 import zipfile
 
 from embedded_build_metadata import MAX_APK_BYTES, read_manager_apk, validate_members
+from manager_variants import MANAGERS, manager_profile
 
 
 MAX_ARCHIVE_BYTES = MAX_APK_BYTES
@@ -71,8 +72,13 @@ class Expected:
     ksu_ref: str
     artifact_name: str = ''
     manager_job: str = DEFAULT_MANAGER_JOB
+    variant: str = 'SukiSU'
 
     def validate(self):
+        try:
+            manager_profile(self.variant)
+        except ValueError as error:
+            raise IdentityError(str(error)) from None
         validate_repository(self.repository)
         positive_integer(self.run_id, "workflow run ID")
         positive_integer(self.run_attempt, "workflow run attempt")
@@ -120,7 +126,7 @@ def validate_metadata(metadata: dict, expected: Expected, *,
             or positive_integer(metadata["producer_run_id"], "producer run ID") != expected.run_id
             or metadata["producer_head_sha"] != expected.head_sha):
         raise IdentityError("Manager identity belongs to a different repository, run or workflow commit")
-    if metadata["ksu_variant"] != "SukiSU" or metadata["ksu_ref"] != expected.ksu_ref:
+    if metadata["ksu_variant"] != expected.variant or metadata["ksu_ref"] != expected.ksu_ref:
         raise IdentityError("Manager and kernel KernelSU source commits differ")
     attempt = positive_integer(metadata["producer_run_attempt"], "producer run attempt")
     if attempt < expected.run_attempt and attempt != reusable_attempt:
@@ -288,7 +294,7 @@ def _check_manager_job(reader, expected: Expected):
     if len(matches) > 1:
         raise IdentityError("More than one manager producer job was found")
     if matches and matches[0].get("status") == "completed" and matches[0].get("conclusion") != "success":
-        raise IdentityError("The SukiSU APK job failed or was cancelled; no identity can be accepted")
+        raise IdentityError("The " + expected.variant + " APK job failed or was cancelled; no identity can be accepted")
     return matches[0] if matches else None
 
 
@@ -336,7 +342,7 @@ def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, inte
                 stale_archives[artifact_id] = raw
         remaining = deadline - monotonic()
         if remaining <= 0:
-            raise IdentityError("Timed out waiting for this run's signed SukiSU manager identity")
+            raise IdentityError("Timed out waiting for this run's signed " + expected.variant + " manager identity")
         sleep(min(interval, remaining))
 
 
@@ -356,7 +362,8 @@ def main():
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
     parser.add_argument("--run-attempt", default=os.environ.get("GITHUB_RUN_ATTEMPT", ""))
     parser.add_argument("--head-sha", default=os.environ.get("GITHUB_SHA", ""))
-    parser.add_argument("--manager-job-name", default=DEFAULT_MANAGER_JOB)
+    parser.add_argument("--manager-job-name", default=None)
+    parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
     parser.add_argument("--github-env", type=Path, default=os.environ.get("GITHUB_ENV"))
     parser.add_argument("--timeout", type=float, default=1200)
     parser.add_argument("--interval", type=float, default=15)
@@ -366,7 +373,8 @@ def main():
             raise IdentityError("GITHUB_ENV or --github-env is required")
         expected = Expected(args.repo, positive_integer(args.run_id, "run ID"),
                             positive_integer(args.run_attempt, "run attempt"), args.head_sha,
-                            args.expected_ref, args.artifact_name, args.manager_job_name)
+                            args.expected_ref, args.artifact_name,
+                            args.manager_job_name or f'编译配套 {args.variant} 管理器 APK', args.variant)
         values = wait_for_identity(expected, GitHubReader(expected.repository),
                                    timeout=args.timeout, interval=args.interval)
         write_environment(args.github_env, values)
@@ -375,7 +383,7 @@ def main():
         message = str(error) if isinstance(error, IdentityError) else "Invalid signed manager identity data"
         print(f"Manager identity verification failed: {message}", file=sys.stderr)
         return 1
-    print("Verified this run's signed SukiSU APK identity; kernel compilation can proceed.")
+    print("Verified this run's signed " + args.variant + " APK identity; kernel compilation can proceed.")
     return 0
 
 

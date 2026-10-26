@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bind the native SukiSU manager check to the APK produced by this workflow."""
+"""Bind the native manager check to the APK produced by this workflow."""
 from __future__ import annotations
 
 import argparse
@@ -38,6 +38,30 @@ def replace_setting(text: str, key: str, value: str) -> str:
     if len(declarations(text, key)) != 1 or len(list(pattern.finditer(text))) != 1:
         raise ValueError(f'Expected one native {key} setting; review the source layout')
     return pattern.sub(lambda match: key + ' := ' + value + match[1], text)
+
+
+def set_certificate_setting(text: str, key: str, value: str) -> str:
+    """BakaSU exposes optional signing inputs rather than default assignments."""
+    if declarations(text, key):
+        return replace_setting(text, key, value)
+    normalized = text.replace('\r\n', '\n')
+    if len(re.findall(r'^REPO_NAME[ \t]*:=[ \t]*(?:BakaSU|ReSukiSU)[ \t]*$', normalized, re.M)) != 1:
+        raise ValueError(f'Expected one native {key} setting; review the source layout')
+    if key == 'KSU_EXPECTED_SIZE':
+        anchor = ('ifdef KSU_EXPECTED_SIZE\n'
+                  'ccflags-y += -DEXPECTED_SIZE=$(KSU_EXPECTED_SIZE)\n'
+                  '$(info -- Custom KernelSU Manager signature size: $(KSU_EXPECTED_SIZE))\nendif')
+    elif key == 'KSU_EXPECTED_HASH':
+        anchor = ('ifdef KSU_EXPECTED_HASH\n'
+                  'ccflags-y += -DEXPECTED_HASH=\\"$(KSU_EXPECTED_HASH)\\"\n'
+                  '$(info -- Custom KernelSU Manager signature hash: $(KSU_EXPECTED_HASH))\nendif')
+    else:
+        raise ValueError('Unsupported optional native manager signing input')
+    if normalized.count(anchor) != 1:
+        raise ValueError(f'Expected the reviewed optional BakaSU {key} block; review the source layout')
+    newline = '\r\n' if '\r\n' in text else '\n'
+    return text.replace(anchor.replace('\n', newline), key + ' := ' + value + newline
+                        + anchor.replace('\n', newline), 1)
 
 
 def replace_package(text: str, package: str) -> str:
@@ -108,7 +132,7 @@ def configure(root: Path, size: str, digest: str, package: str = DEFAULT_PACKAGE
     original = path.read_bytes().decode('utf-8')
     updated = original
     for key, value in (('KSU_EXPECTED_SIZE', str(int(size))), ('KSU_EXPECTED_HASH', digest.lower())):
-        updated = replace_setting(updated, key, value)
+        updated = set_certificate_setting(updated, key, value)
     updated = replace_package(updated, package)
     if version_code is not None:
         updated = replace_setting(updated, 'KSU_VERSION', str(int(version_code)))
@@ -131,7 +155,7 @@ def main():
                          arguments.package, arguments.version_code)
     except (ValueError, OSError) as error:
         raise SystemExit(f'Manager signature configuration failed: {error}') from None
-    print(f'SukiSU manager certificate configured: {path}')
+    print(f'KernelSU manager certificate configured: {path}')
 
 
 if __name__ == '__main__':

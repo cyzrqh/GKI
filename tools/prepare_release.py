@@ -14,6 +14,7 @@ import zipfile
 from embedded_build_metadata import APK_MEMBER, KERNEL_MEMBER, metadata_json, read_manager_apk
 from package_release_kernel import AK3_NAME, read_kernel_ak3
 from release_notes import asset_names, render_notes
+from manager_variants import MANAGERS
 from kernel_order import kernel_key, natural_key
 
 
@@ -60,16 +61,27 @@ def validate_bindings(manager: dict | None, kernels: list[tuple[dict, bool]], *,
                        for key in ('android_version', 'kernel_version', 'sub_level', 'os_patch_level')))
     if len(targets) != len(set(targets)):
         raise ValueError('Duplicate kernel build target in the selected release assets')
-    sukisu = [(document, raw) for document, raw in kernels if document.get('ksu_variant') == 'SukiSU']
+    paired = [(document, raw) for document, raw in kernels if document.get('ksu_variant') in MANAGERS]
+    variants = {document['ksu_variant'] for document, _ in paired}
+    if manager is not None:
+        manager_variant = manager.get('ksu_variant', 'SukiSU')
+        if manager_variant not in MANAGERS:
+            raise ValueError('Invalid paired manager variant')
+        variants.add(manager_variant)
+        if any(raw and document.get('ksu_variant') != manager_variant for document, raw in kernels):
+            raise ValueError('The release manager and kernels use different KernelSU variants')
+    if len(variants) > 1:
+        raise ValueError('The release manager and kernels use different KernelSU variants')
+    paired_variant = next(iter(variants), 'SukiSU')
     for key in ('ksu_ref', 'ksu_version_code', 'ksu_version_name'):
-        values = {str(document[key]) for document, _ in sukisu if document.get(key) is not None}
+        values = {str(document[key]) for document, _ in paired if document.get(key) is not None}
         if manager and manager.get(key) is not None:
             values.add(str(manager[key]))
         if len(values) > 1:
-            raise ValueError('The release manager and kernels use different SukiSU ' + key)
-    for document, raw in sukisu:
+            raise ValueError('The release manager and kernels use different ' + paired_variant + ' ' + key)
+    for document, raw in paired:
         if raw and (manager is None or not manager_verified):
-            raise ValueError('A raw SukiSU kernel requires its verified signed manager APK')
+            raise ValueError('A raw ' + document['ksu_variant'] + ' kernel requires its verified signed manager APK')
         if manager is None:
             continue  # Older sidecar-only kernel recovery did not record APK identity.
         bindings = {
@@ -228,9 +240,10 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
         checksums.append(actual_hash + '  ' + path.name)
     (assets / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='utf-8')
     (output / 'release.md').write_text(body, encoding='utf-8')
-    title = 'GKI · SukiSU ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code')) if manager else 'GKI Kernel Release'
+    variant = manager.get('ksu_variant', 'SukiSU') if manager else None
+    title = 'GKI · ' + variant + ' ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code')) if manager else 'GKI Kernel Release'
     if report_kind == 'actions':
-        title = ('GKI 构建结果 · SukiSU ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code'))
+        title = ('GKI 构建结果 · ' + variant + ' ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code'))
                  if manager else 'GKI 构建结果')
     (output / 'title.txt').write_text(title, encoding='utf-8')
     return {'assets': len(entries), 'kernels': len(kernel_documents), 'manager': bool(manager)}

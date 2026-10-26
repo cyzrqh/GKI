@@ -1314,8 +1314,8 @@ job:
           python3 "$GITHUB_WORKSPACE/tools/integrate_sukisu.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"
           ;;
         "BakaSU")
-          echo "添加 BakaSU..."
-          curl -LSs "https://raw.githubusercontent.com/Baka-SU/BakaSU/main/kernel/setup.sh" | bash -s "$BRANCH"
+          echo "添加本次固定的 BakaSU 源码..."
+          python3 "$GITHUB_WORKSPACE/tools/integrate_sukisu.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"
           ;;
       esac
 

@@ -21,12 +21,15 @@ def kernel_fixture(manager=None, *, file='android14-6.1.145-2025-08-AnyKernel3.z
     series, sublevel = target[1].rsplit('.', 1)
     config = ('CONFIG_ARM64=y\nCONFIG_KSU=y\nCONFIG_KSU_SUSFS=y\nCONFIG_LTO_CLANG_THIN=y\n'
               '# CONFIG_KPM is not set\n# CONFIG_ZRAM is not set\n').encode()
+    variant = manager.get('ksu_variant', 'SukiSU')
+    if variant == 'BakaSU':
+        config += b'CONFIG_KSU_MULTI_MANAGER_SUPPORT=y\n'
     # This is a test container payload, not a compiled or bootable kernel.
     image = arm64_fixture(b'TEST FIXTURE, NOT A KERNEL\0IKCFG_ST' + gzip.compress(config, mtime=0) + b'IKCFG_ED\0v2.3.0\0'
                           + manager['package'].encode() + b'\0' + manager['manager_cert_sha256'].encode() + b'\0')
     metadata = {'schema_version': 1, 'file': file, 'android_version': target[0],
                 'kernel_version': series, 'sub_level': sublevel, 'os_patch_level': '-'.join(target[2:]),
-                'ksu_variant': 'SukiSU', 'ksu_branch': manager['ksu_branch'], 'ksu_ref': manager['ksu_ref'],
+                'ksu_variant': variant, 'ksu_branch': manager['ksu_branch'], 'ksu_ref': manager['ksu_ref'],
                 'ksu_version_code': manager['ksu_version_code'], 'ksu_version_name': manager['ksu_version_name'],
                 'susfs_version': 'v2.3.0', 'image_sha256': hashlib.sha256(image).hexdigest(),
                 'config_sha256': hashlib.sha256(config).hexdigest(), 'config_source': 'Image / IKCONFIG',

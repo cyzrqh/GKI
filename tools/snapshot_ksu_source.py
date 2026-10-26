@@ -22,6 +22,7 @@ import uuid
 
 from pin_build_dependencies import (CompatibilityError, TIERS, custom_configuration, load_profile,
                                     reviewed_tree_pairs, source_policy)
+from manager_variants import MANAGERS, manager_profile
 
 
 REPOSITORY = "SukiSU-Ultra/SukiSU-Ultra"
@@ -107,12 +108,13 @@ def source_identity(source: Path, reference: str) -> dict:
     return {"git_count": int(count), "git_describe": description, "git_tree": tree}
 
 
-def check_official_source(source: Path) -> None:
+def check_official_source(source: Path, variant: str = 'SukiSU') -> None:
     # actions/checkout uses an authentication extraheader in .git/config. That
     # header is intentionally left local. Also reject credential-bearing URLs.
     urls = git(source, "remote", "get-url", "--all", "origin").splitlines()
-    allowed = {f"https://github.com/{REPOSITORY}", f"https://github.com/{REPOSITORY}.git",
-               f"git@github.com:{REPOSITORY}.git", f"git@github.com:{REPOSITORY}"}
+    repository = manager_profile(variant)['repository']
+    allowed = {f"https://github.com/{repository}", f"https://github.com/{repository}.git",
+               f"git@github.com:{repository}.git", f"git@github.com:{repository}"}
     if not urls or any(url not in allowed for url in urls):
         raise SnapshotError("SukiSU source origin must be the official public repository without URL credentials")
     if git(source, "status", "--porcelain", "--untracked-files=all"):
@@ -151,7 +153,8 @@ def verify_susfs_compatibility(source: Path, root: Path, tier: str, susfs: bool,
 
 
 def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = ROOT,
-                    susfs: bool = False, tier: str = "Custom(自定义)") -> dict:
+                    susfs: bool = False, tier: str = "Custom(自定义)", variant: str = 'SukiSU') -> dict:
+    repository = manager_profile(variant)['repository']
     reference = expected_commit(reference)
     source = source.resolve(strict=True)
     root = root.resolve(strict=True)
@@ -160,7 +163,7 @@ def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = 
         raise SnapshotError("SukiSU snapshot output already exists; refusing to overwrite it")
     if not output.parent.is_dir():
         raise SnapshotError("SukiSU snapshot parent directory does not exist")
-    check_official_source(source)
+    check_official_source(source, variant)
     identity = source_identity(source, reference)
     with temporary_directory(output.parent, ".gki-snapshot-") as temporary:
         prepared = temporary / "prepared"
@@ -172,8 +175,11 @@ def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = 
         size = bundle.stat().st_size
         if not 0 < size <= MAX_BUNDLE_SIZE:
             raise SnapshotError("SukiSU source bundle exceeds the allowed size")
-        verify_susfs_compatibility(source, root, tier, susfs, bundle)
-        manifest = {"schema_version": 1, "repository": REPOSITORY, "ref": reference,
+        # BakaSU has its own native SUSFS integration. Its original source
+        # must never receive the separately reviewed SukiSU-only port here.
+        if variant == 'SukiSU':
+            verify_susfs_compatibility(source, root, tier, susfs, bundle)
+        manifest = {"schema_version": 1, "repository": repository, "ref": reference,
                     "bundle_filename": BUNDLE_NAME, "bundle_size": size,
                     "bundle_sha256": file_digest(bundle), **identity}
         (prepared / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
@@ -181,7 +187,7 @@ def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = 
         # Perform the same real restoration every consumer will perform, so a
         # prepare success proves the exported history/version is self-contained.
         from checkout_ksu_snapshot import checkout_snapshot
-        checkout_snapshot(prepared, temporary / "verified", reference)
+        checkout_snapshot(prepared, temporary / "verified", reference, variant=variant)
         if output.exists() or output.is_symlink():
             raise SnapshotError("SukiSU snapshot output appeared while preparing; refusing to overwrite it")
         prepared.rename(output)
@@ -196,14 +202,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--root", type=Path, default=ROOT)
     parser.add_argument("--susfs", required=True, choices=("true", "false"))
     parser.add_argument("--tier", required=True)
+    parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
     args = parser.parse_args(argv)
     try:
         manifest = snapshot_source(args.source, args.output, args.expected_ref, root=args.root,
-                                   susfs=args.susfs == "true", tier=args.tier)
+                                   susfs=args.susfs == "true", tier=args.tier, variant=args.variant)
     except (OSError, ValueError, UnicodeError) as error:
         print(f"::error::SukiSU source snapshot failed: {error}", file=sys.stderr)
         return 1
-    print(f"SukiSU immutable source: {manifest['ref']} ({manifest['git_count']} commits)")
+    print(f"{args.variant} immutable source: {manifest['ref']} ({manifest['git_count']} commits)")
     return 0
 
 

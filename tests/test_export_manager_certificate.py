@@ -94,6 +94,15 @@ class ManagerCertificateTests(unittest.TestCase):
         self.assertNotIn(ENCODED_KEY, self.output.read_text() + self.outputs.read_text())
         self.assertNotIn(PASSWORD, self.output.read_text() + self.outputs.read_text())
 
+    def test_baka_uses_the_same_fixed_certificate_with_its_own_package(self):
+        with patch.object(certificate.signing.subprocess, 'run', side_effect=self.fake_keytool):
+            metadata = certificate.export_certificate(self.output, 'BakaSU')
+        self.assertEqual('com.cyzrqh.gki.bakasu', metadata['manager_package'])
+        self.assertEqual(CERT_SHA, metadata['manager_cert_sha256'])
+        self.assertEqual(len(CERTIFICATE), metadata['manager_cert_size'])
+        export = self.calls[0][0]
+        self.assertEqual('gki-sukisu', export[export.index('-alias') + 1])
+
     def test_subprocess_never_receives_private_key_and_password_uses_environment_only(self):
         with patch.object(certificate.signing.subprocess, 'run', side_effect=self.fake_keytool):
             certificate.export_certificate(self.output)

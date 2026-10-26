@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Record official SukiSU/SUSFS candidates for review without changing build pins."""
+"""Record official SukiSU/BakaSU/SUSFS candidates without changing build pins."""
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import json
 import os
@@ -17,17 +18,22 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 from pin_build_dependencies import CompatibilityError, load_profile
-from resolve_build_sources import SourceResolutionError, github_commit, github_json, validate_ref
+from resolve_build_sources import (NoRedirect as GitHubNoRedirect, SourceResolutionError,
+                                   github_commit, github_json, validate_ref)
 
 ROOT = Path(__file__).resolve().parents[1]
 SUKISU = 'SukiSU-Ultra/SukiSU-Ultra'
+BAKASU = 'Baka-SU/BakaSU'
 SUSFS = 'simonpunk/susfs4ksu'
 TARGETS = ('android12-5.10', 'android13-5.15', 'android14-6.1', 'android15-6.6', 'android16-6.12')
 CANDIDATE_PATH = 'data/upstream-candidates.json'
-TITLE = 'chore: review official SukiSU and SUSFS updates'
+TITLE = 'chore: review official SukiSU, BakaSU and SUSFS updates'
 BRANCH = 'automation/official-updates'
 SHA = re.compile(r'[0-9a-fA-F]{40}\Z')
 LOOKUP_ATTEMPTS = 3
+RELEASE_PAGE_SIZE = 20
+MAX_RELEASE_PAGES = 5
+MAX_RELEASE_BYTES = 1024 * 1024
 
 
 class UpdateError(RuntimeError):
@@ -108,6 +114,100 @@ def baseline(root: Path) -> dict:
             'susfs': {target: profile['pins'][target].lower() for target in TARGETS}}
 
 
+def bakasu_release_page(page: int) -> list:
+    """Read only the fixed official release list, with bounded public metadata."""
+    if type(page) is not int or not 1 <= page <= MAX_RELEASE_PAGES:
+        raise UpdateError('BakaSU release pagination exceeds its bound')
+    url = f'https://api.github.com/repos/{BAKASU}/releases?per_page={RELEASE_PAGE_SIZE}&page={page}'
+    headers = {'Accept': 'application/vnd.github+json', 'User-Agent': 'gki-official-updates'}
+    token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+    if token:
+        if any(ord(c) < 32 or ord(c) == 127 for c in token):
+            raise UpdateError('Invalid GitHub authentication token')
+        headers['Authorization'] = 'Bearer ' + token
+    try:
+        with build_opener(GitHubNoRedirect()).open(Request(url, headers=headers), timeout=60) as response:
+            if response.geturl() != url:
+                raise UpdateError('BakaSU releases: official API returned an unexpected URL')
+            if response.status != 200:
+                raise SourceResolutionError('GitHub source lookup returned an unsuccessful status')
+            raw = response.read(MAX_RELEASE_BYTES + 1)
+        if len(raw) > MAX_RELEASE_BYTES:
+            raise UpdateError('BakaSU releases: official API response is too large')
+        document = json.loads(raw)
+    except HTTPError as error:
+        if error.code not in (408, 429, 500, 502, 503, 504):
+            raise UpdateError(f'BakaSU releases: official API failed (HTTP {error.code})') from None
+        raise SourceResolutionError('Official GitHub source lookup failed') from None
+    except (URLError, OSError):
+        raise SourceResolutionError('GitHub source lookup failed') from None
+    except (ValueError, UnicodeError):
+        raise UpdateError('BakaSU releases: official API returned invalid JSON') from None
+    if not isinstance(document, list) or len(document) > RELEASE_PAGE_SIZE:
+        raise UpdateError('BakaSU releases: invalid or oversized release page')
+    return document
+
+
+def fetch_bakasu_snapshot() -> dict:
+    repository = github_lookup('BakaSU repository', github_json, BAKASU)
+    branch = repository.get('default_branch') if isinstance(repository, dict) else None
+    if (not isinstance(branch, str) or 'full_name' in repository
+            and (not isinstance(repository['full_name'], str) or repository['full_name'].casefold() != BAKASU.casefold())):
+        raise UpdateError('Official BakaSU repository did not return its default branch identity')
+    validate_ref(branch)
+    head = github_lookup('BakaSU default branch', github_commit, BAKASU, branch)
+    if not isinstance(head, str) or not SHA.fullmatch(head):
+        raise UpdateError('Invalid official BakaSU head SHA')
+    formal_document = github_lookup('BakaSU latest formal release', github_json, BAKASU, '/releases/latest', missing=True)
+    formal = None
+    if formal_document is not None:
+        if (not isinstance(formal_document, dict) or formal_document.get('draft') is not False or formal_document.get('prerelease') is not False
+                or not isinstance(formal_document.get('tag_name'), str)):
+            raise UpdateError('BakaSU formal release must be published and not a prerelease')
+        tag = validate_ref(formal_document['tag_name'])
+        commit = github_lookup('BakaSU formal release commit', github_commit, BAKASU, tag)
+        if not isinstance(commit, str) or not SHA.fullmatch(commit):
+            raise UpdateError('Invalid official BakaSU formal release commit')
+        formal = {'tag': tag, 'commit': commit.lower()}
+    candidates, ids, tags = [], set(), set()
+    for page in range(1, MAX_RELEASE_PAGES + 1):
+        batch = github_lookup('BakaSU release list', bakasu_release_page, page)
+        for release in batch:
+            if (not isinstance(release, dict) or type(release.get('id')) is not int or release['id'] < 1
+                    or release['id'] in ids or type(release.get('draft')) is not bool
+                    or type(release.get('prerelease')) is not bool or not isinstance(release.get('tag_name'), str)):
+                raise UpdateError('BakaSU releases: invalid flags or duplicate release identity')
+            tag = validate_ref(release['tag_name'])
+            if tag in tags:
+                raise UpdateError('BakaSU releases: duplicate release tag during pagination')
+            ids.add(release['id'])
+            tags.add(tag)
+            if release['draft']:
+                continue
+            published = release.get('published_at')
+            try:
+                instant = (datetime.fromisoformat(published.replace('Z', '+00:00'))
+                           if isinstance(published, str) and len(published) <= 64 else None)
+            except ValueError:
+                instant = None
+            if instant is None or instant.tzinfo is None or instant.utcoffset() != timezone.utc.utcoffset(instant):
+                raise UpdateError('BakaSU releases: published release lacks a valid UTC timestamp')
+            if release['prerelease']:
+                candidates.append((instant, release['id'], tag))
+        if len(batch) < RELEASE_PAGE_SIZE:
+            break
+    else:
+        raise UpdateError('BakaSU releases: pagination did not finish within its bound')
+    prerelease = None
+    if candidates:
+        tag = max(candidates)[2]
+        commit = github_lookup('BakaSU prerelease commit', github_commit, BAKASU, tag)
+        if not isinstance(commit, str) or not SHA.fullmatch(commit):
+            raise UpdateError('Invalid official BakaSU prerelease commit')
+        prerelease = {'tag': tag, 'commit': commit.lower()}
+    return {'branch': branch, 'head': head.lower(), 'release': formal, 'prerelease': prerelease}
+
+
 def fetch_snapshot(current: dict) -> dict:
     repository = github_lookup('SukiSU repository', github_json, SUKISU)
     branch = repository.get('default_branch')
@@ -147,11 +247,13 @@ def fetch_snapshot(current: dict) -> dict:
             development = {'branch': 'dev', 'head': commit['sha'].lower()}
     return validate_snapshot({'schema_version': 1,
                               'sukisu': {'branch': branch, 'head': head, 'release': release, 'development': development},
+                              'bakasu': fetch_bakasu_snapshot(),
                               'susfs': {target: gitlab_head(target) for target in TARGETS}})
 
 
 def validate_snapshot(value: object) -> dict:
-    if (not isinstance(value, dict) or set(value) != {'schema_version', 'sukisu', 'susfs'}
+    if (not isinstance(value, dict) or set(value) not in ({'schema_version', 'sukisu', 'susfs'},
+                                                      {'schema_version', 'sukisu', 'bakasu', 'susfs'})
             or type(value['schema_version']) is not int or value['schema_version'] != 1):
         raise UpdateError('Unsupported official candidate snapshot schema')
     suki, susfs = value['sukisu'], value['susfs']
@@ -186,6 +288,23 @@ def validate_snapshot(value: object) -> dict:
     if 'development' in suki:
         result['sukisu']['development'] = ({'branch': 'dev', 'head': development['head'].lower()}
                                            if development else None)
+    if 'bakasu' in value:
+        baka = value['bakasu']
+        if (not isinstance(baka, dict) or set(baka) != {'branch', 'head', 'release', 'prerelease'}
+                or not isinstance(baka['branch'], str) or not isinstance(baka['head'], str)
+                or not SHA.fullmatch(baka['head'])):
+            raise UpdateError('Invalid official BakaSU snapshot')
+        validate_ref(baka['branch'])
+        result['bakasu'] = {'branch': baka['branch'], 'head': baka['head'].lower()}
+        for key in ('release', 'prerelease'):
+            entry = baka[key]
+            if entry is not None:
+                if (not isinstance(entry, dict) or set(entry) != {'tag', 'commit'}
+                        or not isinstance(entry.get('tag'), str) or not isinstance(entry.get('commit'), str)
+                        or not SHA.fullmatch(entry['commit'])):
+                    raise UpdateError('Invalid official BakaSU ' + key + ' snapshot')
+                validate_ref(entry['tag'])
+            result['bakasu'][key] = {'tag': entry['tag'], 'commit': entry['commit'].lower()} if entry is not None else None
     return result
 
 
@@ -196,6 +315,8 @@ def head_state(snapshot: dict) -> dict:
               'susfs': snapshot['susfs']}
     if 'development' in snapshot['sukisu']:
         result['sukisu_development'] = snapshot['sukisu']['development']
+    if 'bakasu' in snapshot:
+        result['bakasu'] = snapshot['bakasu']
     return result
 
 
@@ -244,6 +365,15 @@ def changes(current: dict, snapshot: dict) -> list[dict[str, str]]:
         selected.append({'source': 'SukiSU development', 'ref': 'dev', 'current': current['sukisu'],
                          'candidate': development['head'],
                          'url': f'https://github.com/{SUKISU}/commit/' + development['head']})
+    if 'bakasu' in snapshot:
+        baka = snapshot['bakasu']
+        selected.append({'source': 'BakaSU', 'ref': baka['branch'], 'current': '', 'candidate': baka['head'],
+                         'url': f'https://github.com/{BAKASU}/commit/' + baka['head']})
+        for key, label in (('release', 'BakaSU release'), ('prerelease', 'BakaSU prerelease')):
+            entry = baka[key]
+            if entry is not None:
+                selected.append({'source': label, 'ref': entry['tag'], 'current': '', 'candidate': entry['commit'],
+                                 'url': f'https://github.com/{BAKASU}/releases/tag/' + quote(entry['tag'], safe='')})
     for target in TARGETS:
         if snapshot['susfs'][target] != current['susfs'][target]:
             selected.append({'source': 'SUSFS', 'ref': 'gki-' + target, 'current': current['susfs'][target],
@@ -257,7 +387,8 @@ def report_text(current: dict, snapshot: dict, updates: list[dict]) -> str:
              f"当前验证基线：SukiSU `{current['sukisu']}`，SUSFS `{current['susfs_version']}`。", '',
              '| 官方源码 | 分支/版本 | 当前验证提交 | 候选提交 |', '| --- | --- | --- | --- |']
     for item in updates:
-        lines.append(f"| {item['source']} | `{item['ref']}` | `{item['current'][:12]}` | [`{item['candidate'][:12]}`]({item['url']}) |")
+        old = item['current'][:12] or '未设固定验证基线'
+        lines.append(f"| {item['source']} | `{item['ref']}` | `{old}` | [`{item['candidate'][:12]}`]({item['url']}) |")
     lines.extend(['', '后续需要核对内核 API、SUSFS hook/ABI、管理器包名及签名，再执行对应内核构建验证。',
                   '`build-compatibility.json` 和已验证的构建提交保持不变；本次检测未编译候选内核。',
                   '合并本 PR 仅确认已收到这些官方更新提示，后续出现不同提交时会再次提示。', ''])

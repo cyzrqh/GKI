@@ -16,6 +16,8 @@ import stat
 import struct
 import zipfile
 
+from manager_variants import MANAGERS, manager_profile, valid_manager_apk_filename
+
 APK_MEMBER = 'assets/gki-build.json'
 KERNEL_MEMBER = 'META-INF/gki/build.json'
 MAX_APK_BYTES = 64 * 1024 * 1024
@@ -238,7 +240,7 @@ def validate_manager_document(metadata: dict) -> None:
         return (type(value) in (str, int) and re.fullmatch(r'[1-9][0-9]*', str(value))
                 and int(value) <= 2**63 - 1)
     if (type(metadata.get('schema_version')) is not int or metadata['schema_version'] != 1
-            or metadata.get('ksu_variant') != 'SukiSU' or 'apk_sha256' in metadata or 'sha256' in metadata):
+            or metadata.get('ksu_variant') not in MANAGERS or 'apk_sha256' in metadata or 'sha256' in metadata):
         raise ValueError('Invalid or self-referential embedded manager identity')
     for field in ('ksu_ref', 'producer_head_sha'):
         if not isinstance(metadata.get(field), str) or not re.fullmatch(r'[0-9a-f]{40}', metadata[field]):
@@ -285,8 +287,17 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
     if (not isinstance(name, str) or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9_.+-]*\.apk', name)
             or '..' in name or len(name) > 250 or filename is not None and filename != name):
         raise ValueError('Embedded manager APK filename does not match its final artifact')
-    native = re.fullmatch(r'SukiSU_.+_([0-9]+)-release\.apk', name)
-    if native and int(native[1]) != int(metadata['ksu_version_code']):
+    prefixes = manager_profile(metadata['ksu_variant'])['apk_prefixes']
+    for variant in MANAGERS:
+        for prefix in manager_profile(variant)['apk_prefixes']:
+            if name.startswith(prefix + '_') and prefix not in prefixes:
+                raise ValueError('Embedded manager APK filename belongs to a different variant')
+    if metadata['ksu_variant'] == 'BakaSU' and not valid_manager_apk_filename(name, 'BakaSU'):
+        raise ValueError('Invalid native BakaSU APK filename')
+    native = re.fullmatch(r'(SukiSU|BakaSU|ReSukiSU)_.+_([0-9]+)(?:-arm64-v8a)?-release\.apk', name)
+    if native and native[1] not in prefixes:
+        raise ValueError('Embedded manager APK filename belongs to a different variant')
+    if native and int(native[2]) != int(metadata['ksu_version_code']):
         raise ValueError('Embedded manager version code differs from its native APK filename')
     if (str(metadata.get('manager_cert_size')) != str(len(certificate))
             or metadata.get('manager_cert_sha256') != hashlib.sha256(certificate).hexdigest()):

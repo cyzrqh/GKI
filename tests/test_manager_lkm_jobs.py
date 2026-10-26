@@ -175,7 +175,12 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertEqual('/bin/bash', arguments[arguments.index('--entrypoint') + 1])
         self.assertEqual('$DDK_IMAGE', arguments[arguments.index('--entrypoint') + 2])
         passed = {arguments[index + 1].split('=', 1)[0] for index, arg in enumerate(arguments) if arg == '--env'}
-        self.assertEqual({'HOME', 'KSU_PACKAGE_NAME', 'KSU_EXPECTED_SIZE', 'KSU_EXPECTED_HASH', 'KSU_VERSION', 'MODULE_OUTPUT'}, passed)
+        self.assertEqual({'HOME', 'KSU_PACKAGE_NAME', 'KSU_MANAGER_PACKAGE', 'KSU_VARIANT',
+                          'KSU_EXPECTED_SIZE', 'KSU_EXPECTED_HASH', 'KSU_VERSION', 'MODULE_OUTPUT'}, passed)
+        self.assertIn('if [ "$KSU_VARIANT" = BakaSU ]; then', arguments[-1])
+        self.assertIn('CONFIG_KSU_MULTI_MANAGER_SUPPORT=y', arguments[-1])
+        self.assertIn('CONFIG_KSU_TRACEPOINT_HOOK=y', arguments[-1])
+        self.assertIn('KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE"', arguments[-1])
         self.assertIn('CONFIG_KSU=m CC=clang make -j "$(nproc)"', arguments[-1])
         self.assertIn('KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"', arguments[-1])
         self.assertIn('KSU_EXPECTED_SIZE="$KSU_EXPECTED_SIZE"', arguments[-1])

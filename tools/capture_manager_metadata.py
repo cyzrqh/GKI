@@ -9,6 +9,7 @@ import re
 
 from wait_manager_identity import Expected, positive_integer, validate_metadata
 from pin_build_dependencies import load_profile, source_policy
+from manager_variants import selected_variant
 
 
 def main():
@@ -22,14 +23,18 @@ def main():
             or not re.fullmatch(r'[0-9]+', fields['ksu_version_code'])
             or any('\n' in value or '\r' in value for value in fields.values())):
         raise SystemExit('Invalid verified manager release metadata')
-    profile = load_profile(Path(__file__).resolve().parents[1])
+    variant = selected_variant()
     # Prepare has already proved the selected source and full SUSFS port before
     # any manager job runs. Checked-patch sources need not be a fixed commit.
     susfs_enabled = os.environ.get('META_ENABLE_SUSFS') == 'true'
-    compatible_source = (source_policy(profile) == 'checked-patch'
-                         or fields['ksu_ref'].lower() in {commit.lower() for commit in profile['ksu_commits']})
-    fields.update(ksu_variant='SukiSU', built_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(),
-                  susfs_version=profile['version'] if susfs_enabled and compatible_source else None)
+    susfs_version = None
+    if variant == 'SukiSU':
+        profile = load_profile(Path(__file__).resolve().parents[1])
+        compatible_source = (source_policy(profile) == 'checked-patch'
+                             or fields['ksu_ref'].lower() in {commit.lower() for commit in profile['ksu_commits']})
+        susfs_version = profile['version'] if susfs_enabled and compatible_source else None
+    fields.update(ksu_variant=variant, built_at_utc=dt.datetime.now(dt.timezone.utc).isoformat(),
+                  susfs_version=susfs_version)
     # Signer outputs supply these public certificate/APK hashes. No private key
     # or signing password is ever put in this identity artifact.
     fields.update(
@@ -45,7 +50,7 @@ def main():
                         positive_integer(fields['producer_run_id'], 'producer run ID'),
                         positive_integer(fields['producer_run_attempt'], 'producer run attempt'),
                         fields['producer_head_sha'], fields['ksu_ref'],
-                        fields['file'])
+                        fields['file'], variant=variant)
     expected.validate()
     validate_metadata(fields, expected)
     args.output.parent.mkdir(parents=True, exist_ok=True)

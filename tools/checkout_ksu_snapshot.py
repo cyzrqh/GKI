@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -12,9 +13,11 @@ from snapshot_ksu_source import (BUNDLE_NAME, MANIFEST_NAME, MAX_BUNDLE_SIZE,
                                  MAX_MANIFEST_SIZE, REPOSITORY, SHA, SnapshotError,
                                  expected_commit, file_digest, git, source_identity,
                                  temporary_directory)
+from manager_variants import MANAGERS, manager_profile
 
 
-def read_manifest(directory: Path, reference: str) -> dict:
+def read_manifest(directory: Path, reference: str, *, variant: str = 'SukiSU') -> dict:
+    repository = manager_profile(variant)['repository']
     manifest_path = directory / MANIFEST_NAME
     if manifest_path.is_symlink() or not manifest_path.is_file() or manifest_path.stat().st_size > MAX_MANIFEST_SIZE:
         raise SnapshotError("SukiSU snapshot manifest is missing or invalid")
@@ -23,7 +26,7 @@ def read_manifest(directory: Path, reference: str) -> dict:
     except (OSError, ValueError, UnicodeError) as error:
         raise SnapshotError("SukiSU snapshot manifest is not valid JSON") from error
     if (not isinstance(manifest, dict) or type(manifest.get("schema_version")) is not int
-            or manifest["schema_version"] != 1 or manifest.get("repository") != REPOSITORY
+            or manifest["schema_version"] != 1 or manifest.get("repository") != repository
             or manifest.get("ref") != reference or manifest.get("bundle_filename") != BUNDLE_NAME):
         raise SnapshotError("SukiSU snapshot manifest does not match the selected official source")
     if (type(manifest.get("bundle_size")) is not int or not 0 < manifest["bundle_size"] <= MAX_BUNDLE_SIZE
@@ -38,7 +41,7 @@ def read_manifest(directory: Path, reference: str) -> dict:
     return manifest
 
 
-def checkout_snapshot(directory: Path, output: Path, reference: str) -> dict:
+def checkout_snapshot(directory: Path, output: Path, reference: str, *, variant: str = 'SukiSU') -> dict:
     reference = expected_commit(reference)
     directory = directory.resolve(strict=True)
     output = output.absolute()
@@ -46,7 +49,7 @@ def checkout_snapshot(directory: Path, output: Path, reference: str) -> dict:
         raise SnapshotError("SukiSU checkout output already exists; refusing to overwrite it")
     if not output.parent.is_dir():
         raise SnapshotError("SukiSU checkout parent directory does not exist")
-    manifest = read_manifest(directory, reference)
+    manifest = read_manifest(directory, reference, variant=variant)
     bundle = directory / BUNDLE_NAME
     if (bundle.is_symlink() or not bundle.is_file()
             or bundle.stat().st_size != manifest["bundle_size"]
@@ -68,7 +71,7 @@ def checkout_snapshot(directory: Path, output: Path, reference: str) -> dict:
         git(prepared, "fsck", "--connectivity-only", "--no-dangling", timeout=300)
         # Point origin at the public repository only after fully offline restore.
         # No subsequent fetch is needed or performed by this tool.
-        git(prepared, "remote", "set-url", "origin", f"https://github.com/{REPOSITORY}.git")
+        git(prepared, "remote", "set-url", "origin", f"https://github.com/{manifest['repository']}.git")
         if output.exists() or output.is_symlink():
             raise SnapshotError("SukiSU checkout output appeared while preparing; refusing to overwrite it")
         prepared.rename(output)
@@ -80,13 +83,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--expected-ref", required=True)
+    parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
     args = parser.parse_args(argv)
     try:
-        manifest = checkout_snapshot(args.input, args.output, args.expected_ref)
+        manifest = checkout_snapshot(args.input, args.output, args.expected_ref, variant=args.variant)
     except (OSError, ValueError, UnicodeError) as error:
         print(f"::error::SukiSU snapshot checkout failed: {error}", file=sys.stderr)
         return 1
-    print(f"SukiSU restored from this run's immutable source: {manifest['ref']} ({manifest['git_count']} commits)")
+    print(f"{args.variant} restored from this run's immutable source: {manifest['ref']} ({manifest['git_count']} commits)")
     return 0
 
 

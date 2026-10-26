@@ -188,6 +188,32 @@ class ManagerBootPatchTests(unittest.TestCase):
                 boot.apply_host_cfg(source)
             self.assertEqual(path.read_bytes(), content)
 
+    def test_bakasu_uses_its_own_locked_crates_and_does_not_change_guarded_host_modules(self):
+        original = (b'#![feature(decl_macro)]\n#[cfg(target_os = "android")]\nmod android;\n'
+                    b'#[cfg(target_os = "android")]\nmod anykernel3;\n'
+                    b'#[cfg(not(target_os = "android"))]\nmod cli_non_android;\nmod boot_patch;\n')
+        source, main = self.cfg_source(original)
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+            self.assertEqual([], boot.apply_host_cfg(source))
+            self.assertEqual(original, main.read_bytes())
+            protected = boot.protected_host_sources()
+            self.assertIn('userspace/ksud/Cargo.lock', protected)
+            self.assertIn('userspace/ksuinit/Cargo.lock', protected)
+            self.assertNotIn('Cargo.toml', protected)
+            self.assertNotIn('Cargo.lock', protected)
+            self.assertEqual('com.cyzrqh.gki.bakasu', boot.host_environment(source)['KSU_PACKAGE_NAME'])
+
+    def test_bakasu_unguarded_android_modules_or_new_feature_layout_require_review(self):
+        original = (b'#[cfg(target_os = "android")]\nmod android;\n'
+                    b'#[cfg(target_os = "android")]\nmod anykernel3;\n'
+                    b'#[cfg(not(target_os = "android"))]\nmod cli_non_android;\n')
+        for changed in (original.replace(b'#[cfg(target_os = "android")]\nmod android;', b'mod android;'),
+                        original + b'mod feature;\n', original + b'mod android;\n'):
+            source, main = self.cfg_source(changed)
+            with self.subTest(changed=changed), self.assertRaises(boot.VerificationError):
+                boot.apply_host_cfg(source, variant='BakaSU')
+            self.assertEqual(changed, main.read_bytes())
+
 
 if __name__ == "__main__":
     unittest.main()

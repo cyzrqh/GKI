@@ -12,12 +12,14 @@ import sys
 import tempfile
 
 import sign_sukisu_manager as signing
+from manager_variants import MANAGERS, manager_profile
 
 
 MANAGER_PACKAGE = 'com.cyzrqh.gki.sukisu'
 
 
-def export_certificate(output: Path) -> dict[str, str | int]:
+def export_certificate(output: Path, variant: str = 'SukiSU') -> dict[str, str | int]:
+    package = manager_profile(variant)['package']
     output = Path(output).resolve()
     if any(ord(character) < 32 for character in str(output)):
         raise signing.SigningError('The public certificate JSON path contains a control character.')
@@ -50,7 +52,7 @@ def export_certificate(output: Path) -> dict[str, str | int]:
         # Validate the exported X.509 certificate using the same installed
         # Java tool; no Android SDK or Python crypto dependency is required.
         signing.run_command([keytool, '-printcert', '-file', str(certificate_path)], password, secrets)
-        metadata = {'schema_version': 1, 'manager_package': MANAGER_PACKAGE,
+        metadata = {'schema_version': 1, 'manager_package': package,
                     'manager_cert_size': len(certificate),
                     'manager_cert_sha256': hashlib.sha256(certificate).hexdigest()}
 
@@ -78,9 +80,10 @@ def export_certificate(output: Path) -> dict[str, str | int]:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--output', required=True, type=Path)
+    parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
     args = parser.parse_args(argv)
     try:
-        metadata = export_certificate(args.output)
+        metadata = export_certificate(args.output, args.variant)
     except (signing.SigningError, OSError, UnicodeError, ValueError) as error:
         encoded = os.environ.get(signing.KEYSTORE_ENV, '')
         values = (encoded, ''.join(encoded.split()), os.environ.get(signing.PASSWORD_ENV, ''))

@@ -19,6 +19,7 @@ class WorkflowTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.workflow = generator.create_workflow(ROOT)
+        cls.updater = generator.updater_workflow()
         cls.steps = cls.workflow['jobs']['build-kernel']['steps']
 
     def find(self, name):
@@ -39,15 +40,15 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--module-report "$RUNNER_TEMP/manager-lkm-stage.json"', verify['run'])
         self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-build'), index)
         self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'sign'))
-        self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('name') == '上传 SukiSU 安装包'))
+        self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('name') == '上传管理器安装包'))
 
-    def test_sukisu_release_choices_preserve_old_dispatch_and_share_canonical_tier(self):
+    def test_manager_choices_only_expose_two_variants_and_two_shared_versions(self):
         fields = self.workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
-        self.assertEqual(fields['kernelsu_branch']['default'], 'SukiSU 最新版')
-        self.assertEqual(fields['kernelsu_branch']['options'],
-                         ['Stable(标准)', 'Dev(开发)', 'Latest(最新)', 'Custom(自定义)',
-                          'SukiSU 正式版', 'SukiSU 最新版'])
+        self.assertEqual(fields['kernelsu_variant']['options'], ['SukiSU', 'BakaSU'])
+        self.assertEqual(fields['kernelsu_branch']['default'], '最新版')
+        self.assertEqual(fields['kernelsu_branch']['description'], '版本')
+        self.assertEqual(fields['kernelsu_branch']['options'], ['正式版', '最新版'])
         kernel = self.workflow['jobs']['build-kernel']
         self.assertNotIn('inputs.kernelsu_branch', str(kernel))
         canonical = '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}'
@@ -75,10 +76,31 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('schedule', self.workflow['on'])
         operation = self.workflow['on']['workflow_dispatch']['inputs']['operation']
         self.assertEqual(operation['default'], '编译内核')
-        self.assertEqual(operation['options'], ['编译内核', '仅编译 SukiSU 安装包', '检查上游更新'])
-        self.assertNotIn('仅编译 SukiSU 安装包', generator.BUILD_IF)
+        self.assertEqual(operation['options'], ['编译内核', '仅编译管理器安装包'])
+        self.assertNotIn('仅编译管理器安装包', generator.BUILD_IF)
         self.assertNotIn('schedule', generator.PREPARE_IF)
-        self.assertEqual(self.workflow['jobs']['prepare-matrix']['steps'][1]['if'], generator.BUILD_IF)
+        matrix = next(step for step in self.workflow['jobs']['prepare-matrix']['steps'] if step.get('id') == 'matrix')
+        self.assertEqual(matrix['if'], generator.BUILD_IF)
+
+    def test_both_selected_managers_build_for_kernel_and_apk_only_operations(self):
+        for variant, operation, event in itertools.product(
+                ('SukiSU', 'BakaSU', 'Official', 'None'),
+                ('编译内核', '仅编译管理器安装包', '检查上游更新'), ('workflow_dispatch', 'push')):
+            condition = generator.MANAGER_IF.replace('inputs.kernelsu_variant', repr(variant))
+            condition = condition.replace('inputs.operation', repr(operation)).replace('github.event_name', repr(event))
+            allowed = bool(eval(condition.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}, {}))
+            with self.subTest(variant=variant, operation=operation, event=event):
+                self.assertEqual(event == 'workflow_dispatch' and variant in ('SukiSU', 'BakaSU')
+                                 and operation in ('编译内核', '仅编译管理器安装包'), allowed)
+
+    def test_selected_variant_reaches_all_snapshot_signing_and_release_consumers(self):
+        for name in ('prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager', 'build-kernel', 'publish-release'):
+            with self.subTest(job=name):
+                job = self.workflow['jobs'][name]
+                self.assertEqual(job['env']['KSU_VARIANT'], '${{ inputs.kernelsu_variant }}')
+        prepare = self.workflow['jobs']['prepare-matrix']
+        source = next(step for step in prepare['steps'] if step.get('id') == 'sources')
+        self.assertEqual(source['env']['KSU_VARIANT'], '${{ inputs.kernelsu_variant }}')
 
     def test_history_cleanup_requires_explicit_default_branch_manual_operation(self):
         standalone = generator.cleanup_history_workflow()
@@ -105,9 +127,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('upload-artifact', str(cleanup))
 
     def test_build_and_sync_remove_successful_cleanup_records_without_another_workflow(self):
-        for name in ('prepare-matrix', 'check-upstream'):
+        for name, job in (('prepare-matrix', self.workflow['jobs']['prepare-matrix']),
+                          ('check-upstream', self.updater['jobs']['check-upstream'])):
             with self.subTest(job=name):
-                job = self.workflow['jobs'][name]
                 steps = [step for step in job['steps']
                          if 'remove_successful_cleanup_runs.py' in step.get('run', '')]
                 self.assertEqual(1, len(steps))
@@ -117,6 +139,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual({'GH_TOKEN': '${{ github.token }}'}, steps[0]['env'])
                 self.assertEqual('write', job['permissions']['actions'])
         self.assertNotIn('workflow_run', self.workflow['on'])
+        self.assertNotIn('workflow_run', self.updater['on'])
 
     def test_susfs_map_compatibility_is_checked_with_a_real_compiler_before_expanding_jobs(self):
         prepare = self.workflow['jobs']['prepare-matrix']
@@ -131,9 +154,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('continue-on-error', check)
 
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
-        job = self.workflow['jobs']['check-upstream']
-        self.assertEqual(job['if'], "github.event_name == 'workflow_dispatch' && inputs.operation == '检查上游更新' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
-        self.assertNotIn('schedule', self.workflow['run-name'])
+        job = self.updater['jobs']['check-upstream']
+        self.assertEqual(self.updater['on'], {'workflow_dispatch': {}})
+        self.assertEqual(set(self.updater['jobs']), {'check-upstream'})
+        self.assertNotIn('check-upstream', self.workflow['jobs'])
+        self.assertEqual(job['if'], "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
+        self.assertNotIn('schedule', self.updater['run-name'])
+        self.assertNotIn('inputs.operation', str(self.updater))
         self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'write', 'actions': 'write'})
         checkout = job['steps'][0]
         self.assertIs(checkout['with']['persist-credentials'], False)
@@ -141,7 +168,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(job['concurrency']['cancel-in-progress'], False)
 
     def test_updater_validates_before_publishing_and_skips_existing_candidate(self):
-        steps = self.workflow['jobs']['check-upstream']['steps']
+        steps = self.updater['jobs']['check-upstream']['steps']
         indexed = {step['id']: (i, step) for i, step in enumerate(steps) if 'id' in step}
         self.assertLess(indexed['guard'][0], indexed['update'][0])
         self.assertLess(indexed['update'][0], indexed['pr'][0])
@@ -165,7 +192,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('xingguangcuican6666', str(steps))
 
     def test_auto_sync_handles_pending_and_new_pr_without_manual_review_reminders(self):
-        steps = self.workflow['jobs']['check-upstream']['steps']
+        steps = self.updater['jobs']['check-upstream']['steps']
         step = next(step for step in steps if step.get('id') == 'sync')
         self.assertEqual(step['env']['GH_TOKEN'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
         self.assertIn("steps.pr.outputs.pull-request-number != ''", step['if'])
@@ -178,7 +205,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('无需手动合并', summary['run'])
 
     def test_catalog_cache_survives_partial_failures_and_final_status_is_explicit(self):
-        steps = self.workflow['jobs']['check-upstream']['steps']
+        steps = self.updater['jobs']['check-upstream']['steps']
         catalog = next(step for step in steps if step.get('id') == 'catalog')
         official = next(step for step in steps if step.get('id') == 'official')
         self.assertIs(catalog['continue-on-error'], True)
@@ -197,7 +224,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertGreater(steps.index(final), next(i for i, step in enumerate(steps) if step.get('id') == 'pr'))
 
     def test_partial_probe_keeps_successful_source_candidates_and_defaults_failed_source(self):
-        steps = self.workflow['jobs']['check-upstream']['steps']
+        steps = self.updater['jobs']['check-upstream']['steps']
         probe = next(step for step in steps if step.get('id') == 'probe')
         code = probe['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
         directory = ROOT / 'tests' / ('.workflow-probe-' + uuid.uuid4().hex)
@@ -219,7 +246,7 @@ class WorkflowTests(unittest.TestCase):
                 self.assertRegex(values['heads_marker'], r'^<!-- gki-official-heads:sha256=[0-9a-f]{64} -->$')
 
     def test_partial_prepare_body_reports_failed_catalog_without_parsing_empty_json(self):
-        step = next(step for step in self.workflow['jobs']['check-upstream']['steps'] if step.get('id') == 'update')
+        step = next(step for step in self.updater['jobs']['check-upstream']['steps'] if step.get('id') == 'update')
         self.assertIn('if [ "$OFFICIAL_RESULT" = success ]; then', step['run'])
         self.assertIn('if [ "$CATALOG_RESULT" = success ]; then', step['run'])
         code = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
@@ -245,12 +272,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(step['env']['BRANCH'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
         self.assertNotIn('resolve-ksu-ref.sh', step['run'])
 
-    def test_sukisu_manager_is_built_once_and_kernel_uses_its_signature(self):
+    def test_selected_manager_is_built_once_and_kernel_uses_its_signature(self):
         manager = self.workflow['jobs']['build-sukisu-manager']
+        self.assertEqual(manager['name'], '编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK')
         self.assertEqual(manager['needs'], ['prepare-matrix', 'build-sukisu-lkm'])
         self.assertNotIn('strategy', manager)
         self.assertEqual(manager['if'], generator.MANAGER_IF)
-        checkout = next(step for step in manager['steps'] if step['name'] == '检出同一版本的 SukiSU 源码')
+        checkout = next(step for step in manager['steps'] if step['name'] == '检出同一版本的管理器源码')
         self.assertIn('checkout_ksu_snapshot.py', checkout['run'])
         self.assertEqual(checkout['env']['KSU_REF'], '${{ needs.prepare-matrix.outputs.ksu_ref }}')
         self.assertNotIn('uses', checkout)
@@ -262,8 +290,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertTrue(snapshot['continue-on-error'])
         build = next(step for step in manager['steps'] if step['name'] == '编译管理器与同版本 ksud')
         self.assertEqual(build['env']['KSU_PACKAGE_NAME'], build['env']['ORG_GRADLE_PROJECT_KSU_PACKAGE_NAME'])
-        self.assertEqual(build['env']['KSU_PACKAGE_NAME'], 'com.cyzrqh.gki.sukisu')
-        self.assertEqual(build['env']['ORG_GRADLE_PROJECT_KSU_NAME'], 'SukiSU')
+        self.assertEqual(build['env']['KSU_PACKAGE_NAME'], '${{ needs.prepare-matrix.outputs.manager_package }}')
+        self.assertEqual(build['env']['ORG_GRADLE_PROJECT_KSU_NAME'], '${{ inputs.kernelsu_variant }}')
+        self.assertIn('BakaSU) script=tools/build_bakasu_manager.sh', build['run'])
+        self.assertIn('SukiSU) script=tools/build_sukisu_manager.sh', build['run'])
         self.assertNotIn('secrets.', str(build))
         sign = next(step for step in manager['steps'] if step.get('id') == 'sign')
         self.assertIn('secrets.SUKISU_APK_KEYSTORE', sign['env']['SUKISU_APK_KEYSTORE'])
@@ -272,7 +302,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(kernel['needs'], ['prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager'])
         self.assertEqual(kernel['permissions'], {'contents': 'read', 'actions': 'read'})
         wait = self.find('编译前读取本次 APK 的实际签名信息')
-        self.assertEqual(wait['if'], "inputs.kernelsu_variant == 'SukiSU'")
+        self.assertEqual(wait['if'], "inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'")
         self.assertIn('wait_manager_identity.py', wait['run'])
         self.assertIn('--expected-ref "$KSU_REF"', wait['run'])
         self.assertIn('--github-env "$GITHUB_ENV"', wait['run'])
@@ -280,7 +310,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('--artifact-name "$MANAGER_ARTIFACT"', wait['run'])
         self.assertEqual(wait['env']['MANAGER_ARTIFACT'], '${{ needs.build-sukisu-manager.outputs.apk_filename }}')
         self.assertIn('KSU_REF', sign['env'])
-        upload = next(step for step in manager['steps'] if step['name'] == '上传 SukiSU 安装包')
+        upload = next(step for step in manager['steps'] if step['name'] == '上传管理器安装包')
         self.assertEqual(upload['uses'], 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)
         self.assertEqual(upload['with']['path'], 'manager-artifact/${{ steps.sign.outputs.apk_filename }}')
@@ -310,7 +340,7 @@ class WorkflowTests(unittest.TestCase):
                     values = {
                         'always()': 'True', 'cancelled()': 'False',
                         'needs.prepare-matrix.result': repr('success'),
-                        'needs.build-sukisu-lkm.result': repr('success' if variant == 'SukiSU' else 'skipped'),
+                        'needs.build-sukisu-lkm.result': repr('success' if variant in ('SukiSU', 'BakaSU') else 'skipped'),
                         'needs.build-sukisu-manager.result': repr(producer),
                         'github.event_name': repr('workflow_dispatch'),
                         'inputs.operation': repr('编译内核'), 'inputs.kernelsu_variant': repr(variant),
@@ -320,7 +350,7 @@ class WorkflowTests(unittest.TestCase):
                         expression = expression.replace(name, value)
                     expression = expression.replace('&&', ' and ').replace('||', ' or ').replace('!False', 'not False')
                     allowed = bool(eval(expression, {'__builtins__': {}}, {}))
-                    self.assertEqual(variant != 'SukiSU' or producer == 'success', allowed)
+                    self.assertEqual(variant not in ('SukiSU', 'BakaSU') or producer == 'success', allowed)
 
     def test_release_rerun_collects_only_this_attempts_signed_manager_filename(self):
         collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
@@ -345,7 +375,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(collection['with']['skip-decompress'], True)
         preparation = next(step for step in steps if step['name'] == '整理直接下载文件与实际配置')
         self.assertEqual(preparation['env']['EXPECTED_KERNEL_COUNT'],
-                         "${{ inputs.operation == '仅编译 SukiSU 安装包' && '0' || needs.prepare-matrix.outputs.count }}")
+                         "${{ inputs.operation == '仅编译管理器安装包' && '0' || needs.prepare-matrix.outputs.count }}")
         self.assertIn('--expected-kernel-count "$EXPECTED_KERNEL_COUNT"', preparation['run'])
         self.assertIn('--report-kind "$REPORT_KIND"', preparation['run'])
         self.assertEqual(preparation['env']['REPORT_KIND'],
@@ -360,7 +390,7 @@ class WorkflowTests(unittest.TestCase):
         publish = next(step for step in job['steps'] if step.get('id') == 'release')
         statuses = ('success', 'failure', 'cancelled', 'skipped')
         for operation, variant, full, prepare, manager, kernels, cancelled in itertools.product(
-                ('编译内核', '仅编译 SukiSU 安装包', '检查上游更新'), ('SukiSU', 'None'),
+                ('编译内核', '仅编译管理器安装包', '检查上游更新'), ('SukiSU', 'BakaSU'),
                 ('true', 'false', '', 'True'), ('success', 'failure'), statuses, statuses, (False, True)):
             with self.subTest(operation=operation, variant=variant, full=full,
                               prepare=prepare, manager=manager, kernels=kernels, cancelled=cancelled):
@@ -382,7 +412,7 @@ class WorkflowTests(unittest.TestCase):
                 actual = evaluate(job['if']) and evaluate(publish['if'])
                 expected = (not cancelled and prepare == 'success' and operation == '编译内核'
                             and full == 'true' and kernels == 'success'
-                            and (variant != 'SukiSU' or manager == 'success'))
+                            and manager == 'success')
                 self.assertEqual(expected, actual)
 
     def test_non_release_builds_keep_checksums_configuration_and_clean_owned_source_draft(self):
@@ -400,9 +430,10 @@ class WorkflowTests(unittest.TestCase):
         summary = next(step for step in steps if step['name'] == '显示构建配置与发行结果')
         self.assertIn('cat release-publish/release.md', summary['run'])
 
-    def test_sukisu_source_is_frozen_and_checked_before_any_kernel_sync(self):
+    def test_selected_source_is_frozen_and_checked_before_any_kernel_sync(self):
         prepare = self.workflow['jobs']['prepare-matrix']['steps']
-        checkout = next(step for step in prepare if step['name'] == '仅下载一次官方 SukiSU 源码')
+        checkout = next(step for step in prepare if step.get('with', {}).get('path') == 'ksu-snapshot-source')
+        self.assertEqual(checkout['with']['repository'], '${{ steps.sources.outputs.ksu_repo }}')
         self.assertEqual(checkout['with']['ref'], '${{ steps.sources.outputs.ksu_ref }}')
         self.assertEqual(checkout['with']['fetch-depth'], 0)
         self.assertIs(checkout['with']['persist-credentials'], False)
@@ -416,12 +447,20 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(publish['with']['key'], '${{ steps.source-snapshot.outputs.source_cache_key }}')
         self.assertIn('--output "$GITHUB_WORKSPACE/ksu-source-bundle"', check['run'])
         names = [step['name'] for step in self.steps]
-        self.assertLess(names.index('检出内核配套的 SukiSU 快照'), names.index('初始化并同步内核源码'))
+        self.assertLess(names.index('检出内核配套的管理器快照'), names.index('初始化并同步内核源码'))
         setup = self.find('添加 KernelSU')['run']
-        suki = setup.split('"SukiSU")', 1)[1].split('"BakaSU")', 1)[0]
-        self.assertIn('integrate_sukisu.py', suki)
-        for unstable in ('git clone', 'git pull', 'curl ', 'setup.sh'):
-            self.assertNotIn(unstable, suki)
+        # Both paired variants share the already restored source. Inspect
+        # their case bodies, retaining the prohibition on mutable setup fetches.
+        import re
+        cases = re.findall(r'(?ms)^\s*("SukiSU"(?:\|"BakaSU")?|"BakaSU")\)\s*(.*?)^\s*;;', setup)
+        self.assertTrue(cases)
+        self.assertIn('SukiSU', ''.join(pattern for pattern, _ in cases))
+        self.assertIn('BakaSU', ''.join(pattern for pattern, _ in cases))
+        for pattern, body in cases:
+            with self.subTest(pattern=pattern):
+                self.assertIn('integrate_sukisu.py', body)
+                for unstable in ('git clone', 'git pull', 'curl ', 'setup.sh'):
+                    self.assertNotIn(unstable, body)
 
     def test_public_files_are_never_uploaded_with_duplicate_release_wrappers(self):
         for job in self.workflow['jobs'].values():
@@ -544,20 +583,24 @@ class WorkflowTests(unittest.TestCase):
         directory = ROOT / 'tests' / ('.source-identity-' + uuid.uuid4().hex)
         directory.mkdir()
         self.addCleanup(shutil.rmtree, directory)
-        output = directory / 'output'
         identity = {'ref': 'a' * 40, 'git_tree': 'b' * 40, 'git_count': 1072,
                     'git_describe': 'v4.2.1-r2-6-g72eea67'}
-        with patch.dict(os.environ, {'KSU_REF': 'a' * 40, 'GITHUB_OUTPUT': str(output)}), \
-                patch('checkout_ksu_snapshot.read_manifest', return_value={**identity, 'bundle_sha256': 'c' * 64}):
-            exec(compile(code, '<source-identity>', 'exec'), {})
-        self.assertEqual(identity, json.loads(output.read_text().split('=', 1)[1]))
+        for variant in ('SukiSU', 'BakaSU'):
+            output = directory / variant
+            with self.subTest(variant=variant), \
+                    patch.dict(os.environ, {'KSU_REF': 'a' * 40, 'KSU_VARIANT': variant,
+                                           'GITHUB_OUTPUT': str(output)}), \
+                    patch('checkout_ksu_snapshot.read_manifest', return_value={**identity, 'bundle_sha256': 'c' * 64}) as manifest:
+                exec(compile(code, '<source-identity>', 'exec'), {})
+            manifest.assert_called_once_with(Path('ksu-source-bundle'), 'a' * 40, variant=variant)
+            self.assertEqual(identity, json.loads(output.read_text().split('=', 1)[1]))
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']
         self.assertEqual(release['permissions'], {'contents': 'write', 'actions': 'write'})
         self.assertIn("needs.build-kernel.result == 'success'", release['if'])
         self.assertIn("needs.build-sukisu-manager.result == 'success'", release['if'])
-        self.assertIn("inputs.operation == '仅编译 SukiSU 安装包'", release['if'])
+        self.assertIn("inputs.operation == '仅编译管理器安装包'", release['if'])
         self.assertNotIn('schedule', release['if'])
         self.assertIn("github.event_name == 'workflow_dispatch'", release['if'])
         publish = next(step for step in release['steps'] if step.get('id') == 'release')
@@ -578,7 +621,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('export CARGO_TARGET_DIR="$source_dir/target"', source)
         self.assertIn('"$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"', source)
         sign = next(i for i, step in enumerate(steps) if step.get('id') == 'sign')
-        upload = next(i for i, step in enumerate(steps) if step.get('name') == '上传 SukiSU 安装包')
+        upload = next(i for i, step in enumerate(steps) if step.get('name') == '上传管理器安装包')
         for label in ('Gradle', 'Cargo'):
             restore = next(step for step in steps if step.get('name') == f'恢复管理器 {label} 依赖')
             save = next(step for step in steps if step.get('name') == f'保存管理器 {label} 依赖')
@@ -625,7 +668,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn("steps.manager-build.outcome == 'success'", save['if'])
         self.assertIn('always() && !cancelled()', save['if'])
         self.assertGreater(steps.index(save), next(i for i, step in enumerate(steps)
-                                                  if step.get('name') == '上传 SukiSU 安装包'))
+                                                  if step.get('name') == '上传管理器安装包'))
         for cache in (restore, save):
             self.assertTrue(cache['continue-on-error'])
             self.assertLessEqual(cache['timeout-minutes'], 3)
@@ -877,7 +920,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(job['strategy']['max-parallel'], '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}')
         prepare = self.workflow['jobs']['prepare-matrix']
         self.assertEqual(prepare['outputs']['max_parallel'], '${{ steps.matrix.outputs.max_parallel }}')
-        self.assertIn('max_parallel={int(value)}', prepare['steps'][1]['run'])
+        matrix = next(step for step in prepare['steps'] if step.get('id') == 'matrix')
+        self.assertIn('max_parallel={int(value)}', matrix['run'])
 
     def test_build_runner_is_pinned_before_ubuntu_latest_migration(self):
         self.assertNotIn('ubuntu-latest', self.workflow['jobs']['build-kernel']['runs-on'])

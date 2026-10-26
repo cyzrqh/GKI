@@ -20,6 +20,7 @@ import zlib
 from capture_build_metadata import kernel_config, state
 from embedded_build_metadata import KERNEL_MEMBER, read_member, validate_members
 from validate_arm64_image import validate_image
+from manager_variants import MANAGERS, valid_manager_apk_filename
 
 AK3_NAME = re.compile(
     r'(?P<android>android[0-9]+)-(?P<series>[0-9]+\.[0-9]+)\.(?P<sublevel>[0-9]+|X)-'
@@ -75,7 +76,7 @@ def validate_kernel_document(metadata: dict) -> None:
                 or any(ord(c) < 32 or ord(c) == 127 for c in branch)
                 or not _positive(metadata.get('ksu_version_code'), 2100000000)):
             raise PackagingError('Invalid embedded KernelSU branch or version code')
-    if variant == 'SukiSU':
+    if variant in MANAGERS:
         package, version = metadata.get('manager_package'), metadata.get('ksu_version_name')
         if (not isinstance(package, str) or len(package) > 255
                 or not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', package)
@@ -83,14 +84,13 @@ def validate_kernel_document(metadata: dict) -> None:
                 or any(not 32 <= ord(c) <= 126 for c in version)
                 or not _positive(metadata.get('manager_cert_size'), 4096)
                 or int(metadata['manager_cert_size']) < 64):
-            raise PackagingError('Invalid embedded SukiSU manager identity')
+            raise PackagingError('Invalid embedded ' + variant + ' manager identity')
         for field in ('manager_cert_sha256', 'manager_apk_sha256'):
             if not isinstance(metadata.get(field), str) or not re.fullmatch(r'[0-9a-f]{64}', metadata[field]):
-                raise PackagingError('Invalid embedded SukiSU manager digest: ' + field)
+                raise PackagingError('Invalid embedded ' + variant + ' manager digest: ' + field)
         apk = metadata.get('manager_apk_filename')
-        if (not isinstance(apk, str) or len(apk) > 250 or '..' in apk
-                or not re.fullmatch(r'SukiSU_[A-Za-z0-9_.+-]+-release\.apk', apk)):
-            raise PackagingError('Invalid embedded SukiSU manager APK filename')
+        if not valid_manager_apk_filename(apk, variant):
+            raise PackagingError('Invalid embedded ' + variant + ' manager APK filename')
     files, boots = metadata.get('files'), metadata.get('boot_sha256')
     prefix = name.removesuffix('-AnyKernel3.zip')
     allowed = {prefix + suffix for suffix in BOOT_SUFFIXES}
@@ -135,6 +135,8 @@ def verify_image_metadata(metadata: dict, image: bytes) -> None:
     variant, features = metadata['ksu_variant'], metadata['features']
     if (config.get('CONFIG_KSU') == 'y') != (variant != 'None'):
         raise PackagingError('Embedded KernelSU variant differs from actual IKCONFIG')
+    if variant == 'BakaSU' and config.get('CONFIG_KSU_MULTI_MANAGER_SUPPORT') != 'y':
+        raise PackagingError('BakaSU requires its native multi-manager support to accept the paired certificate')
     has_backend = any(key.startswith('CONFIG_ZRAM_BACKEND_') for key in config)
     actual = {'susfs': config.get('CONFIG_KSU_SUSFS') == 'y',
               'lto': ('thin' if state(config, 'LTO_CLANG_THIN') is True else
@@ -154,9 +156,9 @@ def verify_image_metadata(metadata: dict, image: bytes) -> None:
             raise PackagingError('Embedded SUSFS version is absent from the actual Image')
     elif version is not None:
         raise PackagingError('Embedded SUSFS version is set for a kernel without SUSFS')
-    if variant == 'SukiSU' and any(metadata[field].encode() not in image
+    if variant in MANAGERS and any(metadata[field].encode() not in image
                                    for field in ('manager_package', 'manager_cert_sha256')):
-        raise PackagingError('The actual Image does not contain its paired SukiSU manager trust identity')
+        raise PackagingError('The actual Image does not contain its paired ' + variant + ' manager trust identity')
 
 
 def read_kernel_ak3(source: Path | bytes, *, filename: str | None = None) -> dict:
@@ -195,7 +197,7 @@ def read_kernel_ak3(source: Path | bytes, *, filename: str | None = None) -> dic
 def embedded_document(metadata: dict, assets: list[Path], hashes: dict[str, str]) -> dict:
     result = {**metadata, 'schema_version': 1, 'files': [asset.name for asset in assets],
               'boot_sha256': {asset.name: hashes[asset.name] for asset in assets[1:]}}
-    if result.get('ksu_variant') == 'SukiSU':
+    if result.get('ksu_variant') in MANAGERS:
         for field in ('manager_package', 'manager_cert_size', 'manager_cert_sha256',
                       'manager_apk_filename', 'manager_apk_sha256'):
             expected = os.environ.get(field.upper(), '')

@@ -18,8 +18,9 @@ import struct
 import sys
 import tempfile
 
-from snapshot_ksu_source import REPOSITORY, SnapshotError, expected_commit, git, source_identity
+from snapshot_ksu_source import SnapshotError, expected_commit, git, source_identity
 from manager_lkm_jobs import load_ddk_matrix
+from manager_variants import manager_profile, selected_variant
 
 
 KMI = re.compile(r"android[0-9]+-[0-9]+\.[0-9]+\Z")
@@ -71,16 +72,18 @@ def public_identity(path: Path) -> dict:
 
 
 def selected_source(source: Path, reference: str) -> dict:
+    variant = selected_variant()
     reference = expected_commit(reference)
     metadata = source_identity(source, reference)
     # An LKM uses upstream's original native hooks. The inline SUSFS integration
     # deliberately edits these files and must never be fed to this DDK build.
     git(source, "diff", "--quiet", "HEAD", "--", "kernel", "uapi", "userspace/ksud/src/assets.rs")
-    version = native_version_code(source, metadata["git_count"])
-    return {"repository": REPOSITORY, "ksu_ref": reference, "ksu_version_code": version, **metadata}
+    version = native_version_code(source, metadata["git_count"], variant=variant)
+    return {"repository": manager_profile(variant)['repository'], "ksu_ref": reference,
+            "ksu_version_code": version, **metadata}
 
 
-def native_version_code(source: Path, count: int) -> int:
+def native_version_code(source: Path, count: int, *, variant: str | None = None) -> int:
     """Use the exact upstream formula with this immutable HEAD's history.
 
     Native Kbuild otherwise counts the moving `main` branch or queries GitHub.
@@ -90,6 +93,20 @@ def native_version_code(source: Path, count: int) -> int:
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 1024 * 1024:
         raise LkmError("Native KernelSU version formula is missing or unsafe")
     text = path.read_text(encoding="utf-8")
+    if selected_variant(variant) == 'BakaSU':
+        count_lines = re.findall(r'^KSU_LOCAL_VERSION[ \t]*:=[^\r\n]+', text, re.M)
+        formula = re.findall(r'^KSU_VERSION[ \t]*:=[^\r\n]+', text, re.M)
+        expected_count = 'KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)'
+        expected_formula = 'KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)'
+        if (len(count_lines) != 1 or len(formula) != 1
+                or re.sub(r'[ \t]+', ' ', count_lines[0]).strip() != expected_count
+                or re.sub(r'[ \t]+', ' ', formula[0]).strip() != expected_formula
+                or type(count) is not int or count < 1):
+            raise LkmError('Native BakaSU version formula changed; review its history calculation')
+        version = 30700 + count
+        if not 1 <= version <= 2100000000:
+            raise LkmError('The native BakaSU source history produced an invalid version code')
+        return version
     values = {}
     for key in ("VERSION_BASE", "VERSION_OFFSET"):
         found = re.findall(r"^" + key + r"[ \t]*:=[ \t]*([0-9]+)[ \t]*$", text, re.M)
@@ -218,6 +235,8 @@ def record(source: Path, module: Path, kmi: str, identity_file: Path, reference:
            output: Path, ddk_image: str) -> dict:
     source = source.resolve(strict=True)
     identity = public_identity(identity_file)
+    if identity['manager_package'] != manager_profile(selected_variant())['package']:
+        raise LkmError('LKM manager package does not match the selected manager variant')
     provenance = selected_source(source, reference)
     locked_ddk(kmi, ddk_image)
     inspected = inspect_module(module, kmi, identity, provenance["ksu_ref"])
@@ -240,6 +259,8 @@ def stage(source: Path, artifacts: Path, identity_file: Path, reference: str,
           expected_kmis: str, report: Path) -> dict:
     source, artifacts = source.resolve(strict=True), artifacts.resolve(strict=True)
     identity = public_identity(identity_file)
+    if identity['manager_package'] != manager_profile(selected_variant())['package']:
+        raise LkmError('LKM manager package does not match the selected manager variant')
     provenance = selected_source(source, reference)
     required = expected_kmis.split(",")
     if (not 1 <= len(required) <= 32 or len(required) != len(set(required))

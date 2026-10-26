@@ -1,0 +1,17 @@
+{
+  "repository": "https://github.com/Baka-SU/BakaSU",
+  "commit": "d5e9e025b8b49155f8014684d64c91742b465f65",
+  "license": "GNU General Public License version 3; see upstream LICENSE",
+  "files": {
+    "Kbuild": {
+      "source_path": "kernel/Kbuild",
+      "sha256": "0e6c7668100c2b9976f9e8624771383acbb6d4246b10dea630dd80a5ddd087d9"
+    },
+    "Kbuild-rc3": {
+      "source_path": "kernel/Kbuild",
+      "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
+      "tag": "v4.2.0-rc3",
+      "sha256": "08bbd04a5667f54db6ac4ca8bf7ccf4b90187971f0b7e392d667468596de3cf6"
+    }
+  }
+}

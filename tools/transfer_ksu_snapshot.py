@@ -28,6 +28,7 @@ from cleanup_build_artifacts import validate_release
 from snapshot_ksu_source import (BUNDLE_NAME, MANIFEST_NAME, MAX_BUNDLE_SIZE, MAX_MANIFEST_SIZE,
                                  REPOSITORY, ROOT, SnapshotError, expected_commit, file_digest,
                                  git, snapshot_source, source_identity, temporary_directory)
+from manager_variants import MANAGERS, manager_profile
 
 
 MARKER = '<!-- gki-internal-source:v1 -->\n'
@@ -60,8 +61,10 @@ class Expected:
     run_attempt: int
     head_sha: str
     ksu_ref: str
+    variant: str = 'SukiSU'
 
     def validate(self):
+        manager_profile(self.variant)
         if (not isinstance(self.repository, str) or not re.fullmatch(
                 r'[A-Za-z0-9][A-Za-z0-9-]{0,38}/[A-Za-z0-9_.-]{1,100}', self.repository)
                 or self.repository.split('/')[1] in ('.', '..')):
@@ -166,10 +169,10 @@ class GitHub:
         return result
 
 
-def snapshot_files(directory: Path, reference: str) -> tuple[dict, dict[str, bytes]]:
+def snapshot_files(directory: Path, reference: str, *, variant: str = 'SukiSU') -> tuple[dict, dict[str, bytes]]:
     if directory.is_symlink() or not directory.is_dir() or {path.name for path in directory.iterdir()} != FILES:
         raise TransferError('Expected only the two regular source snapshot files')
-    manifest = read_manifest(directory, reference)
+    manifest = read_manifest(directory, reference, variant=variant)
     bundle = directory / BUNDLE_NAME
     if (bundle.is_symlink() or not bundle.is_file() or bundle.stat().st_size != manifest['bundle_size']
             or file_digest(bundle) != manifest['bundle_sha256']):
@@ -183,11 +186,16 @@ def snapshot_files(directory: Path, reference: str) -> tuple[dict, dict[str, byt
 
 
 def control_document(expected: Expected, files: dict[str, bytes]) -> dict:
-    return {'schema_version': 1, 'repository': expected.repository.lower(),
+    control = {'schema_version': 1, 'repository': expected.repository.lower(),
             'run_id': int(expected.run_id), 'run_attempt': int(expected.run_attempt),
             'head_sha': expected.head_sha, 'ksu_ref': expected.ksu_ref,
             'files': {name: {'size': len(raw), 'sha256': hashlib.sha256(raw).hexdigest()}
                       for name, raw in sorted(files.items())}}
+    # Original SukiSU backups retain their exact schema. New variants require
+    # an explicit discriminator even if both upstreams share a Git commit.
+    if expected.variant != 'SukiSU':
+        control['manager_variant'] = expected.variant
+    return control
 
 
 def tag_for(control: dict) -> str:
@@ -211,8 +219,11 @@ def validate_backup(release: dict, expected: Expected, release_id: int, *, requi
         control = json.loads(body[len(MARKER):], object_pairs_hook=unique_object)
     except (ValueError, UnicodeError):
         raise TransferError('The draft has invalid snapshot ownership metadata') from None
-    if (not isinstance(control, dict) or set(control) != {'schema_version', 'repository', 'run_id',
-            'run_attempt', 'head_sha', 'ksu_ref', 'files'} or type(control.get('schema_version')) is not int
+    fields = {'schema_version', 'repository', 'run_id', 'run_attempt', 'head_sha', 'ksu_ref', 'files'}
+    allowed = (fields, fields | {'manager_variant'}) if expected.variant == 'SukiSU' else (fields | {'manager_variant'},)
+    if (not isinstance(control, dict) or set(control) not in allowed
+            or control.get('manager_variant', 'SukiSU') != expected.variant
+            or type(control.get('schema_version')) is not int
             or control['schema_version'] != 1 or control.get('repository') != expected.repository.lower()
             or type(control.get('run_id')) is not int or control['run_id'] != int(expected.run_id)
             or type(control.get('run_attempt')) is not int or not 1 <= control['run_attempt'] <= int(expected.run_attempt)
@@ -251,7 +262,7 @@ def validate_backup(release: dict, expected: Expected, release_id: int, *, requi
 
 def create(source: Path, expected: Expected, api: GitHub) -> dict:
     expected.validate()
-    _, files = snapshot_files(source, expected.ksu_ref)
+    _, files = snapshot_files(source, expected.ksu_ref, variant=expected.variant)
     control = control_document(expected, files)
     release = api.json('/releases', method='POST', document={
         'tag_name': tag_for(control), 'target_commitish': expected.head_sha, 'name': title_for(control),
@@ -348,7 +359,7 @@ def restore_official(output: Path, expected: Expected, identity: dict, *, root: 
         source = temporary / 'official'
         source.mkdir()
         git(source, 'init', '--quiet')
-        git(source, 'remote', 'add', 'origin', 'https://github.com/' + REPOSITORY + '.git')
+        git(source, 'remote', 'add', 'origin', 'https://github.com/' + manager_profile(expected.variant)['repository'] + '.git')
         # No depth limit: both the native versionCode and versionName depend on
         # complete history/tags. A missing or rewritten commit fails closed.
         for attempt in range(3):
@@ -364,7 +375,8 @@ def restore_official(output: Path, expected: Expected, identity: dict, *, root: 
         if actual != identity:
             raise TransferError('Official source tree, history or version tags changed since prepare; refusing a mixed build')
         recreated = temporary / 'recreated'
-        manifest = snapshot_source(source, recreated, expected.ksu_ref, root=root, susfs=susfs, tier=tier)
+        manifest = snapshot_source(source, recreated, expected.ksu_ref, root=root, susfs=susfs, tier=tier,
+                                   variant=expected.variant)
         if {field: manifest[field] for field in identity} != identity:
             raise TransferError('Recovered source identity changed during verification')
         with recovery_directory(output.parent) as recovery:
@@ -372,7 +384,7 @@ def restore_official(output: Path, expected: Expected, identity: dict, *, root: 
             staged.mkdir()
             for name in sorted(FILES):
                 shutil.copyfile(recreated / name, staged / name)
-            snapshot_files(staged, expected.ksu_ref)
+            snapshot_files(staged, expected.ksu_ref, variant=expected.variant)
             install_snapshot(staged, output, recovery)
     return {'restored': True, 'ksu_ref': expected.ksu_ref, 'official_fallback': True}
 
@@ -410,7 +422,7 @@ def restore_backup(release_id: int, output: Path, expected: Expected, api: GitHu
             if len(raw) != expected_file['size'] or hashlib.sha256(raw).hexdigest() != expected_file['sha256']:
                 raise TransferError('The downloaded source backup failed SHA256 verification: ' + name)
             (staged / name).write_bytes(raw)
-        snapshot_files(staged, expected.ksu_ref)
+        snapshot_files(staged, expected.ksu_ref, variant=expected.variant)
         install_snapshot(staged, output, recovery)
     return {'backup_release_id': release_id, 'restored': True, 'ksu_ref': expected.ksu_ref}
 
@@ -557,6 +569,7 @@ def main(argv=None) -> int:
         command.add_argument('--run-attempt', default=os.environ.get('GITHUB_RUN_ATTEMPT', ''))
         command.add_argument('--head-sha', default=os.environ.get('GITHUB_SHA', ''))
         command.add_argument('--expected-ref', required=True)
+        command.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
         if name == 'create':
             command.add_argument('--source', required=True, type=Path)
         else:
@@ -574,7 +587,8 @@ def main(argv=None) -> int:
     args = parser.parse_args(argv)
     try:
         expected = Expected(args.repository, integer(args.run_id, 'workflow run ID'),
-                            integer(args.run_attempt, 'workflow attempt'), args.head_sha, args.expected_ref)
+                            integer(args.run_attempt, 'workflow attempt'), args.head_sha, args.expected_ref,
+                            args.variant)
         expected.validate()
         api = GitHub(expected.repository)
         if args.operation == 'create':

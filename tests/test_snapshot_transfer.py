@@ -265,6 +265,74 @@ class SnapshotTransferTests(unittest.TestCase):
     def create(self):
         return transfer.create(self.bundle, self.expected, self.api)
 
+    def baka_bundle(self):
+        # Both official variants can contain the same Git commit. Distinguish
+        # their origin manifests and backup controls even in that case.
+        directory = self.root / 'baka-bundle'
+        directory.mkdir()
+        shutil.copyfile(self.bundle / snapshot.BUNDLE_NAME, directory / snapshot.BUNDLE_NAME)
+        (directory / snapshot.MANIFEST_NAME).write_text(json.dumps({
+            **self.manifest, 'repository': 'Baka-SU/BakaSU'}, sort_keys=True), encoding='utf-8')
+        return directory
+
+    def test_bakasu_backup_restores_its_selected_repository_and_full_history(self):
+        expected = replace(self.expected, variant='BakaSU')
+        transfer.create(self.baka_bundle(), expected, self.api)
+        control = json.loads(self.api.releases[901]['body'][len(transfer.MARKER):])
+        self.assertEqual('BakaSU', control['manager_variant'])
+        transfer.restore(901, self.output, expected, self.api)
+        destination = self.root / 'baka-checkout'
+        manifest = checkout.checkout_snapshot(self.output, destination, self.reference, variant='BakaSU')
+        self.assertEqual('Baka-SU/BakaSU', manifest['repository'])
+        self.assertEqual(self.reference, self.git(destination, 'rev-parse', 'HEAD'))
+        self.assertEqual('2', self.git(destination, 'rev-list', '--count', 'HEAD'))
+        self.assertEqual('https://github.com/Baka-SU/BakaSU.git', self.git(destination, 'remote', 'get-url', 'origin'))
+
+    def test_backup_variant_discriminator_prevents_cross_variant_restore_and_fallback(self):
+        baka = replace(self.expected, variant='BakaSU')
+        for source, original, requested in ((self.bundle, self.expected, baka),
+                                             (self.baka_bundle(), baka, self.expected)):
+            self.api = FakeGitHub()
+            transfer.create(source, original, self.api)
+            with self.subTest(original=original.variant, requested=requested.variant), \
+                    mock.patch.object(transfer, 'restore_official') as upstream, \
+                    self.assertRaisesRegex(transfer.TransferError, 'different repository, run, attempt'):
+                transfer.restore(901, self.output, requested, self.api, identity=self.identity())
+            upstream.assert_not_called()
+            self.assertFalse(self.output.exists())
+            self.assertFalse(any(call[0] == 'DOWNLOAD' for call in self.api.calls))
+
+    def test_bakasu_official_recovery_uses_only_bakasu_origin_and_no_sukisu_port(self):
+        expected = replace(self.expected, variant='BakaSU')
+        with mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch) as upstream, \
+                mock.patch.object(snapshot, 'verify_susfs_compatibility') as sukisu_port:
+            result = transfer.restore(901, self.output, expected, self.api, identity=self.identity(),
+                                      root=self.root, susfs=True, tier='Latest(最新)')
+        self.assertTrue(result['official_fallback'])
+        sukisu_port.assert_not_called()
+        self.assertIn(('remote', 'add', 'origin', 'https://github.com/Baka-SU/BakaSU.git'),
+                      [call.args[1:] for call in upstream.call_args_list])
+        self.assertEqual('Baka-SU/BakaSU', checkout.read_manifest(self.output, self.reference,
+                                                               variant='BakaSU')['repository'])
+
+    def test_bakasu_cli_selects_variant_from_environment_and_never_deletes_public_release(self):
+        expected = replace(self.expected, variant='BakaSU')
+        environment = {'GITHUB_REPOSITORY': expected.repository, 'GITHUB_RUN_ID': '123',
+                       'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': expected.head_sha, 'KSU_VARIANT': 'BakaSU'}
+        with mock.patch.dict(os.environ, environment), mock.patch.object(transfer, 'GitHub', return_value=self.api), \
+                contextlib.redirect_stdout(io.StringIO()):
+            status = transfer.main(['create', '--source', str(self.baka_bundle()), '--expected-ref', self.reference])
+        self.assertEqual(0, status)
+        self.api.published(expected)
+        self.api.releases[901]['draft'] = False
+        with self.assertRaisesRegex(transfer.TransferError, 'temporary draft'):
+            transfer.delete(901, 'gki-123-1', expected, self.api)
+        self.assertFalse(any(call[0] == 'DELETE' for call in self.api.calls))
+        self.api.releases[901]['draft'] = True
+        self.assertTrue(transfer.delete(901, 'gki-123-1', expected, self.api)['deleted'])
+        self.assertIn('published', self.api.releases)
+        self.assertEqual([('DELETE', '/releases/901', None)], [call for call in self.api.calls if call[0] == 'DELETE'])
+
     def actions_assets(self, *, kernel=True):
         directory = self.root / 'assets'
         directory.mkdir()

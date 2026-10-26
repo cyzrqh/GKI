@@ -279,6 +279,68 @@ class ManagerLkmTests(unittest.TestCase):
         self.assertEqual(metadata['ddk_image'], lkm.locked_ddk('android13-5.15')['image'])
         self.assertEqual(self.stage()['modules'], [metadata])
 
+    def bakasu_source(self):
+        (self.source / 'kernel/Kbuild').write_text(
+            'kernelsu-objs := original.o\n'
+            'KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)\n'
+            'KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)\n', encoding='utf-8')
+        self.git('add', 'kernel/Kbuild')
+        self.git('commit', '--quiet', '-m', 'BakaSU source version fixture')
+        self.reference = self.git('rev-parse', 'HEAD')
+        self.version = 30702
+        self.identity['manager_package'] = 'com.cyzrqh.gki.bakasu'
+        self.identity_file.write_text(json.dumps(self.identity), encoding='utf-8')
+        self.compiler_record.write_text('cmd_core/init.o := clang -DCONFIG_KSU=1 -DKSU_VERSION='
+                                       + str(self.version) + ' -c core/init.c\n', encoding='utf-8')
+
+    def test_bakasu_source_history_and_repository_bind_native_module_records(self):
+        self.bakasu_source()
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+            record = self.record()
+            staged = self.stage()
+            self.assertEqual('Baka-SU/BakaSU', record['repository'])
+            self.assertEqual(self.version, record['ksu_version_code'])
+            self.assertEqual(record, staged['modules'][0])
+            self.assertEqual('com.cyzrqh.gki.bakasu', staged['manager_package'])
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'SukiSU'}), self.assertRaisesRegex(lkm.LkmError, 'formula changed'):
+            lkm.selected_source(self.source, self.reference)
+
+    def test_bakasu_version_formula_drift_and_cross_manager_package_are_refused(self):
+        self.bakasu_source()
+        path = self.source / 'kernel/Kbuild'
+        original = path.read_text(encoding='utf-8')
+        for text in (original.replace(' + 700', ' + 701'),
+                     original.replace('rev-list --count HEAD', 'rev-list --count main'),
+                     original + 'KSU_VERSION := 99999\n'):
+            path.write_text(text, encoding='utf-8')
+            with self.subTest(text=text), self.assertRaisesRegex(lkm.LkmError, 'formula changed'):
+                lkm.native_version_code(self.source, 2, variant='BakaSU')
+        path.write_text(original, encoding='utf-8')
+        self.identity['manager_package'] = 'com.cyzrqh.gki.sukisu'
+        self.identity_file.write_text(json.dumps(self.identity), encoding='utf-8')
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}), self.assertRaisesRegex(lkm.LkmError, 'selected manager variant'):
+            self.record()
+        self.assertEqual([], list(self.artifacts.iterdir()))
+
+
+class ManagerLkmJobTests(unittest.TestCase):
+    def test_variant_is_passed_to_snapshot_and_native_module_cli_without_reusing_another_manager(self):
+        from manager_lkm_jobs import manager_lkm_job, source_backup_restore
+        job = manager_lkm_job('selected managers only')
+        self.assertEqual('${{ inputs.kernelsu_variant }}', job['env']['KSU_VARIANT'])
+        self.assertIn('${{ inputs.kernelsu_variant }}', job['name'])
+        backup = source_backup_restore()
+        self.assertEqual(job['env']['KSU_VARIANT'], backup['env']['KSU_VARIANT'])
+        checkout = next(step for step in job['steps'] if 'checkout_ksu_snapshot.py' in step.get('run', ''))
+        self.assertEqual(job['env']['KSU_VARIANT'], checkout['env']['KSU_VARIANT'])
+        build = next(step for step in job['steps'] if step['name'] == '编译并核实同版本原生模块')
+        for fragment in ('if [ "$KSU_VARIANT" = BakaSU ]', 'CONFIG_KSU_MULTI_MANAGER_SUPPORT=y',
+                         'CONFIG_KSU_TRACEPOINT_HOOK=y', 'KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE"',
+                         'KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"', 'KSU_EXPECTED_HASH="$KSU_EXPECTED_HASH"',
+                         '--network none', 'prepare_manager_lkm.py record'):
+            self.assertIn(fragment, build['run'])
+        self.assertEqual(job['env']['KSU_VARIANT'], build['env']['KSU_VARIANT'])
+
 
 if __name__ == '__main__':
     unittest.main()

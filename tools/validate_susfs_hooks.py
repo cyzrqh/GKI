@@ -10,6 +10,8 @@ from pathlib import Path
 import re
 import sys
 
+from manager_variants import MANAGERS
+
 
 HOOKS = (
     "ksu_preinit_handle_post_execveat",
@@ -147,10 +149,11 @@ def _local_prototype(prefix: str) -> bool:
     )
 
 
-def inspect_c_source(path: Path, source: str) -> tuple[list[tuple[str, Location]], list[Definition]]:
+def inspect_c_source(path: Path, source: str, *, symbols: tuple[str, ...] = HOOKS) -> tuple[list[tuple[str, Location]], list[Definition]]:
     """Find direct function-body calls and genuine function definitions."""
     code = strip_comments_and_literals(source)
-    matches = list(HOOK_PATTERN.finditer(code))
+    pattern = HOOK_PATTERN if symbols == HOOKS else re.compile(r"\b(" + "|".join(map(re.escape, symbols)) + r")\s*\(")
+    matches = list(pattern.finditer(code))
     calls: list[tuple[str, Location]] = []
     definitions: list[Definition] = []
     if not matches:
@@ -230,8 +233,73 @@ def resolve_ksu_dir(kernel_root: Path, explicit: Path | None = None) -> Path | N
     return None
 
 
-def validate_hooks(kernel_root: Path, ksu_dir: Path | None = None) -> ValidationResult:
+def bakasu_setprocattr_alias(source: Path, ksu: Path) -> Definition | None:
+    """Recognize BakaSU's one reviewed native SELinux alias, never arbitrary macros."""
+    implementation = ksu / 'feature/selinux_hide.c'
+    kbuild = ksu / 'Kbuild'
+    compatibility = ksu / 'tools/susfs_compat.mk'
+    kernel_hook = source / 'security/selinux/hooks.c'
+    paths = (implementation, kbuild, compatibility, kernel_hook)
+    if any(path.is_symlink() or not path.is_file() for path in paths):
+        return None
+    text = implementation.read_text(encoding='utf-8')
+    build = kbuild.read_text(encoding='utf-8')
+    compat = compatibility.read_text(encoding='utf-8').replace('\r\n', '\n')
+    if (len(re.findall(r'^REPO_NAME[ \t]*:=[ \t]*(?:BakaSU|ReSukiSU)[ \t]*$', build, re.M)) != 1
+            or build.count('include $(KSU_SRC)/tools/susfs_compat.mk') != 1
+            or not re.search(r'^else ifdef CONFIG_KSU_SUSFS\r?\n'
+                             r'[ \t]+\$\(info[^\n]*\r?\n'
+                             r'[ \t]+include \$\(KSU_SRC\)/tools/inline_hook_check\.mk\r?\n'
+                             r'[ \t]+include \$\(KSU_SRC\)/tools/susfs_compat\.mk(?:\r?\n|$)', build, re.M)
+            or not re.search(r'\bksu_selinux_hide_running\b',
+                             strip_comments_and_literals(kernel_hook.read_text(encoding='utf-8')))):
+        return None
+    native_flag = ('ifeq ($(shell grep -q "ksu_selinux_hide_running" '
+                   '$(srctree)/security/selinux/hooks.c; echo $$?),0)')
+    if (compat.count(native_flag) != 1
+            or len(re.findall(r'^ccflags-y \+= -DKSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE$', compat, re.M)) != 1
+            or not re.search(re.escape(native_flag) + r'\n[^\n]*\n'
+                             r'ccflags-y \+= -DKSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE\nendif(?:\n|$)', compat)):
+        return None
+    name = 'ksu_handle_selinux_setprocattr'
+    aliases = re.findall(r'^[ \t]*#[ \t]*(?:define|undef)[ \t]+' + name + r'\b[^\n]*', text, re.M)
+    guard = (r'^[ \t]*#[ \t]*ifdef[ \t]+KSU_COMPAT_HAS_SUSFS_FEATURE_SELINUX_HIDE[ \t]*\r?\n'
+             r'[ \t]*#[ \t]*define[ \t]+' + name + r'[ \t]+my_setprocattr[ \t]*\r?\n'
+             r'[ \t]*#[ \t]*else[ \t]*(?:\r?\n|$)')
+    if len(aliases) != 1 or not re.search(guard, text, re.M):
+        return None
+    code = strip_comments_and_literals(text)
+    _, definitions = inspect_c_source(implementation.resolve(), text, symbols=(name,))
+    if not definitions or any(definition.is_static for definition in definitions):
+        return None
+    for definition in definitions:
+        offset = sum(len(line) for line in code.splitlines(keepends=True)[:definition.location.line - 1])
+        match = re.search(r'\b' + name + r'\s*\(', code[offset:])
+        if match is None:
+            continue
+        opening = code.index('(', offset + match.start())
+        parameters = _balanced_end(code, opening)
+        body = _body_start(code, parameters) if parameters is not None else None
+        if body is None:
+            continue
+        depth, end = 1, body + 1
+        while end < len(code) and depth:
+            depth += (code[end] == '{') - (code[end] == '}')
+            end += 1
+        implementation_body = code[body + 1:end - 1]
+        # Retain the native permission and credential transition implementation;
+        # an empty body, declaration or return-only placeholder cannot qualify.
+        required = ('ksu_avc_has_perm_compat', 'prepare_creds', 'commit_creds', 'abort_creds')
+        if (depth == 0 and all(re.search(r'\b' + call + r'\s*\(', implementation_body) for call in required)
+                and re.search(r'\breturn\s+size\s*;', implementation_body)):
+            return Definition('my_setprocattr', definition.location, False)
+    return None
+
+
+def validate_hooks(kernel_root: Path, ksu_dir: Path | None = None, *, variant: str = 'SukiSU') -> ValidationResult:
     """Validate current source bytes without modifying, executing or importing them."""
+    if variant not in MANAGERS:
+        raise ValueError('Unsupported selected manager variant')
     root = Path(kernel_root).resolve(strict=True)
     if not root.is_dir():
         raise ValueError(f"Kernel root is not a directory: {root}")
@@ -253,6 +321,10 @@ def validate_hooks(kernel_root: Path, ksu_dir: Path | None = None) -> Validation
             if any(symbol in text for symbol in calls):
                 _, file_definitions = inspect_c_source(path, text)
                 definitions.extend(file_definitions)
+        if variant == 'BakaSU' and 'my_setprocattr' in calls:
+            alias = bakasu_setprocattr_alias(source, ksu)
+            if alias is not None:
+                definitions.append(alias)
     globals_available = {definition.symbol for definition in definitions if not definition.is_static}
     local_available = {(definition.symbol, definition.location.path) for definition in definitions}
     missing = {
@@ -269,9 +341,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--kernel-root", required=True, type=Path)
     parser.add_argument("--ksu-dir", type=Path, help="Optional KSU source directory; relative paths are relative to kernel-root")
+    parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
     arguments = parser.parse_args(argv)
     try:
-        result = validate_hooks(arguments.kernel_root, arguments.ksu_dir)
+        result = validate_hooks(arguments.kernel_root, arguments.ksu_dir, variant=arguments.variant)
     except (OSError, ValueError) as error:
         print(f"SUSFS hook validation could not read the source trees: {error}", file=sys.stderr)
         return 1

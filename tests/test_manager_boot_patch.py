@@ -81,6 +81,41 @@ class ManagerBootPatchTests(unittest.TestCase):
         with self.assertRaises(boot.VerificationError):
             boot.check_restored(self.image({**entries, "init": self.entries["init"]}))
 
+    def test_bakasu_default_configuration_is_checked_exactly_and_unknown_files_still_fail(self):
+        configs = {'ksu_block_modules': boot.Entry(stat.S_IFREG | 0o644, b'vr,vklp,mkp')}
+        entries = {**self.entries, **configs}
+        boot.check_patched(self.image(entries), self.module, self.init, configs=configs)
+        restored = {'init': boot.Entry(stat.S_IFREG | 0o755, boot.FIXTURE_INIT), **configs}
+        boot.check_restored(self.image(restored), configs=configs)
+        for entry in (boot.Entry(stat.S_IFREG | 0o600, b'vr,vklp,mkp'),
+                      boot.Entry(stat.S_IFREG | 0o644, b'changed')):
+            with self.subTest(entry=entry), self.assertRaises(boot.VerificationError):
+                boot.check_patched(self.image({**entries, 'ksu_block_modules': entry}), self.module, self.init, configs=configs)
+            with self.assertRaises(boot.VerificationError):
+                boot.check_restored(self.image({**restored, 'ksu_block_modules': entry}), configs=configs)
+        with self.assertRaises(boot.VerificationError):
+            boot.check_patched(self.image(entries), self.module, self.init)
+        with self.assertRaises(boot.VerificationError):
+            boot.check_patched(self.image({**entries, 'force_debuggable': boot.Entry(stat.S_IFREG | 0o644, b'')}),
+                               self.module, self.init, configs=configs)
+
+    def test_bakasu_default_configuration_is_read_from_its_unmodified_source(self):
+        source, main = self.cfg_source(b'fn main() {}\n')
+        path = main.parent / 'boot_patch.rs'
+        original = (b'const KSU_BLOCK_MODULES_CONFIG: &str = "ksu_block_modules";\n'
+                    b'#[arg(long, value_name = "NAMES", default_value = "vr,vklp,mkp")]\n'
+                    b'block_modules: Option<String>,\n')
+        path.write_bytes(original)
+        self.assertEqual({'ksu_block_modules': boot.Entry(stat.S_IFREG | 0o644, b'vr,vklp,mkp')},
+                         boot.official_config_entries(source, variant='BakaSU'))
+        self.assertEqual({}, boot.official_config_entries(source, variant='SukiSU'))
+        self.assertEqual(original, path.read_bytes())
+        for changed in (original.replace(b'ksu_block_modules', b'unknown_file'),
+                        original.replace(b'vr,vklp,mkp', b'vr,,mkp'), original + original):
+            path.write_bytes(changed)
+            with self.assertRaises(boot.VerificationError):
+                boot.official_config_entries(source, variant='BakaSU')
+
     def test_newc_rejects_unsafe_duplicate_and_non_regular_entries(self):
         for name in ("../init", "/init", "a//b", "./init", "a\\b", "a/../b"):
             with self.subTest(name=name), self.assertRaises(boot.VerificationError):

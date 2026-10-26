@@ -318,7 +318,23 @@ def check_supported_kmis(output: str) -> list[str]:
     return sorted(found)
 
 
-def check_patched(data: bytes, module: bytes, init: bytes) -> dict:
+def official_config_entries(source: Path, *, variant: str | None = None) -> dict[str, Entry]:
+    """Read the selected native CLI's exact default configuration file."""
+    if selected_variant(variant) != 'BakaSU':
+        return {}
+    text = regular_bytes(source / 'userspace/ksud/src/boot_patch.rs', 2 * 1024 * 1024).decode('utf-8')
+    names = re.findall(r'^const KSU_BLOCK_MODULES_CONFIG: &str = "([A-Za-z0-9_]+)";', text, re.M)
+    blocks = re.findall(r'#\[arg\(([^]]*)\)\]\s*block_modules:\s*Option<String>', text, re.S)
+    if names != ['ksu_block_modules'] or len(blocks) != 1:
+        raise VerificationError('Review the official BakaSU block-module configuration layout')
+    values = re.findall(r'\bdefault_value\s*=\s*"([A-Za-z0-9_,]*)"', blocks[0])
+    if len(values) != 1 or (values[0] and any(not name for name in values[0].split(','))):
+        raise VerificationError('The official BakaSU block-module default is invalid')
+    return {names[0]: Entry(stat.S_IFREG | 0o644, values[0].encode('ascii'))}
+
+
+def check_patched(data: bytes, module: bytes, init: bytes, *,
+                  configs: dict[str, Entry] | None = None) -> dict:
     kernel, entries = parse_boot_v4(data)
     if kernel != synthetic_kernel():
         raise VerificationError("Patching unexpectedly changed the synthetic kernel payload")
@@ -327,17 +343,23 @@ def check_patched(data: bytes, module: bytes, init: bytes) -> dict:
         entry = entries.get(name)
         if entry is None or entry.data != payload or entry.mode != stat.S_IFREG | 0o755:
             raise VerificationError("Patched ramdisk does not contain the exact expected executable " + name)
-    if set(entries) - {*expected, "ksu_config"}:
+    configs = {} if configs is None else configs
+    for name, entry in configs.items():
+        if entries.get(name) != entry:
+            raise VerificationError('Patched ramdisk does not match the official configuration: ' + name)
+    if set(entries) - {*expected, "ksu_config", *configs}:
         raise VerificationError("Unexpected files were added to the synthetic ramdisk")
     return {"image_sha256": digest(data), "module_sha256": digest(module),
             "ksuinit_sha256": digest(init), "original_init_sha256": digest(FIXTURE_INIT)}
 
 
-def check_restored(data: bytes) -> None:
+def check_restored(data: bytes, *, configs: dict[str, Entry] | None = None) -> None:
     kernel, entries = parse_boot_v4(data)
+    configs = {} if configs is None else configs
     if (kernel != synthetic_kernel() or entries.get("init") != Entry(stat.S_IFREG | 0o755, FIXTURE_INIT)
             or "init.real" in entries or "kernelsu.ko" in entries
-            or set(entries) - {"init", "ksu_config"}):
+            or set(entries) - {"init", "ksu_config", *configs}
+            or any(entries.get(name) != entry for name, entry in configs.items())):
         raise VerificationError("Official boot-restore did not restore the original synthetic init and remove the module")
 
 
@@ -346,6 +368,7 @@ def verify(source: Path, report_path: Path, reference: str, output: Path) -> dic
         raise VerificationError("Real native ksud verification requires an x86_64 Linux runner")
     source = source.resolve(strict=True)
     provenance, modules, init = validate_assets(source, report_path, reference)
+    configs = official_config_entries(source)
     for path in (source / relative for relative in protected_host_sources()):
         regular_bytes(path, 4 * 1024 * 1024)
     target = source / "target"
@@ -382,10 +405,10 @@ def verify(source: Path, report_path: Path, reference: str, output: Path) -> dic
         restored = output / (kmi + "-synthetic-restored.img")
         command([str(ksud), "boot-patch", "--boot", str(fixture), "--kmi", kmi, "--arch", "aarch64",
                  "--out", str(output), "--out-name", patched.name], native_source, environment)
-        checked = check_patched(regular_bytes(patched, MAX_IMAGE), modules[kmi], init)
+        checked = check_patched(regular_bytes(patched, MAX_IMAGE), modules[kmi], init, configs=configs)
         command([str(ksud), "boot-restore", "--boot", str(patched), "--out", str(output),
                  "--out-name", restored.name], native_source, environment)
-        check_restored(regular_bytes(restored, MAX_IMAGE))
+        check_restored(regular_bytes(restored, MAX_IMAGE), configs=configs)
         results.append({"kmi": kmi, **checked, "restored_sha256": digest(restored.read_bytes())})
         print("Verified official file patch/restore with embedded assets: " + kmi, flush=True)
     if fixture.read_bytes() != fixture_bytes:

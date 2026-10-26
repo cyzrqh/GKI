@@ -79,7 +79,8 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
         result = self.transform_source(self.source)
         self.assertEqual(0, result.returncode, result.stderr)
         output = self.gradle.read_text(encoding='utf-8')
-        self.assertIn('abiFilters += listOf("arm64-v8a")', output)
+        self.assertIn('abiFilters.clear()', output)
+        self.assertNotIn('abiFilters +=', output)
         self.assertIn('include("arm64-v8a")', output)
         self.assertIn('isUniversalApk = false', output)
         self.assertNotIn('x86_64', output)
@@ -87,6 +88,17 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
         self.assertNotIn('KEYSTORE_FILE', output)
         self.assertEqual(1, output.count('signingConfig = null'))
         self.assertIn('archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode")', output)
+
+    def test_default_ndk_filters_are_empty_while_the_only_apk_split_is_arm64(self):
+        result = self.transform_source(self.source)
+        self.assertEqual(0, result.returncode, result.stderr)
+        output = self.gradle.read_text(encoding='utf-8')
+        self.assertEqual(1, output.count('abiFilters.clear()'))
+        self.assertNotRegex(output, r'abiFilters\s*(?:\+=|=|\.add)')
+        self.assertEqual(1, output.count('include("arm64-v8a")'))
+        self.assertEqual(1, output.count('isUniversalApk = false'))
+        self.assertNotIn('isUniversalApk = true', output)
+        self.assertNotIn('include("x86_64"', output)
 
     def test_unknown_signing_or_split_layout_is_rejected_without_partial_rewrite(self):
         for source in (self.source.replace('KEY_PASSWORD', 'UNKNOWN_PASSWORD'),

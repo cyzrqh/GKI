@@ -95,7 +95,10 @@ abis = re.findall(r'"([A-Za-z0-9_-]+)"', values)
 rest = re.sub(r'"[A-Za-z0-9_-]+"', '', values)
 if not abis or 'arm64-v8a' not in abis or rest.strip(' ,\r\n\t'):
     raise SystemExit('Unexpected manager ABI configuration; refusing to replace it.')
-text = pattern.sub('abiFilters += listOf("arm64-v8a")', text, count=1)
+# AGP forbids nonempty defaultConfig NDK filters together with ABI splits.
+# Validate the known upstream assignment, then let the single arm64 split
+# select the native ABI and preserve the official APK filename suffix.
+text = pattern.sub('abiFilters.clear()', text, count=1)
 # Official BakaSU creates separate ABI APKs and a universal APK. Keep its
 # native arm64 split naming while producing exactly one installable APK.
 splits = re.compile(r'^([ \t]*)splits[ \t]*\{\s*abi\s*\{([^{}]*)\}\s*\}', re.M)

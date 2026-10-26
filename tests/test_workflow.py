@@ -82,7 +82,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_history_cleanup_requires_explicit_default_branch_manual_operation(self):
         standalone = generator.cleanup_history_workflow()
-        self.assertEqual(standalone['name'], '清理历史记录（保留2条成功记录）')
+        self.assertEqual(standalone['name'], '清理历史记录（保留2条成功，保留发行版）')
         self.assertEqual(standalone['run-name'], standalone['name'])
         self.assertEqual(standalone['on'], {'workflow_dispatch': {}})
         self.assertEqual(set(standalone['jobs']), {'cleanup-history'})
@@ -94,6 +94,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(cleanup['concurrency']['cancel-in-progress'], False)
         self.assertNotIn('needs', cleanup)
         checkout, execute = cleanup['steps']
+        self.assertIn('发行版全部保留', execute['name'])
         self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
         self.assertIs(checkout['with']['persist-credentials'], False)
         self.assertEqual(execute['env'], {'GH_TOKEN': '${{ github.token }}'})

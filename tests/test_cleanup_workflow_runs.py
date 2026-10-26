@@ -210,13 +210,14 @@ class CleanupTests(unittest.TestCase):
         report = cleanup.cleanup(client)
         self.assertEqual(report.plan.kept_ids, [7, 6])
         self.assertEqual(report.plan.candidate_ids, [5, 4, 3, 2, 1])
-        self.assertEqual(client.calls, [('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False)])
+        self.assertEqual(client.calls, [('GET', EXCLUDED_PATH, False),
+                                       ('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False)])
         self.assertEqual(report.as_dict()['mode'], 'dry-run')
         self.assertEqual(report.as_dict()['workflow'], 'all')
 
     def test_paginates_all_runs_before_deleting_only_candidate_paths(self):
         client = FakeGitHub([run(value) for value in range(1, 106)])
-        report = cleanup.cleanup(client, keep=5, execute=True)
+        report = cleanup.cleanup(client, keep=5, execute=True, exclude_workflow=None)
         self.assertEqual(report.plan.kept_ids, [105, 104, 103, 102, 101])
         self.assertEqual(report.deleted_ids, list(range(100, 0, -1)))
         self.assertEqual(client.calls[:2], [('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False),
@@ -237,7 +238,7 @@ class CleanupTests(unittest.TestCase):
 
     def test_single_workflow_option_validates_metadata_and_lists_only_that_workflow(self):
         client = FakeGitHub([run(value) for value in range(1, 8)])
-        report = cleanup.cleanup(client, WORKFLOW)
+        report = cleanup.cleanup(client, WORKFLOW, exclude_workflow=None)
         self.assertEqual(report.plan.workflow_id, WORKFLOW_ID)
         self.assertEqual(client.calls, [('GET', PREFIX, False),
                                        ('GET', PREFIX + '/runs?per_page=100&page=1', False)])
@@ -374,8 +375,7 @@ class CleanupTests(unittest.TestCase):
                              run(3, workflow_id=EXCLUDED_ID, display_title='old cleanup name'),
                              run(4, display_title='清理历史记录（保留2条成功）'),
                              run(5, workflow_id=EXCLUDED_ID, status='in_progress')])
-        report = cleanup.cleanup(client, execute=True, current_run_id='5',
-                                 exclude_workflow=EXCLUDED_WORKFLOW)
+        report = cleanup.cleanup(client, execute=True, current_run_id='5')
         self.assertEqual(('GET', EXCLUDED_PATH, False), client.calls[0])
         self.assertEqual(('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False), client.calls[1])
         self.assertEqual([4, 2], report.plan.kept_ids)
@@ -444,6 +444,16 @@ class Opener:
 
 
 class TransportTests(unittest.TestCase):
+    def test_all_release_and_release_asset_endpoints_are_refused_before_network(self):
+        opener = Opener(Response())
+        client = cleanup.GitHub('owner/gki', 'secret-token', opener)
+        for path in ('/releases', '/releases/1', '/releases/latest',
+                     '/releases/tags/gki-123-1', '/releases/assets/1'):
+            for method in ('GET', 'DELETE'):
+                with self.subTest(path=path, method=method), self.assertRaises(cleanup.CleanupError):
+                    client.request(path, method=method)
+        self.assertEqual([], opener.requests)
+
     def test_repository_listing_is_allowed_only_as_a_fixed_read_only_paginated_path(self):
         opener = Opener(Response(body=b'{"total_count":0,"workflow_runs":[]}'))
         client = cleanup.GitHub('owner/gki', 'secret-token', opener)
@@ -555,7 +565,11 @@ class CLITests(unittest.TestCase):
         self.assertEqual(data['workflow'], 'all')
         self.assertIn('范围：仓库全部工作流', summary.read_text(encoding='utf-8'))
         self.assertEqual(data['keep'], 2)
+        self.assertIs(data['preserve_releases'], True)
+        self.assertEqual(data['excluded_workflow_ids'], [EXCLUDED_ID])
         self.assertIn('保留成功记录：2 条', summary.read_text(encoding='utf-8'))
+        self.assertIn('所有发行版（Release）及其全部附件均保留，不受两条记录限制。',
+                      summary.read_text(encoding='utf-8'))
 
     def test_explicit_execute_records_partial_failure_and_summary(self):
         summary = self.directory / 'summary.md'
@@ -602,8 +616,7 @@ class CLITests(unittest.TestCase):
         os.environ['GITHUB_RUN_ID'] = '4'
         client = FakeGitHub([run(1), run(2), run(3, workflow_id=EXCLUDED_ID),
                              run(4, workflow_id=EXCLUDED_ID, status='in_progress')])
-        status, data, _, _ = self.invoke(['--exclude-workflow', EXCLUDED_WORKFLOW,
-                                         '--summary', str(summary)], client)
+        status, data, _, _ = self.invoke(['--summary', str(summary)], client)
         self.assertEqual(0, status)
         self.assertEqual([2, 1], data['kept_ids'])
         self.assertEqual([EXCLUDED_ID], data['excluded_workflow_ids'])

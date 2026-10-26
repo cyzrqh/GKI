@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Keep the newest successful repository runs; deletion removes their artifacts.
 
-The default is a read-only preview. Releases, caches, and branches are never
-requested. Only --execute enables deletion of validated old workflow runs.
+The default is a read-only preview retaining two successful non-cleanup runs.
+Releases and all their assets, caches, and branches are never requested.
+Only --execute enables deletion of validated old workflow runs.
 """
 from __future__ import annotations
 
@@ -21,6 +22,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 DEFAULT_WORKFLOW = 'all'
 DEFAULT_KEEP = 2
+DEFAULT_EXCLUDE_WORKFLOW = 'cleanup-build-history.yml'
 CONCLUSIONS = frozenset(('success', 'failure', 'neutral', 'cancelled', 'skipped',
                          'timed_out', 'action_required', 'stale', 'startup_failure'))
 MAX_RESPONSE = 16 * 1024 * 1024
@@ -262,6 +264,7 @@ class CleanupReport:
         candidates = self.plan.candidate_ids if self.plan else []
         finished_ids = set(self.deleted_ids + self.gone_ids)
         return {'repository': self.repository, 'workflow': self.workflow, 'keep': self.keep,
+                'preserve_releases': True,
                 'mode': 'execute' if self.execute else 'dry-run',
                 'status': 'failed' if self.error or not self.finished else 'completed',
                 'kept_ids': self.plan.kept_ids if self.plan else [],
@@ -273,7 +276,7 @@ class CleanupReport:
 
 
 def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run_id=None,
-            execute=False, report=None, exclude_workflow=None):
+            execute=False, report=None, exclude_workflow=DEFAULT_EXCLUDE_WORKFLOW):
     report = report if report is not None else CleanupReport(client.repository, workflow, keep, execute)
     excluded = []
     if exclude_workflow is not None:
@@ -327,7 +330,8 @@ def write_summary(report, path):
              f'- 已不存在：{len(data["gone_ids"])} 条',
              f'- 剩余候选：{len(data["remaining_candidate_ids"])} 条',
              '- 删除运行记录时，其关联的 Actions 产物也会删除。',
-             '- Release、缓存和分支均保留。']
+             '- 所有发行版（Release）及其全部附件均保留，不受两条记录限制。',
+             '- 缓存和分支均保留。']
     for label, key in (('保留成功运行 ID', 'kept_ids'), ('暂时保护运行 ID', 'preserved'),
                        ('候选运行 ID', 'candidate_ids'),
                        ('本次删除运行 ID', 'deleted_ids'), ('已不存在运行 ID', 'gone_ids')):
@@ -345,8 +349,9 @@ def main(argv=None):
                         help='all repository workflows (default), or one workflow filename/ID')
     parser.add_argument('--keep', type=int, default=DEFAULT_KEEP,
                         help='successful non-excluded runs to retain (default: 2)')
-    parser.add_argument('--exclude-workflow',
-                        help='exact maintenance workflow filename/ID whose completed runs are always candidates')
+    parser.add_argument('--exclude-workflow', default=DEFAULT_EXCLUDE_WORKFLOW,
+                        help='maintenance workflow excluded from successful retention slots '
+                             '(default: cleanup-build-history.yml)')
     parser.add_argument('--execute', action='store_true', help='delete candidates; default is read-only')
     parser.add_argument('--summary', default=os.environ.get('GITHUB_STEP_SUMMARY'))
     args = parser.parse_args(argv)

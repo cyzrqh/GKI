@@ -34,6 +34,9 @@ FEATURES = (
     ("附加内核配置", ("kernel_config", "extra_kernel_config", "custom_kernel_config")),
 )
 PRIVATE_FEATURE = re.compile(r"(?:password|secret|token|keystore|private_key)", re.I)
+# Keep full configuration evidence in the packaged metadata, while the public
+# description omits details the repository owner does not want listed.
+HIDDEN_FEATURES = frozenset(("TCP 拥塞算法",))
 
 
 class ReleaseNotesError(ValueError):
@@ -183,7 +186,8 @@ def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: dat
     kernels = sorted(kernels, key=kernel_key)
     manager = {} if manager is None else manager
     manager_assets = asset_names(manager, manager=True)
-    kernel_assets = [asset_names(item) for item in kernels]
+    for document in kernels:
+        asset_names(document)
     features = [feature_values(document) for document in kernels]
     instant = generated_at or datetime.now(timezone.utc)
     if instant.tzinfo is None:
@@ -229,7 +233,8 @@ def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: dat
                 lines.append(f"| {label} | {grouped_value(kernels, values)} |")
         represented = {key for _, aliases in FEATURES for key in aliases}
         extra = sorted({key for actual in features for key in actual
-                        if key not in represented and not PRIVATE_FEATURE.search(key)})
+                        if key not in represented and key not in HIDDEN_FEATURES
+                        and not PRIVATE_FEATURE.search(key)})
         for key in extra:
             values = [actual.get(key) for actual in features]
             if any(text(value) != UNKNOWN for value in values):
@@ -243,17 +248,7 @@ def render_notes(manager: dict | None, kernels: list[dict], *, generated_at: dat
                           f"分支 {escape(first(manager, 'ksu_branch', 'tier', 'branch'))}。"
                           + ("内核功能配置不适用于本次 APK 构建。" if report_kind == 'actions'
                              else "内核功能配置不适用于本次 APK 发布。")))
-    lines.extend(("", "## 构建文件", "", f"本次包含 {len(kernels)} 个内核目标。", "",
-                  "| 内核目标 | 产物 | 构建时间（UTC） |", "| --- | --- | --- |"))
-    if manager_assets:
-        lines.append(f"| 管理器 APK | {escape('、'.join(manager_assets))} | {escape(first(manager, 'built_at_utc'))} |")
-    targets = [kernel_target(document) for document in kernels]
-    for number, (document, names, target) in enumerate(zip(kernels, kernel_assets, targets), 1):
-        if targets.count(target) > 1:
-            target += f"（目标 {number}）"
-        lines.append(f"| {escape(target)} | {escape('、'.join(names) or None)} | "
-                     f"{escape(first(document, 'built_at_utc'))} |")
-    lines.extend(("", "未记录的配置明确标为“未知”；以上内容以本次产物元数据为准。", ""))
+    lines.append("")
     return "\n".join(lines)
 
 

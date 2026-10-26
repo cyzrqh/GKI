@@ -429,7 +429,11 @@ class WorkflowTests(unittest.TestCase):
                 if not step.get('uses', '').startswith('actions/upload-artifact@'):
                     continue
                 self.assertFalse(str(step.get('with', {}).get('name', '')).startswith(
-                    ('Source-', 'Release-', 'Manager-Identity-')))
+                    ('Source-', 'Release-', 'Manager-Identity-', 'SukiSU-Metadata-')))
+                uploaded = str(step.get('with', {}).get('path', ''))
+                self.assertNotIn('SukiSU-Metadata-', uploaded)
+                for path in uploaded.splitlines():
+                    self.assertNotIn(Path(path).name, ('kernel.json', 'manager.json'))
                 if step['name'] == '上传补丁冲突文件':
                     self.assertIn('failure()', step['if'])
                     self.assertEqual('patch-rejects/', step['with']['path'])

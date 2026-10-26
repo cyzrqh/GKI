@@ -53,13 +53,13 @@ class ReleaseNotesTests(unittest.TestCase):
         body = self.render()
         for expected in ("# GKI Kernel Release", "| 发布类型 | Release |", "2026-10-22 06:07:08 UTC",
                          "v4.0.2-17ff94d（版本号 40321）", "v2.3.0", "com.cyzrqh.gki.sukisu",
-                         "android14 / 6.1.145 / 2025-08", "| SUSFS | 启用（v2.3.0） |",
+                         "| 构建范围 | Android 14 / 6.1 |", "| SUSFS | 启用（v2.3.0） |",
                          "| Hook 方式 | inline |", "| 挂载方式 | 未知 |", "| LTO | thin |",
                          "| BBG 安全补丁 | 启用 |", "| ZRAM | 关闭 |", "| LZ4KD | 关闭 |",
                          "| KPM | 启用 |", "| Re-Kernel | 关闭 |", "| DDK | 关闭 |",
                          "| NTSync | 启用 |", "| 网络增强 | 启用 |", "| 虚拟化 | 关闭 |",
                          "drivers/example", "CONFIG\\_EXAMPLE=y", "zram\\_algorithm", "zstd",
-                         MANAGER["file"], KERNEL["file"], MANAGER["built_at_utc"], KERNEL["built_at_utc"]):
+                         MANAGER["file"], MANAGER["built_at_utc"]):
             with self.subTest(expected=expected):
                 self.assertIn(expected, body)
         self.assertNotIn("MagicMount", body)
@@ -71,7 +71,6 @@ class ReleaseNotesTests(unittest.TestCase):
                       os_patch_level="2026-01", file="android15-6.6.99-2026-01-AnyKernel3.zip")
         second["features"].update(mount="overlayfs", hook="manual", kpm=False)
         body = self.render(kernels=[KERNEL, second])
-        self.assertIn("本次包含 2 个内核目标", body)
         self.assertNotIn("## 内核", body)
         self.assertEqual(body.count("## 构建配置\n"), 1)
         self.assertEqual(body.count("| KernelSU 变体 |"), 1)
@@ -103,12 +102,14 @@ class ReleaseNotesTests(unittest.TestCase):
             document.update(android_version=android, kernel_version=family,
                             sub_level=sublevel, os_patch_level=month,
                             file=f'{android}-{family}.{sublevel}-{month}-AnyKernel3.zip')
+            document['features']['lto'] = f'configuration-{len(kernels)}'
             kernels.append(document)
-        original_order = [document['file'] for document in kernels]
+        original = copy.deepcopy(kernels)
+        original_order = [document['features']['lto'] for document in kernels]
         body = self.render(kernels=kernels)
         expected = list(reversed(original_order))
         self.assertEqual(expected, sorted(original_order, key=body.index))
-        self.assertEqual(original_order, [document['file'] for document in kernels])
+        self.assertEqual(original, kernels)
 
     def test_proven_mount_value_is_reported_only_when_supplied(self):
         kernel = copy.deepcopy(KERNEL)
@@ -117,7 +118,7 @@ class ReleaseNotesTests(unittest.TestCase):
 
     def test_apk_only_and_kernel_only_metadata_are_supported(self):
         apk_only = self.render(kernels=[])
-        self.assertIn("本次包含 0 个内核目标", apk_only)
+        self.assertIn("| 实际内核目标数 | 0 |", apk_only)
         self.assertIn("本次仅发布管理器安装包", apk_only)
         self.assertIn("无内核（仅管理器 APK）", apk_only)
         self.assertNotIn("## 构建配置", apk_only)
@@ -141,8 +142,26 @@ class ReleaseNotesTests(unittest.TestCase):
         self.assertEqual(release.split('## 构建配置\n', 1)[1], actions.split('## 构建配置\n', 1)[1])
         self.assertEqual(actions.count('## 构建配置\n'), 1)
         self.assertIn(MANAGER['file'], actions)
-        self.assertIn(KERNEL['file'], actions)
+        self.assertNotIn(KERNEL['file'], actions)
         self.assertEqual(release, notes.render_notes(MANAGER, [KERNEL], generated_at=UTC, report_kind='release'))
+
+    def test_tcp_details_and_build_file_table_are_omitted_without_changing_metadata(self):
+        kernel = copy.deepcopy(KERNEL)
+        kernel['features']['TCP 拥塞算法'] = 'BBR, CUBIC, WESTWOOD'
+        original = copy.deepcopy(kernel)
+        for report_kind in ('release', 'actions'):
+            with self.subTest(report_kind=report_kind):
+                body = notes.render_notes(MANAGER, [kernel], generated_at=UTC, report_kind=report_kind)
+                self.assertNotIn('TCP 拥塞算法', body)
+                self.assertNotIn('BBR, CUBIC, WESTWOOD', body)
+                self.assertNotIn('## 构建文件', body)
+                self.assertNotIn('| 内核目标 | 产物 |', body)
+                self.assertNotIn(kernel['file'], body)
+                self.assertNotIn(kernel['built_at_utc'], body)
+                self.assertIn(MANAGER['file'], body)
+                self.assertIn('| 网络增强 | 启用 |', body)
+                self.assertIn('| LTO | thin |', body)
+        self.assertEqual(original, kernel)
 
     def test_actions_apk_only_report_says_built_not_published(self):
         body = notes.render_notes(MANAGER, [], generated_at=UTC, report_kind='actions')
@@ -211,7 +230,7 @@ class ReleaseNotesTests(unittest.TestCase):
         body = self.render(kernels=[KERNEL, other])
         self.assertIn("| LTO | thin |", body)
         self.assertIn("| LZ4KD | 关闭（android14 / 6.1.145 / 2025-08）；启用（android14 / 6.1.145 / 2025-09） |", body)
-        self.assertIn("2025-09-AnyKernel3.zip", body)
+        self.assertNotIn("2025-09-AnyKernel3.zip", body)
 
     def test_optional_unknown_features_are_omitted_but_known_disabled_values_are_kept(self):
         other = copy.deepcopy(KERNEL)
@@ -272,7 +291,8 @@ class ReleaseNotesTests(unittest.TestCase):
     def test_multiple_kernel_files_accept_images_and_reject_duplicates(self):
         kernel = copy.deepcopy(KERNEL)
         kernel["files"] = [kernel["file"], "boot.img"]
-        self.assertIn("boot.img", self.render(kernels=[kernel]))
+        self.assertEqual([kernel['file'], 'boot.img'], notes.asset_names(kernel))
+        self.assertNotIn("boot.img", self.render(kernels=[kernel]))
         for changes in ({"files": ["boot.img", "boot.img"], "file": "boot.img"},
                         {"files": "boot.img"}, {"files": ["boot.img"]},
                         {"filename": "other.zip"}):

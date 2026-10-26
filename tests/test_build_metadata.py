@@ -168,7 +168,7 @@ class DirectReleasePreparationTests(unittest.TestCase):
         self.assertIn(manager['file'], checksums)
         self.assertIn(kernel['file'], checksums)
 
-    def test_ak3_notes_and_checksums_use_numeric_versions_and_ascending_months(self):
+    def test_ak3_checksums_keep_numeric_order_without_a_redundant_notes_file_table(self):
         names = []
         # Input directory and filename lexicographic orders both differ from
         # the version order: 100 must follow 43, and 6.12 must follow 6.6.
@@ -192,7 +192,10 @@ class DirectReleasePreparationTests(unittest.TestCase):
         lines = (self.output / 'assets/SHA256SUMS.txt').read_text(encoding='utf-8').splitlines()
         self.assertEqual(expected, [line.split('  ', 1)[1] for line in lines])
         body = (self.output / 'release.md').read_text(encoding='utf-8')
-        self.assertEqual(expected, sorted(expected, key=body.index))
+        self.assertNotIn('## 构建文件', body)
+        for name in expected:
+            self.assertNotIn(name, body)
+            self.assertTrue((self.output / 'assets' / name).is_file())
 
     def test_flat_and_named_manager_metadata_cannot_hide_duplicate_managers(self):
         self.manager(flat=True)
@@ -322,7 +325,7 @@ class RawReleasePreparationTests(unittest.TestCase):
         notes = (self.output / 'release.md').read_text(encoding='utf-8')
         self.assertIn('| LTO | thin |', notes)
         self.assertIn(document['susfs_version'], notes)
-        self.assertIn('1 个内核目标', notes)
+        self.assertIn('| 实际内核目标数 | 1 |', notes)
 
     def test_sidecars_and_matching_embedded_metadata_count_each_build_once(self):
         apk, ak3, document = self.make_raw(flat=True)
@@ -440,7 +443,7 @@ class RawReleasePreparationTests(unittest.TestCase):
         self.assertEqual(1, notes.count('| LTO |'))
         self.assertIn('Android 14 / 6.1', notes)
         self.assertIn('Android 15 / 6.6', notes)
-        self.assertIn('2 个内核目标', notes)
+        self.assertIn('| 实际内核目标数 | 2 |', notes)
 
     def test_existing_unrelated_output_cannot_be_accidentally_included_in_release(self):
         self.make_raw(kernel=False, flat=True)

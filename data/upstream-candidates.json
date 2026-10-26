@@ -1,11 +1,20 @@
 {
   "acknowledged_heads": {
+    "bakasu": {
+      "branch": "main",
+      "head": "d5e9e025b8b49155f8014684d64c91742b465f65",
+      "prerelease": {
+        "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
+        "tag": "v4.2.0-rc3"
+      },
+      "release": null
+    },
     "sukisu_branch": "main",
     "sukisu_development": {
       "branch": "dev",
-      "head": "4cf754b254b918724cf28ce0f25e615efc46708e"
+      "head": "608040a7028a0b4a709f3891bd3286ce236c7ba7"
     },
-    "sukisu_head": "536c173c885bfc68ca33410dbc5c10f6270f4a09",
+    "sukisu_head": "2ec445ffcb803614ee41ce111b6bad28c67f3347",
     "sukisu_release": {
       "commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
       "tag": "v4.2.1-r2"
@@ -31,11 +40,11 @@
   },
   "changes": [
     {
-      "candidate": "536c173c885bfc68ca33410dbc5c10f6270f4a09",
+      "candidate": "2ec445ffcb803614ee41ce111b6bad28c67f3347",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "main",
       "source": "SukiSU",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/536c173c885bfc68ca33410dbc5c10f6270f4a09"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/2ec445ffcb803614ee41ce111b6bad28c67f3347"
     },
     {
       "candidate": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
@@ -45,11 +54,25 @@
       "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.2.1-r2"
     },
     {
-      "candidate": "4cf754b254b918724cf28ce0f25e615efc46708e",
+      "candidate": "608040a7028a0b4a709f3891bd3286ce236c7ba7",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "dev",
       "source": "SukiSU development",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/4cf754b254b918724cf28ce0f25e615efc46708e"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/608040a7028a0b4a709f3891bd3286ce236c7ba7"
+    },
+    {
+      "candidate": "d5e9e025b8b49155f8014684d64c91742b465f65",
+      "current": "",
+      "ref": "main",
+      "source": "BakaSU",
+      "url": "https://github.com/Baka-SU/BakaSU/commit/d5e9e025b8b49155f8014684d64c91742b465f65"
+    },
+    {
+      "candidate": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
+      "current": "",
+      "ref": "v4.2.0-rc3",
+      "source": "BakaSU prerelease",
+      "url": "https://github.com/Baka-SU/BakaSU/releases/tag/v4.2.0-rc3"
     },
     {
       "candidate": "5419f4ee97cc8bf7ca67a9ff207f39653d7784f4",
@@ -89,14 +112,23 @@
   ],
   "schema_version": 1,
   "sources": {
+    "bakasu": {
+      "branch": "main",
+      "head": "d5e9e025b8b49155f8014684d64c91742b465f65",
+      "prerelease": {
+        "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
+        "tag": "v4.2.0-rc3"
+      },
+      "release": null
+    },
     "schema_version": 1,
     "sukisu": {
       "branch": "main",
       "development": {
         "branch": "dev",
-        "head": "4cf754b254b918724cf28ce0f25e615efc46708e"
+        "head": "608040a7028a0b4a709f3891bd3286ce236c7ba7"
       },
-      "head": "536c173c885bfc68ca33410dbc5c10f6270f4a09",
+      "head": "2ec445ffcb803614ee41ce111b6bad28c67f3347",
       "release": {
         "commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
         "newer_than_baseline": true,

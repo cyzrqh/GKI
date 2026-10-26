@@ -38,6 +38,58 @@ class SnapshotError(ValueError):
     """A snapshot cannot be proven to match the selected upstream source."""
 
 
+GIT_OPERATIONS = frozenset(('add', 'bundle', 'cat-file', 'checkout', 'clone', 'config',
+                            'describe', 'diff', 'fetch', 'fsck', 'init', 'log', 'remote',
+                            'rev-list', 'rev-parse', 'show', 'status', 'tag', 'update-ref'))
+GIT_FAILURE_CATEGORIES = frozenset(('GitLab server load', 'HTTP error', 'DNS resolution',
+    'connection failure', 'TLS failure', 'redirect refused', 'missing remote ref',
+    'authentication failure', 'network timeout', 'unclassified Git failure',
+    'process execution failure'))
+
+
+class GitCommandError(SnapshotError):
+    """Only fixed labels and numeric status may cross the Git diagnostic boundary."""
+
+    def __init__(self, operation, *, category='unclassified Git failure', returncode=None,
+                 http_status=None, timeout=None):
+        operation = operation if operation in GIT_OPERATIONS else 'command'
+        category = category if category in GIT_FAILURE_CATEGORIES else 'unclassified Git failure'
+        if timeout is not None:
+            limit = f' after {timeout}s' if type(timeout) is int and 0 < timeout <= 86400 else ''
+            message = f'Source Git {operation} could not complete (timeout{limit})'
+        else:
+            status = f'exit {returncode}; ' if type(returncode) is int else ''
+            http = f' {http_status}' if type(http_status) is int and 100 <= http_status <= 599 else ''
+            message = f'Source Git {operation} failed ({status}{category}{http})'
+        self.diagnostic = message
+        super().__init__(message)
+
+
+def git_failure_category(stderr):
+    """Classify captured stderr without returning any remote-controlled text."""
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode('utf-8', errors='replace')
+    text = stderr[:65536].casefold() if isinstance(stderr, str) else ''
+    if 'gitlab is currently unable to handle this request due to load' in text:
+        return 'GitLab server load', None
+    http = re.search(r'(?:requested url returned error:\s*|http(?: code\s*=)?\s+)([1-5][0-9]{2})\b', text)
+    if http:
+        return 'HTTP error', int(http.group(1))
+    categories = (
+        ('DNS resolution', r'could not resolve (?:host|hostname|proxy)|name or service not known|temporary failure in name resolution'),
+        ('redirect refused', r'redirect|redirection'),
+        ('TLS failure', r'ssl certificate|tls|ssl_connect|ssl connection|certificate verif|schannel|gnutls'),
+        ('missing remote ref', r"couldn.t find remote ref|not our ref|unadvertised object|no such remote ref|remote ref does not exist"),
+        ('authentication failure', r'authentication failed|could not read (?:username|password)|access denied|repository not found'),
+        ('network timeout', r'timed out|timeout'),
+        ('connection failure', r'failed to connect|couldn.t connect|connection refused|connection reset|could not connect|network is unreachable|remote end hung up|early eof'),
+    )
+    for category, pattern in categories:
+        if re.search(pattern, text):
+            return category, None
+    return 'unclassified Git failure', None
+
+
 @contextmanager
 def temporary_directory(parent: Path, prefix: str):
     # mkdir's normal inherited access also works with restricted Windows
@@ -65,16 +117,21 @@ def git(directory: Path, *arguments: str, timeout: int = 180) -> str:
                        "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY",
                        "GIT_ALTERNATE_OBJECT_DIRECTORIES", "GIT_SHALLOW_FILE"}}
     environment.update(GIT_TERMINAL_PROMPT="0", GIT_NO_REPLACE_OBJECTS="1")
+    operation = next((argument for argument in arguments if argument in GIT_OPERATIONS), 'command')
     try:
         result = subprocess.run(
             ["git", "-C", str(directory), "-c", "core.hooksPath=", "-c", "core.autocrlf=false", *arguments],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=environment,
         )
-    except (OSError, subprocess.TimeoutExpired) as error:
-        raise SnapshotError(f"SukiSU Git {arguments[0]} could not complete") from error
+    except subprocess.TimeoutExpired:
+        raise GitCommandError(operation, timeout=timeout) from None
+    except OSError:
+        raise GitCommandError(operation, category='process execution failure') from None
     if result.returncode:
-        raise SnapshotError(f"SukiSU Git {arguments[0]} failed (exit {result.returncode})")
+        category, http_status = git_failure_category(result.stderr)
+        raise GitCommandError(operation, returncode=result.returncode,
+                              category=category, http_status=http_status)
     return result.stdout.strip()
 
 

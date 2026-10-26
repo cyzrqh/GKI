@@ -223,6 +223,9 @@ jobs:
         set -euo pipefail
         command -v cc >/dev/null
         python3 -m unittest discover -s tests -p 'test_shared_susfs_source.py'
+        python3 -m unittest discover -s tests -p 'test_official_susfs_archive.py'
+        python3 -m unittest discover -s tests -p 'test_shared_susfs_archive_integration.py'
+        python3 -m unittest discover -s tests -p 'test_git_diagnostics.py'
         python3 -m unittest discover -s tests -p 'test_bakasu_symbol_lookup.py'
     - name: 固定本次 KernelSU 与管理器源码
       id: sources

@@ -13,7 +13,7 @@ import time
 
 from manager_variants import MANAGERS
 from pin_build_dependencies import custom_configuration, selected_pin
-from snapshot_ksu_source import (BUNDLE_NAME, ROOT, SnapshotError, check_official_source,
+from snapshot_ksu_source import (BUNDLE_NAME, ROOT, GitCommandError, SnapshotError, check_official_source,
                                 expected_commit, file_digest, git, source_identity,
                                 temporary_directory)
 
@@ -51,13 +51,16 @@ def validate_sources(document: dict) -> dict:
     result = {}
     for target, item in sorted(document.items()):
         if (not isinstance(target, str) or not TARGET.fullmatch(target)
-                or not isinstance(item, dict) or set(item) != FIELDS
-                or any(not isinstance(item[field], str) for field in FIELDS)
+                or not isinstance(item, dict) or set(item) not in (FIELDS, FIELDS | {'transport_ref'})
+                or any(not isinstance(item[field], str) for field in item)
                 or not FULL_SHA.fullmatch(item['ref']) or not FULL_SHA.fullmatch(item['tree'])
                 or item['branch'] != 'gki-' + target
                 or not re.fullmatch(r'v[0-9]+\.[0-9]+\.[0-9]+', item['version'])
                 or not DATE.fullmatch(item['date'])):
             raise SnapshotError('Invalid shared official SUSFS target identity')
+        if 'transport_ref' in item and (not FULL_SHA.fullmatch(item['transport_ref'])
+                                        or item['transport_ref'] == item['ref']):
+            raise SnapshotError('Invalid shared SUSFS archive transport identity')
         try:
             datetime.strptime(item['date'], '%Y-%m-%d %H:%M:%S %z')
         except ValueError as error:
@@ -107,26 +110,39 @@ def metadata(source: Path, target: str, ref: str) -> dict:
 def verify_local_sources(source: Path, sources: dict) -> dict:
     sources = validate_sources(sources)
     for target, expected in sources.items():
-        if metadata(source, target, NAMESPACE + target) != expected:
+        if 'transport_ref' in expected:
+            from official_susfs_archive import carrier_metadata
+            transport = git(source, 'rev-parse', '--verify', NAMESPACE + target + '^{commit}').lower()
+            actual = carrier_metadata(source, target, transport, expected['ref'])
+        else:
+            actual = metadata(source, target, NAMESPACE + target)
+        if actual != expected:
             raise SnapshotError('Local SUSFS objects differ from the prepared target identity')
     return sources
 
 
-def fetch(source: Path, refspecs: list[str]) -> None:
+def fetch(source: Path, refspecs: list[str], *, attempts: int = 4) -> None:
     # One Git negotiation serves every selected kernel family. Never make a
     # matrix of ninety-seven independent requests against the GitLab service.
-    for attempt in range(4):
+    if type(attempts) is not int or not 1 <= attempts <= 4:
+        raise SnapshotError('Invalid official SUSFS Git retry limit')
+    for attempt in range(attempts):
         try:
             git(source, '-c', 'http.extraHeader=', '-c', 'http.https://gitlab.com/.extraHeader=',
                 '-c', 'credential.helper=', '-c', 'http.followRedirects=false',
                 'fetch', '--quiet', '--no-tags', '--no-recurse-submodules',
                 OFFICIAL, *refspecs, timeout=180)
             return
-        except SnapshotError:
-            if attempt == 3:
-                raise SnapshotError('Official SUSFS preparation failed after four spaced download attempts') from None
+        except SnapshotError as error:
+            # GitCommandError contains only fixed classifications and numeric
+            # status. Never echo another exception's potentially raw message.
+            reason = error.diagnostic if isinstance(error, GitCommandError) else 'Git request failed (unclassified)'
+            if attempt + 1 == attempts:
+                count = 'four spaced download attempts' if attempts == 4 else f'{attempts} download attempt(s)'
+                print('Official SUSFS Git download failed: ' + reason, flush=True)
+                raise SnapshotError('Official SUSFS preparation failed after ' + count + ': ' + reason) from None
             delay = (15, 30, 60)[attempt]
-            print(f'Official SUSFS download unavailable; retrying once in {delay}s', flush=True)
+            print(f'Official SUSFS download unavailable ({reason}); retrying once in {delay}s', flush=True)
             time.sleep(delay)
 
 
@@ -153,7 +169,7 @@ def prepare_sources(source: Path, matrix: dict, reference: str, *, root: Path = 
     check_official_source(source, variant)
     before = source_identity(source, reference)
     targets = matrix_targets(matrix)
-    custom, refspecs = {}, []
+    custom, requested_refs, refspecs = {}, {}, []
     for target in targets:
         pin = selected_pin(root, variant, reference, tier, target)
         requested = configured_custom_ref(root, target)
@@ -162,16 +178,28 @@ def prepare_sources(source: Path, matrix: dict, reference: str, *, root: Path = 
         # Full pins are fetched directly in the same Git negotiation. Short
         # custom hashes are resolved only in this official branch's history.
         value = (requested if requested and len(requested) == 40 else None) or (pin[0] if pin else None)
+        requested_refs[target] = value or 'gki-' + target
         refspecs.append('+' + (value or 'refs/heads/gki-' + target) + ':' + NAMESPACE + target)
-    fetch(source, refspecs)
-    for target, value in custom.items():
-        if len(value) == 40:
-            continue
-        candidates = [ref for ref in git(source, 'rev-list', NAMESPACE + target).splitlines() if ref.startswith(value)]
-        if len(candidates) != 1:
-            raise SnapshotError('Custom SUSFS prefix is missing or ambiguous in its official branch history')
-        git(source, 'update-ref', NAMESPACE + target, candidates[0])
-    sources = {target: metadata(source, target, NAMESPACE + target) for target in targets}
+    try:
+        fetch(source, refspecs, attempts=1)
+    except SnapshotError:
+        if any(len(value) != 40 for value in custom.values()):
+            raise SnapshotError('Official SUSFS Git is unavailable; archive recovery requires full custom commit hashes') from None
+        # The official REST/archive service remains usable during Git service
+        # overload. Restore its exact original commit bytes, never a mirror or
+        # a fabricated replacement commit. Workers still use one offline bundle.
+        from official_susfs_archive import import_archive
+        print('Official SUSFS Git unavailable; verifying fixed commits via the official archive API', flush=True)
+        sources = {target: import_archive(source, target, requested_refs[target]) for target in targets}
+    else:
+        for target, value in custom.items():
+            if len(value) == 40:
+                continue
+            candidates = [ref for ref in git(source, 'rev-list', NAMESPACE + target).splitlines() if ref.startswith(value)]
+            if len(candidates) != 1:
+                raise SnapshotError('Custom SUSFS prefix is missing or ambiguous in its official branch history')
+            git(source, 'update-ref', NAMESPACE + target, candidates[0])
+        sources = {target: metadata(source, target, NAMESPACE + target) for target in targets}
     if source_identity(source, reference) != before:
         raise SnapshotError('Preparing SUSFS changed the selected manager source identity')
     check_official_source(source, variant)
@@ -180,7 +208,15 @@ def prepare_sources(source: Path, matrix: dict, reference: str, *, root: Path = 
 
 def recover_exact_sources(source: Path, sources: dict) -> dict:
     sources = validate_sources(sources)
-    fetch(source, ['+' + item['ref'] + ':' + NAMESPACE + target for target, item in sources.items()])
+    native = ['+' + item['ref'] + ':' + NAMESPACE + target for target, item in sources.items()
+              if 'transport_ref' not in item]
+    if native:
+        fetch(source, native)
+    for target, item in sources.items():
+        if 'transport_ref' in item:
+            from official_susfs_archive import import_archive
+            if import_archive(source, target, item['ref']) != item:
+                raise SnapshotError('Official archive recovery differs from the fixed prepare identity')
     return verify_local_sources(source, sources)
 
 
@@ -193,7 +229,7 @@ def verify_bundle_sources(bundle: Path, sources: dict) -> dict:
             raise SnapshotError('Invalid or duplicate source bundle ref')
         heads[fields[1]] = fields[0]
     for target, item in sources.items():
-        if heads.get(NAMESPACE + target) != item['ref']:
+        if heads.get(NAMESPACE + target) != item.get('transport_ref', item['ref']):
             raise SnapshotError('Shared SUSFS bundle ref differs from its prepared source')
     return sources
 
@@ -224,8 +260,14 @@ def restore_source(directory: Path, output: Path, reference: str, target: str, e
         # The bundle is self-contained: an empty object store must restore the
         # exact custom ref without asking GitLab or using the KSU checkout.
         git(prepared, 'fetch', '--quiet', '--no-tags', str(bundle), NAMESPACE + target)
+        if 'transport_ref' in expected[target]:
+            from official_susfs_archive import hydrate_carrier
+            hydrate_carrier(prepared, expected[target]['transport_ref'], expected[target])
         git(prepared, 'checkout', '--quiet', '--detach', expected[target]['ref'])
-        if metadata(prepared, target, 'HEAD') != expected[target]:
+        actual = metadata(prepared, target, 'HEAD')
+        if 'transport_ref' in expected[target]:
+            actual['transport_ref'] = expected[target]['transport_ref']
+        if actual != expected[target]:
             raise SnapshotError('Restored SUSFS tree/date/version differ from the prepared identity')
         git(prepared, 'fsck', '--connectivity-only', '--no-dangling', timeout=300)
         git(prepared, 'remote', 'add', 'origin', OFFICIAL)

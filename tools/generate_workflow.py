@@ -233,6 +233,13 @@ PY
   --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF" \\
   --expected-kmis "''' + ','.join(KMIS) + '''" --report "$RUNNER_TEMP/manager-lkm-stage.json"
 '''},
+            {'name': '配置 BakaSU 配套管理器签名提示',
+             'if': "inputs.kernelsu_variant == 'BakaSU'",
+             'run': '''set -euo pipefail
+python3 -m unittest discover -s tests -p 'test_bakasu_manager_notice.py'
+python3 tools/configure_bakasu_manager_notice.py --source "$GITHUB_WORKSPACE/manager-source" \\
+  --identity "$RUNNER_TEMP/manager-public-certificate.json"
+'''},
             {'name': '准备 Java 21', 'uses': 'actions/setup-java@v5',
              'with': {'distribution': 'temurin', 'java-version': '21'}},
             {'name': '恢复管理器 Gradle 依赖', 'id': 'manager-gradle-cache',

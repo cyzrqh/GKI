@@ -42,6 +42,19 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'sign'))
         self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('name') == '上传管理器安装包'))
 
+    def test_bakasu_notice_uses_paired_public_certificate_before_manager_build(self):
+        steps = self.workflow['jobs']['build-sukisu-manager']['steps']
+        index = next(i for i, step in enumerate(steps)
+                     if 'tools/configure_bakasu_manager_notice.py' in step.get('run', ''))
+        configure = steps[index]
+        self.assertEqual("inputs.kernelsu_variant == 'BakaSU'", configure['if'])
+        self.assertNotIn('continue-on-error', configure)
+        self.assertIn('--identity "$RUNNER_TEMP/manager-public-certificate.json"', configure['run'])
+        self.assertIn("-p 'test_bakasu_manager_notice.py'", configure['run'])
+        self.assertLess(next(i for i, step in enumerate(steps)
+                             if step.get('name') == '准备本次模块与 APK 的公开签名信息'), index)
+        self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'manager-build'))
+
     def test_manager_choices_only_expose_two_variants_and_two_shared_versions(self):
         fields = self.workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')

@@ -104,7 +104,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_history_cleanup_requires_explicit_default_branch_manual_operation(self):
         standalone = generator.cleanup_history_workflow()
-        self.assertEqual(standalone['name'], '清理历史记录（保留2条成功，保留发行版）')
+        self.assertEqual(standalone['name'], '清理历史记录（保留2条成功及发行记录）')
         self.assertEqual(standalone['run-name'], standalone['name'])
         self.assertEqual(standalone['on'], {'workflow_dispatch': {}})
         self.assertEqual(set(standalone['jobs']), {'cleanup-history'})
@@ -116,7 +116,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIs(cleanup['concurrency']['cancel-in-progress'], False)
         self.assertNotIn('needs', cleanup)
         checkout, execute = cleanup['steps']
-        self.assertIn('发行版全部保留', execute['name'])
+        self.assertIn('发行记录和发行版全部保留', execute['name'])
         self.assertEqual(checkout['with']['ref'], '${{ github.event.repository.default_branch }}')
         self.assertIs(checkout['with']['persist-credentials'], False)
         self.assertEqual(execute['env'], {'GH_TOKEN': '${{ github.token }}'})
@@ -775,6 +775,35 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(pin['env']['PIN_KSU_REF'], '${{ env.BRANCH }}')
         self.assertEqual(pin['env']['PIN_KSU_TIER'], '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}')
         self.assertEqual(pin['if'], "inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'")
+
+    def test_susfs_is_fixed_once_and_workers_restore_before_dependency_downloads(self):
+        prepare = self.workflow['jobs']['prepare-matrix']
+        shared = next(step for step in prepare['steps'] if step.get('id') == 'shared-susfs')
+        snapshot = next(step for step in prepare['steps'] if step.get('id') == 'source-snapshot')
+        self.assertEqual(shared['if'], generator.BUILD_IF + ' && inputs.enable_susfs')
+        self.assertLess(prepare['steps'].index(shared), prepare['steps'].index(snapshot))
+        self.assertEqual(shared['env']['SUSFS_MATRIX'], '${{ steps.matrix.outputs.matrix }}')
+        self.assertIn('shared_susfs_source.py prepare', shared['run'])
+        self.assertIn('--susfs-sources "$RUNNER_TEMP/susfs-sources.json"', snapshot['run'])
+        self.assertEqual(prepare['outputs']['susfs_sources'], '${{ steps.shared-susfs.outputs.susfs_sources }}')
+        dependencies = self.find('克隆依赖仓库')
+        restore = self.find('还原本次固定源码缓存')
+        self.assertLess(self.steps.index(restore), self.steps.index(dependencies))
+        self.assertIn('shared_susfs_source.py" restore', dependencies['run'])
+        self.assertIn('--expected-sources "$SUSFS_SOURCES"', dependencies['run'])
+        self.assertNotIn('gitlab.com/simonpunk', dependencies['run'])
+        self.assertEqual(dependencies['env']['SUSFS_SOURCES'], '${{ needs.prepare-matrix.outputs.susfs_sources }}')
+
+    def test_bakasu_keeps_native_resolver_and_checks_it_before_compilation(self):
+        check = self.find('核实 BakaSU 原生符号接口')
+        compiler = self.find('编译内核')
+        self.assertEqual(check['if'], "inputs.kernelsu_variant == 'BakaSU'")
+        self.assertLess(self.steps.index(check), self.steps.index(compiler))
+        command = compiler['with']['command']
+        case = command.split('case "${{ inputs.kernelsu_variant }}" in', 1)[1]
+        header = case.split('echo "编译前兜底修复', 1)[0]
+        self.assertIn('"Official")', header)
+        self.assertNotIn('"BakaSU"', header)
 
     def test_historical_susfs23_context_is_prepared_and_verified_around_main_patch(self):
         script = self.find('应用 SUSFS 补丁')['run']

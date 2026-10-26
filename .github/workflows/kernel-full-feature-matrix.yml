@@ -168,6 +168,7 @@ jobs:
       max_parallel: ${{ steps.matrix.outputs.max_parallel }}
       source_cache_key: ${{ steps.source-snapshot.outputs.source_cache_key }}
       source_identity: ${{ steps.source-identity.outputs.source_identity }}
+      susfs_sources: ${{ steps.shared-susfs.outputs.susfs_sources }}
       source_backup_release_id: ${{ steps.source-backup.outputs.backup_release_id }}
       ddk_matrix: ${{ steps.lkm-matrix.outputs.matrix }}
       manager_package: ${{ steps.certificate.outputs.package }}
@@ -216,6 +217,13 @@ jobs:
         set -euo pipefail
         command -v cc >/dev/null
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+    - name: 验证共享源码还原及原生符号接口
+      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
+      run: |
+        set -euo pipefail
+        command -v cc >/dev/null
+        python3 -m unittest discover -s tests -p 'test_shared_susfs_source.py'
+        python3 -m unittest discover -s tests -p 'test_bakasu_symbol_lookup.py'
     - name: 固定本次 KernelSU 与管理器源码
       id: sources
       env:
@@ -258,6 +266,17 @@ jobs:
         path: ksu-snapshot-source
         fetch-depth: 0
         persist-credentials: false
+    - name: 矩阵展开前统一下载并固定 SUSFS
+      id: shared-susfs
+      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核' && inputs.enable_susfs
+      env:
+        SUSFS_MATRIX: ${{ steps.matrix.outputs.matrix }}
+        KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
+        KSU_TIER: ${{ steps.sources.outputs.effective_ksu_branch }}
+      run: |
+        python3 tools/shared_susfs_source.py prepare --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \
+          --matrix-json "$SUSFS_MATRIX" --expected-ref "$KSU_REF" --variant "$KSU_VARIANT" \
+          --tier "$KSU_TIER" --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/susfs-sources.json"
     - name: 展开矩阵前验证并固定源码快照
       id: source-snapshot
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (inputs.kernelsu_variant
@@ -268,9 +287,13 @@ jobs:
         ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         set -euo pipefail
+        snapshot_args=()
+        if [ "$ENABLE_SUSFS" = true ]; then
+          snapshot_args+=(--susfs-sources "$RUNNER_TEMP/susfs-sources.json")
+        fi
         python3 tools/snapshot_ksu_source.py --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \
           --output "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \
-          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER" "${snapshot_args[@]}"
         python3 - <<'PY'
         import os,sys
         sys.path.insert(0,'tools')
@@ -294,7 +317,10 @@ jobs:
         from checkout_ksu_snapshot import read_manifest
         from transfer_ksu_snapshot import prepared_identity
         manifest = read_manifest(pathlib.Path('ksu-source-bundle'),os.environ['KSU_REF'],variant=os.environ['KSU_VARIANT'])
-        identity = prepared_identity({key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')},os.environ['KSU_REF'])
+        document = {key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')}
+        if 'susfs_sources' in manifest:
+            document['susfs_sources'] = manifest['susfs_sources']
+        identity = prepared_identity(document,os.environ['KSU_REF'])
         with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
             output.write('source_identity='+json.dumps(identity,separators=(',',':'))+'\n')
         PY
@@ -1176,30 +1202,48 @@ jobs:
       run: |
         git config --global user.name "BuildBot"
         git config --global user.email "BuildGkiKernel@gmail.com"
+    - name: 还原本次固定源码缓存
+      id: source-cache
+      uses: actions/cache/restore@v5
+      timeout-minutes: 3
+      continue-on-error: true
+      env:
+        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
+      with:
+        path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+        fail-on-cache-miss: false
+      if: inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'
+    - name: 从本次临时备份恢复固定源码
+      id: source-backup
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && steps.source-cache.outputs.cache-hit
+        != 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        KSU_VARIANT: ${{ inputs.kernelsu_variant }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+        KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py restore \
+          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+          --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
+          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+    - name: 重新缓存本次已验证的固定源码
+      uses: actions/cache/save@v5
+      timeout-minutes: 3
+      continue-on-error: true
+      if: steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'
+      with:
+        path: ksu-source-bundle
+        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
     - name: 克隆依赖仓库
       run: |
         ANYKERNEL_BRANCH="gki-2.0"
         SUSFS_BRANCH="gki-${{ matrix.android_version }}-${{ matrix.kernel_version }}"
-
-        retry_git_clone() {
-          local repo_url="$1"
-          local branch="$2"
-          local target_dir="$3"
-          local depth="${4:-1}"
-          local attempt
-          rm -rf "$target_dir"
-          for attempt in 1 2 3; do
-            if python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
-              "$repo_url" "$target_dir" --ref "$branch" --depth "$depth"; then
-              return 0
-            fi
-            echo "::warning::git clone 失败: $repo_url@$branch (attempt $attempt)"
-            rm -rf "$target_dir"
-            sleep "$attempt"
-          done
-          echo "::error::git clone 最终失败: $repo_url@$branch"
-          return 1
-        }
 
         echo "克隆 AnyKernel3..."
         python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
@@ -1207,39 +1251,12 @@ jobs:
         rm -rf AnyKernel3/.git
 
         if [ "${{ inputs.enable_susfs }}" == "true" ]; then
-          echo "克隆 SUSFS (分支: $SUSFS_BRANCH)..."
-          SUSFS_DEPTH=1
-          CONFIG_FILE="config/config"
-          if [ "$ABK_LOCAL_CACHE_ENABLED" = "true" ] && [ -f "$CONFIG_FILE" ] && grep -q '^custom=true$' "$CONFIG_FILE"; then
-            CUSTOM_COMMIT="$(sed -n "s/^${SUSFS_BRANCH}=//p" "$CONFIG_FILE" | head -n1)"
-            # Resolve abbreviated commits from branch history, not remote ref names.
-            # Cache the full history once so later pinned builds can reuse it.
-            if [ -n "$CUSTOM_COMMIT" ]; then
-              SUSFS_DEPTH=0
-            fi
-          fi
-          retry_git_clone https://gitlab.com/simonpunk/susfs4ksu.git "$SUSFS_BRANCH" susfs4ksu "$SUSFS_DEPTH"
-
-          CONFIG_FILE="config/config"
-          if [ -f "$CONFIG_FILE" ]; then
-            CUSTOM_ENABLED=$(grep "^custom=" "$CONFIG_FILE" | cut -d'=' -f2)
-            if [ "$CUSTOM_ENABLED" == "true" ]; then
-              CUSTOM_COMMIT=$(grep "^${SUSFS_BRANCH}=" "$CONFIG_FILE" | cut -d'=' -f2)
-              if [ -n "$CUSTOM_COMMIT" ]; then
-                echo "切换 SUSFS 到自定义提交: $CUSTOM_COMMIT"
-                cd susfs4ksu
-                # 浅克隆 (--depth 1) 只含分支 HEAD，历史里较旧的固定提交不在其中，
-                # 直接 checkout 会因 "reference is not a tree" 失败，先补全历史。
-                if ! git cat-file -e "${CUSTOM_COMMIT}^{commit}" 2>/dev/null; then
-                  git fetch --unshallow origin "$SUSFS_BRANCH" 2>/dev/null \
-                    || git fetch --depth=1000 origin "$SUSFS_BRANCH" 2>/dev/null \
-                    || true
-                fi
-                git checkout "$CUSTOM_COMMIT"
-                cd ..
-              fi
-            fi
-          fi
+          echo "离线还原本次固定的 SUSFS (分支: $SUSFS_BRANCH)..."
+          python3 "$GITHUB_WORKSPACE/tools/shared_susfs_source.py" restore \
+            --input "$GITHUB_WORKSPACE/ksu-source-bundle" --output "$SUSFS4KSU" \
+            --target "${{ matrix.android_version }}-${{ matrix.kernel_version }}" \
+            --expected-ref "$BRANCH" --expected-sources "$SUSFS_SOURCES" \
+            --variant "$KSU_VARIANT"
 
           SUSFS_LATEST_COMMIT_DATE=$(git -C susfs4ksu log -1 --date=format:'%Y-%m-%d %H:%M:%S %z' --format='%cd')
           echo "SUSFS_LATEST_COMMIT_DATE=$SUSFS_LATEST_COMMIT_DATE" >> $GITHUB_ENV
@@ -1257,6 +1274,8 @@ jobs:
         echo "使用当前仓库补丁目录: $ZZH_PATCHES"
         python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
           https://github.com/Numbersf/Action-Build.git Action-Build --depth 1
+      env:
+        SUSFS_SOURCES: ${{ needs.prepare-matrix.outputs.susfs_sources }}
     - name: 选择配套的 SUSFS 源码版本
       if: inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'
       env:
@@ -1397,44 +1416,6 @@ jobs:
           echo "自定义外部模块清单:"
           cut -f1,3 "$manifest"
         fi
-    - name: 还原本次固定源码缓存
-      id: source-cache
-      uses: actions/cache/restore@v5
-      timeout-minutes: 3
-      continue-on-error: true
-      env:
-        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
-      with:
-        path: ksu-source-bundle
-        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
-        fail-on-cache-miss: false
-      if: inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'
-    - name: 从本次临时备份恢复固定源码
-      id: source-backup
-      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && steps.source-cache.outputs.cache-hit
-        != 'true'
-      env:
-        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
-        KSU_VARIANT: ${{ inputs.kernelsu_variant }}
-        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
-        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
-        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
-        KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
-        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
-      run: |
-        python3 tools/transfer_ksu_snapshot.py restore \
-          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
-          --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
-          --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
-          --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
-    - name: 重新缓存本次已验证的固定源码
-      uses: actions/cache/save@v5
-      timeout-minutes: 3
-      continue-on-error: true
-      if: steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'
-      with:
-        path: ksu-source-bundle
-        key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
     - name: 检出内核配套的管理器快照
       if: inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'
       env:
@@ -6073,6 +6054,9 @@ jobs:
           ccache --show-config
           echo 'enabled=true' >> "$GITHUB_OUTPUT"
         fi
+    - name: 核实 BakaSU 原生符号接口
+      if: inputs.kernelsu_variant == 'BakaSU'
+      run: python3 "$GITHUB_WORKSPACE/tools/ensure_bakasu_symbol_lookup.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"
     - name: 在内核中记录实际构建配置
       run: |
         set -euo pipefail
@@ -6133,7 +6117,7 @@ jobs:
             && "${{ matrix.kernel_version }}" == "5.15" \
             && "$CURRENT_SUB" -ge 41 && "$CURRENT_SUB" -le 137 ]]; then
             case "${{ inputs.kernelsu_variant }}" in
-              "Official"|"BakaSU")
+              "Official")
                 echo "编译前兜底修复 ${{ inputs.kernelsu_variant }} 5.15 kallsyms symbol_resolver"
                 python3 - <<'PY'
           from pathlib import Path

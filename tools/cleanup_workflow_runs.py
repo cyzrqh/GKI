@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Keep the newest successful repository runs; deletion removes their artifacts.
+"""Keep published Release runs plus the newest ordinary successful runs.
 
-The default is a read-only preview retaining two successful non-cleanup runs.
-Releases and all their assets, caches, and branches are never requested.
+The default is a read-only preview retaining two successful non-cleanup runs
+in addition to every run identified by an existing published gki Release.
+Release metadata is read only; Release/asset deletion is never allowed.
 Only --execute enables deletion of validated old workflow runs.
 """
 from __future__ import annotations
@@ -27,6 +28,8 @@ CONCLUSIONS = frozenset(('success', 'failure', 'neutral', 'cancelled', 'skipped'
                          'timed_out', 'action_required', 'stale', 'startup_failure'))
 MAX_RESPONSE = 16 * 1024 * 1024
 MAX_RUNS = 100000
+MAX_RELEASES = 100000
+RELEASE_TAG = re.compile(r'gki-([1-9][0-9]*)-([1-9][0-9]*)')
 
 
 class CleanupError(RuntimeError):
@@ -76,7 +79,7 @@ def parse_json(raw):
 
 
 class GitHub:
-    """Use only fixed HTTPS api.github.com workflow/run endpoints."""
+    """Allow workflow/run endpoints and read-only paginated Release metadata."""
 
     def __init__(self, repository, token, opener=None):
         self.repository = validate_repository(repository)
@@ -91,9 +94,10 @@ class GitHub:
         listing = re.fullmatch(
             rf'/actions/workflows/{workflow}(?:/runs\?per_page=100&page=[1-9][0-9]*)?', resource)
         repository_listing = re.fullmatch(r'/actions/runs\?per_page=100&page=[1-9][0-9]*', resource)
+        releases = re.fullmatch(r'/releases\?per_page=100&page=[1-9][0-9]*', resource)
         if method not in ('GET', 'DELETE') or not (
-                run_path or (method == 'GET' and (listing or repository_listing))):
-            raise CleanupError('Only workflow listing and individual run API paths are allowed')
+                run_path or (method == 'GET' and (listing or repository_listing or releases))):
+            raise CleanupError('Only workflow/run paths and read-only Release listing are allowed')
         request = Request('https://api.github.com/repos/' + self.repository + resource, method=method,
                           headers={'Authorization': 'Bearer ' + self.token,
                                    'Accept': 'application/vnd.github+json',
@@ -191,6 +195,63 @@ def fetch_workflow_runs(client, workflow=DEFAULT_WORKFLOW):
     raise CleanupError('Workflow run pagination did not finish')
 
 
+def fetch_release_run_ids(client, runs):
+    """Read every Release before trusting the publisher's exact run/attempt tag.
+
+    workflow_jobs.release_job publishes only gki-RUN_ID-RUN_ATTEMPT. A commit
+    can belong to many manual runs, so target_commitish is never a fallback.
+    Unknown published tags fail closed instead of guessing their source runs.
+    Draft source backups have no published build and do not protect a run.
+    """
+    original = {run['id']: run for run in runs}
+    protected, seen_ids, seen_tags = set(), set(), set()
+    for page in range(1, MAX_RELEASES // 100 + 2):
+        batch = client.request(f'/releases?per_page=100&page={page}')
+        if not isinstance(batch, list) or len(batch) > 100:
+            raise CleanupError('Release listing is incomplete or invalid; no remaining runs may be deleted')
+        for release in batch:
+            if (not isinstance(release, dict) or not positive_id(release.get('id'))
+                    or type(release.get('draft')) is not bool
+                    or not isinstance(release.get('tag_name'), str)
+                    or not 0 < len(release['tag_name']) <= 1024
+                    or any(ord(c) < 32 or ord(c) == 127 for c in release['tag_name'])):
+                raise CleanupError('Release identity is invalid; source runs cannot be protected safely')
+            tag = release['tag_name']
+            if release['id'] in seen_ids or tag in seen_tags:
+                raise CleanupError('Release pagination contains duplicate identities; rerun the cleanup')
+            seen_ids.add(release['id'])
+            seen_tags.add(tag)
+            if len(seen_ids) > MAX_RELEASES:
+                raise CleanupError('Release listing exceeds its safe pagination limit')
+            if release['draft']:
+                continue
+            published = release.get('published_at')
+            if (not isinstance(published, str)
+                    or not re.fullmatch(r'\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z', published)):
+                raise CleanupError('Published Release time is missing or invalid')
+            try:
+                datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
+            except ValueError:
+                raise CleanupError('Published Release time is invalid') from None
+            match = RELEASE_TAG.fullmatch(tag)
+            if match is None:
+                raise CleanupError('A published Release has no verified gki run/attempt tag; '
+                                   'cleanup stopped to preserve its unknown source run')
+            run_id, attempt = map(int, match.groups())
+            run = original.get(run_id)
+            if run is not None:
+                if not positive_id(run.get('run_attempt')) or attempt > run['run_attempt']:
+                    raise CleanupError('Published Release attempt does not match its Actions run')
+                target = release.get('target_commitish')
+                if (isinstance(target, str) and re.fullmatch(r'[0-9a-f]{40}', target)
+                        and target != run.get('head_sha')):
+                    raise CleanupError('Published Release commit does not match its Actions run')
+            protected.add(run_id)
+        if len(batch) < 100:
+            return protected
+    raise CleanupError('Release pagination did not finish; remaining runs preserved')
+
+
 @dataclass
 class CleanupPlan:
     workflow_id: int | None
@@ -198,6 +259,7 @@ class CleanupPlan:
     candidate_ids: list[int] = field(default_factory=list)
     preserved: dict[int, str] = field(default_factory=dict)
     excluded_workflow_ids: list[int] = field(default_factory=list)
+    release_run_ids: list[int] = field(default_factory=list)
 
 
 def preservation_reason(run, current_run_id=None):
@@ -209,8 +271,8 @@ def preservation_reason(run, current_run_id=None):
 
 
 def plan_runs(runs, *, keep=DEFAULT_KEEP, current_run_id=None, workflow_id=None,
-              excluded_workflow_ids=()):
-    """Keep successful rows only; excluded maintenance never consumes a slot."""
+              excluded_workflow_ids=(), release_run_ids=()):
+    """Release runs are extra protection and never consume ordinary success slots."""
     if type(keep) is not int or keep < 1:
         raise CleanupError('At least one successful workflow run must be retained')
     if not isinstance(runs, list):
@@ -223,6 +285,10 @@ def plan_runs(runs, *, keep=DEFAULT_KEEP, current_run_id=None, workflow_id=None,
             or any(not positive_id(value) for value in excluded_workflow_ids)):
         raise CleanupError('Excluded workflow IDs must be valid positive integers')
     excluded = set(excluded_workflow_ids)
+    if (not isinstance(release_run_ids, (list, tuple, set, frozenset))
+            or any(not positive_id(value) for value in release_run_ids)):
+        raise CleanupError('Release source run IDs must be valid positive integers')
+    published = set(release_run_ids)
     seen, ordered = set(), []
     for run in runs:
         created = validate_run(run, workflow_id)
@@ -233,19 +299,19 @@ def plan_runs(runs, *, keep=DEFAULT_KEEP, current_run_id=None, workflow_id=None,
     ordered.sort(key=lambda item: (item[0], item[1]), reverse=True)
     successful = [run_id for _, run_id, run in ordered
                   if run['status'] == 'completed' and run['conclusion'] == 'success'
-                  and run['workflow_id'] not in excluded]
+                  and run['workflow_id'] not in excluded and run_id not in published]
     kept_ids = successful[:keep]
     kept = set(kept_ids)
     candidates, preserved = [], {}
     for _, run_id, run in ordered:
         if run_id in kept:
             continue
-        reason = preservation_reason(run, current_run_id)
+        reason = 'published release' if run_id in published else preservation_reason(run, current_run_id)
         if reason:
             preserved[run_id] = reason
         else:
             candidates.append(run_id)
-    return CleanupPlan(workflow_id, kept_ids, candidates, preserved, sorted(excluded))
+    return CleanupPlan(workflow_id, kept_ids, candidates, preserved, sorted(excluded), sorted(published))
 
 
 @dataclass
@@ -265,11 +331,13 @@ class CleanupReport:
         finished_ids = set(self.deleted_ids + self.gone_ids)
         return {'repository': self.repository, 'workflow': self.workflow, 'keep': self.keep,
                 'preserve_releases': True,
+                'preserve_release_runs': True,
                 'mode': 'execute' if self.execute else 'dry-run',
                 'status': 'failed' if self.error or not self.finished else 'completed',
                 'kept_ids': self.plan.kept_ids if self.plan else [],
                 'preserved': self.plan.preserved if self.plan else {},
                 'excluded_workflow_ids': self.plan.excluded_workflow_ids if self.plan else [],
+                'release_run_ids': self.plan.release_run_ids if self.plan else [],
                 'candidate_ids': candidates, 'deleted_ids': self.deleted_ids, 'gone_ids': self.gone_ids,
                 'remaining_candidate_ids': [value for value in candidates if value not in finished_ids],
                 'error': self.error}
@@ -288,11 +356,12 @@ def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run
             raise CleanupError('Excluded workflow metadata is missing a valid ID')
         excluded.append(metadata['id'])
     workflow_id, runs = fetch_workflow_runs(client, workflow)
+    release_ids = fetch_release_run_ids(client, runs)
     report.plan = plan_runs(runs, keep=keep, current_run_id=current_run_id, workflow_id=workflow_id,
-                            excluded_workflow_ids=excluded)
+                            excluded_workflow_ids=excluded, release_run_ids=release_ids)
     if execute:
         original = {run['id']: run for run in runs}
-        for run_id in report.plan.candidate_ids:
+        for run_id in list(report.plan.candidate_ids):
             resource = f'/actions/runs/{run_id}'
             current = client.request(resource, missing_ok=True)
             if current is None:
@@ -305,6 +374,18 @@ def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run
                     or any(current.get(key) != original[run_id].get(key)
                            for key in ('run_attempt', 'head_sha'))):
                 raise CleanupError('An old run changed before deletion; remaining runs preserved')
+            # A draft may have been published after the initial plan. Refresh
+            # the complete Release inventory immediately before every DELETE;
+            # a failed page aborts cleanup rather than using stale protection.
+            release_ids.update(fetch_release_run_ids(client, runs))
+            finished = set(report.deleted_ids + report.gone_ids)
+            refreshed = plan_runs([run for run in runs if run['id'] not in finished], keep=keep,
+                                  current_run_id=current_run_id, workflow_id=workflow_id,
+                                  excluded_workflow_ids=excluded, release_run_ids=release_ids)
+            report.plan = refreshed
+            report.plan.candidate_ids = list(report.deleted_ids + report.gone_ids) + refreshed.candidate_ids
+            if run_id not in refreshed.candidate_ids:
+                continue
             result = client.request(resource, method='DELETE')
             if result == 'deleted':
                 report.deleted_ids.append(run_id)
@@ -318,21 +399,25 @@ def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run
 
 def write_summary(report, path):
     data = report.as_dict()
+    temporary = {key: value for key, value in data['preserved'].items() if value != 'published release'}
     lines = ['## 清理历史记录', '',
              '- 模式：' + ('执行清理' if report.execute else '仅预览'),
              '- 状态：' + ('失败' if data['status'] == 'failed' else '完成'),
              '- 范围：' + ('仓库全部工作流' if report.workflow == 'all' else report.workflow),
-             f'- 保留成功记录：{len(data["kept_ids"])} 条（目标保留最新 {report.keep} 条成功记录，所有工作流统一计数）',
+             f'- 保留普通成功记录：{len(data["kept_ids"])} 条（上限 {report.keep} 条，发行记录不占名额）',
+             f'- 保护发行对应运行：{sum(value == "published release" for value in data["preserved"].values())} 条（含日志及尚未过期的 Actions 产物）',
              '- 不计入保留名额的工作流 ID：' + (', '.join(map(str, data['excluded_workflow_ids'])) or '无'),
-             f'- 暂时保护：{len(data["preserved"])} 条（当前或未完成运行，不取消任务）',
+             f'- 暂时保护：{len(temporary)} 条（当前或未完成运行，不取消任务）',
              f'- 待清理旧运行：{len(data["candidate_ids"])} 条',
              f'- 本次已删除：{len(data["deleted_ids"])} 条',
              f'- 已不存在：{len(data["gone_ids"])} 条',
              f'- 剩余候选：{len(data["remaining_candidate_ids"])} 条',
              '- 删除运行记录时，其关联的 Actions 产物也会删除。',
              '- 所有发行版（Release）及其全部附件均保留，不受两条记录限制。',
+             '- 发行对应的 Actions 运行也保留；无法确认发行来源或读取发行失败时停止清理。',
              '- 缓存和分支均保留。']
-    for label, key in (('保留成功运行 ID', 'kept_ids'), ('暂时保护运行 ID', 'preserved'),
+    for label, key in (('保留成功运行 ID', 'kept_ids'), ('保护运行 ID', 'preserved'),
+                       ('发行来源运行 ID', 'release_run_ids'),
                        ('候选运行 ID', 'candidate_ids'),
                        ('本次删除运行 ID', 'deleted_ids'), ('已不存在运行 ID', 'gone_ids')):
         lines.append(f'- {label}：' + (', '.join(map(str, data[key])) or '无'))
@@ -348,7 +433,7 @@ def main(argv=None):
     parser.add_argument('--workflow', default=DEFAULT_WORKFLOW,
                         help='all repository workflows (default), or one workflow filename/ID')
     parser.add_argument('--keep', type=int, default=DEFAULT_KEEP,
-                        help='successful non-excluded runs to retain (default: 2)')
+                        help='ordinary successful non-excluded runs to retain in addition to all published Release runs (default: 2)')
     parser.add_argument('--exclude-workflow', default=DEFAULT_EXCLUDE_WORKFLOW,
                         help='maintenance workflow excluded from successful retention slots '
                              '(default: cleanup-build-history.yml)')

@@ -38,6 +38,9 @@ def read_manifest(directory: Path, reference: str, *, variant: str = 'SukiSU') -
             or len(manifest["git_describe"]) > 1024
             or any(ord(character) < 32 or ord(character) == 127 for character in manifest["git_describe"])):
         raise SnapshotError("SukiSU snapshot has invalid bundle or version metadata")
+    if 'susfs_sources' in manifest:
+        from shared_susfs_source import validate_sources
+        validate_sources(manifest['susfs_sources'])
     return manifest
 
 
@@ -55,6 +58,9 @@ def checkout_snapshot(directory: Path, output: Path, reference: str, *, variant:
             or bundle.stat().st_size != manifest["bundle_size"]
             or file_digest(bundle) != manifest["bundle_sha256"]):
         raise SnapshotError("SukiSU source bundle size or SHA-256 does not match its manifest")
+    if 'susfs_sources' in manifest:
+        from shared_susfs_source import verify_bundle_sources
+        verify_bundle_sources(bundle, manifest['susfs_sources'])
     with temporary_directory(output.parent, ".gki-checkout-") as temporary_root:
         verifier = temporary_root / "verify.git"
         verifier.mkdir()

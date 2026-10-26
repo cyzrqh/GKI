@@ -1,7 +1,7 @@
 """Build, update, release, and standalone history-cleanup workflow jobs."""
 
 
-HISTORY_CLEANUP_NAME = '清理历史记录（保留2条成功，保留发行版）'
+HISTORY_CLEANUP_NAME = '清理历史记录（保留2条成功及发行记录）'
 
 
 def successful_cleanup_sweep_step():
@@ -24,7 +24,7 @@ def cleanup_history_job():
         'steps': [
             {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
              'with': {'ref': '${{ github.event.repository.default_branch }}', 'persist-credentials': False}},
-            {'name': '清理旧 Actions 记录及其产物（发行版全部保留）',
+            {'name': '清理旧 Actions 记录及其产物（发行记录和发行版全部保留）',
              'env': {'GH_TOKEN': '${{ github.token }}'},
              'run': '''python3 tools/cleanup_workflow_runs.py \\
   --repo "$GITHUB_REPOSITORY" --workflow all \\

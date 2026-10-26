@@ -23,6 +23,7 @@ ALL_PREFIX = '/actions'
 EXCLUDED_WORKFLOW = 'cleanup-build-history.yml'
 EXCLUDED_ID = 703
 EXCLUDED_PATH = '/actions/workflows/' + EXCLUDED_WORKFLOW
+RELEASES = '/releases?per_page=100&page=1'
 
 
 def run(run_id, **changes):
@@ -36,11 +37,19 @@ def run(run_id, **changes):
     return result
 
 
+def release(run_id, attempt=1, **changes):
+    result = {'id': run_id, 'tag_name': f'gki-{run_id}-{attempt}', 'draft': False,
+              'prerelease': False, 'published_at': '2025-01-01T00:00:00Z'}
+    result.update(changes)
+    return result
+
+
 class FakeGitHub:
     repository = 'owner/gki'
 
-    def __init__(self, runs):
+    def __init__(self, runs, releases=()):
         self.runs = copy.deepcopy(runs)
+        self.releases = copy.deepcopy(list(releases))
         self.calls = []
         self.before_delete = {}
         self.delete_results = {}
@@ -51,6 +60,10 @@ class FakeGitHub:
             return {'id': WORKFLOW_ID}
         if resource in (EXCLUDED_PATH, '/actions/workflows/' + str(EXCLUDED_ID)) and method == 'GET':
             return {'id': EXCLUDED_ID}
+        match = re.fullmatch(r'/releases\?per_page=100&page=([1-9][0-9]*)', resource)
+        if match and method == 'GET':
+            start = (int(match[1]) - 1) * 100
+            return copy.deepcopy(self.releases[start:start + 100])
         match = re.fullmatch(r'(?:' + re.escape(PREFIX) + r'|' + re.escape(ALL_PREFIX)
                              + r')/runs\?per_page=100&page=([1-9][0-9]*)', resource)
         if match and method == 'GET':
@@ -181,6 +194,28 @@ class PlannerTests(unittest.TestCase):
             with self.subTest(excluded=excluded), self.assertRaises(cleanup.CleanupError):
                 cleanup.plan_runs([run(1)], excluded_workflow_ids=excluded)
 
+    def test_published_runs_never_consume_two_ordinary_success_slots(self):
+        plan = cleanup.plan_runs([run(value) for value in range(1, 9)],
+                                 release_run_ids={1, 4, 8})
+        self.assertEqual([7, 6], plan.kept_ids)
+        self.assertEqual([5, 3, 2], plan.candidate_ids)
+        self.assertEqual({8: 'published release', 4: 'published release',
+                          1: 'published release'}, plan.preserved)
+        self.assertEqual([1, 4, 8], plan.release_run_ids)
+
+    def test_failed_and_excluded_published_run_is_still_protected(self):
+        plan = cleanup.plan_runs([run(1), run(2),
+                                  run(3, conclusion='failure', workflow_id=EXCLUDED_ID)],
+                                 excluded_workflow_ids={EXCLUDED_ID}, release_run_ids={3})
+        self.assertEqual([2, 1], plan.kept_ids)
+        self.assertEqual([], plan.candidate_ids)
+        self.assertEqual({3: 'published release'}, plan.preserved)
+
+    def test_invalid_release_run_ids_are_refused(self):
+        for ids in (None, '1', [True], [0], [-1], ['1']):
+            with self.subTest(ids=ids), self.assertRaises(cleanup.CleanupError):
+                cleanup.plan_runs([run(1)], release_run_ids=ids)
+
     def test_invalid_or_missing_fields_are_refused(self):
         bad_values = {'id': [None, 0, True, '1'], 'workflow_id': [None, 0, True],
                       'event': [None, ''], 'status': [None, ''], 'display_title': [None],
@@ -211,7 +246,8 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(report.plan.kept_ids, [7, 6])
         self.assertEqual(report.plan.candidate_ids, [5, 4, 3, 2, 1])
         self.assertEqual(client.calls, [('GET', EXCLUDED_PATH, False),
-                                       ('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False)])
+                                       ('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False),
+                                       ('GET', RELEASES, False)])
         self.assertEqual(report.as_dict()['mode'], 'dry-run')
         self.assertEqual(report.as_dict()['workflow'], 'all')
 
@@ -223,12 +259,16 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(client.calls[:2], [('GET', ALL_PREFIX + '/runs?per_page=100&page=1', False),
                                           ('GET', ALL_PREFIX + '/runs?per_page=100&page=2', False)])
         self.assertEqual(client.deleted, [f'/actions/runs/{value}' for value in range(100, 0, -1)])
-        for index in range(2, len(client.calls), 2):
+        self.assertEqual(client.calls[2], ('GET', RELEASES, False))
+        for index in range(3, len(client.calls), 3):
             method, resource, missing_ok = client.calls[index]
             self.assertEqual((method, missing_ok), ('GET', True))
-            self.assertEqual(client.calls[index + 1], ('DELETE', resource, False))
+            self.assertEqual(client.calls[index + 1], ('GET', RELEASES, False))
+            self.assertEqual(client.calls[index + 2], ('DELETE', resource, False))
         self.assertFalse(any(word in resource for _, resource, _ in client.calls
-                             for word in ('releases', 'caches', 'branches', '/artifacts')))
+                             for word in ('caches', 'branches', '/artifacts')))
+        self.assertFalse(any(method != 'GET' and resource.startswith('/releases')
+                             for method, resource, _ in client.calls))
 
     def test_full_last_page_is_followed_by_an_empty_page(self):
         client = FakeGitHub([run(value) for value in range(1, 101)])
@@ -241,7 +281,8 @@ class CleanupTests(unittest.TestCase):
         report = cleanup.cleanup(client, WORKFLOW, exclude_workflow=None)
         self.assertEqual(report.plan.workflow_id, WORKFLOW_ID)
         self.assertEqual(client.calls, [('GET', PREFIX, False),
-                                       ('GET', PREFIX + '/runs?per_page=100&page=1', False)])
+                                       ('GET', PREFIX + '/runs?per_page=100&page=1', False),
+                                       ('GET', RELEASES, False)])
         client = FakeGitHub([])
         with patch.object(client, 'request', return_value={}), self.assertRaises(cleanup.CleanupError):
             cleanup.cleanup(client, WORKFLOW, execute=True)
@@ -414,6 +455,135 @@ class CleanupTests(unittest.TestCase):
                 cleanup.cleanup(client, execute=True)
             self.assertEqual([], client.deleted)
 
+    def test_release_runs_and_two_ordinary_successes_survive_execution(self):
+        client = FakeGitHub([run(value, run_attempt=1, head_sha='a' * 40)
+                             for value in range(1, 9)],
+                            [release(1, target_commitish='a' * 40), release(4),
+                             release(8, prerelease=True)])
+        report = cleanup.cleanup(client, execute=True)
+        self.assertEqual([7, 6], report.plan.kept_ids)
+        self.assertEqual([5, 3, 2], report.deleted_ids)
+        self.assertEqual([1, 4, 8], report.as_dict()['release_run_ids'])
+        self.assertIs(True, report.as_dict()['preserve_release_runs'])
+        self.assertEqual({8: 'published release', 4: 'published release',
+                          1: 'published release'}, report.plan.preserved)
+        self.assertFalse(any(method != 'GET' and resource.startswith('/releases')
+                             for method, resource, _ in client.calls))
+
+    def test_release_from_earlier_attempt_protects_entire_run_after_rerun(self):
+        client = FakeGitHub([run(1, run_attempt=3, conclusion='failure'), run(2), run(3), run(4)],
+                            [release(1, attempt=1)])
+        report = cleanup.cleanup(client, execute=True)
+        self.assertEqual([4, 3], report.plan.kept_ids)
+        self.assertEqual([2], report.deleted_ids)
+        self.assertEqual({1: 'published release'}, report.plan.preserved)
+
+    def test_draft_source_backup_and_missing_old_runs_do_not_consume_success_slots(self):
+        client = FakeGitHub([run(value) for value in range(1, 5)],
+                            [release(90), release(1, id=91, draft=True,
+                                                  tag_name='gki-internal-source-1-1-abcdef', published_at=None)])
+        report = cleanup.cleanup(client, execute=True)
+        self.assertEqual([4, 3], report.plan.kept_ids)
+        self.assertEqual([2, 1], report.deleted_ids)
+        self.assertEqual({}, report.plan.preserved)
+        self.assertEqual([90], report.plan.release_run_ids)
+
+    def test_legacy_malformed_and_unrelated_published_tags_fail_closed_without_commit_guess(self):
+        for tag in ('v1.0', 'gki-1', 'gki-0-1', 'gki-01-1', 'gki-1-0',
+                    'gki-1-1-extra', 'other-gki-1-1', 'gki-internal-source-1-1-abcdef'):
+            client = FakeGitHub([run(value, run_attempt=1, head_sha='a' * 40)
+                                 for value in range(1, 5)],
+                                [release(1, tag_name=tag, target_commitish='a' * 40)])
+            with self.subTest(tag=tag), self.assertRaisesRegex(cleanup.CleanupError,
+                                                             'no verified gki run/attempt tag'):
+                cleanup.cleanup(client, execute=True)
+            self.assertEqual([], client.deleted)
+
+    def test_published_release_attempt_commit_and_metadata_mismatch_fail_closed(self):
+        changes = ({'tag_name': 'gki-1-2'}, {'target_commitish': 'b' * 40},
+                   {'id': True}, {'draft': None}, {'published_at': None},
+                   {'published_at': '2025-02-30T00:00:00Z'}, {'tag_name': 'gki-1-1\n'})
+        for change in changes:
+            client = FakeGitHub([run(value, run_attempt=1, head_sha='a' * 40)
+                                 for value in range(1, 5)], [release(1, **change)])
+            with self.subTest(change=change), self.assertRaises(cleanup.CleanupError):
+                cleanup.cleanup(client, execute=True)
+            self.assertEqual([], client.deleted)
+        client = FakeGitHub([run(value) for value in range(1, 5)], [release(1)])
+        with self.assertRaises(cleanup.CleanupError):
+            cleanup.cleanup(client, execute=True)
+        self.assertEqual([], client.deleted)
+
+    def test_release_pagination_reads_later_pages_and_empty_final_page(self):
+        client = FakeGitHub([run(value, run_attempt=1) for value in range(1, 5)],
+                            [release(value) for value in range(1000, 1100)] + [release(1)])
+        report = cleanup.cleanup(client)
+        self.assertEqual([4, 3], report.plan.kept_ids)
+        self.assertEqual([2], report.plan.candidate_ids)
+        self.assertEqual({1: 'published release'}, report.plan.preserved)
+        self.assertIn(('GET', '/releases?per_page=100&page=2', False), client.calls)
+        client = FakeGitHub([], [release(value) for value in range(1000, 1100)])
+        self.assertEqual(set(range(1000, 1100)), cleanup.fetch_release_run_ids(client, []))
+        self.assertEqual(('GET', '/releases?per_page=100&page=2', False), client.calls[-1])
+
+    def test_release_page_failure_invalid_batch_duplicates_and_limit_prevent_deletion(self):
+        for failure in ('request', 'object', 'oversized', 'duplicate-id', 'duplicate-tag', 'limit'):
+            releases = [release(value) for value in range(1000, 1100)] + [release(1)]
+            client = FakeGitHub([run(value, run_attempt=1) for value in range(1, 5)], releases)
+            original = client.request
+
+            def request(resource, **kwargs):
+                if resource == '/releases?per_page=100&page=2':
+                    if failure == 'request':
+                        raise cleanup.CleanupError('GitHub API GET failed (HTTP 500)')
+                    if failure == 'object':
+                        return {'releases': []}
+                    if failure == 'oversized':
+                        return [release(value) for value in range(1, 102)]
+                    if failure == 'duplicate-id':
+                        return [release(1, id=1000)]
+                    if failure == 'duplicate-tag':
+                        return [release(1, tag_name='gki-1000-1')]
+                return original(resource, **kwargs)
+
+            with self.subTest(failure=failure), patch.object(client, 'request', side_effect=request), \
+                    patch.object(cleanup, 'MAX_RELEASES', 100 if failure == 'limit' else 100000):
+                with self.assertRaises(cleanup.CleanupError):
+                    cleanup.cleanup(client, execute=True)
+                self.assertEqual([], client.deleted)
+
+    def test_draft_published_during_cleanup_is_refreshed_before_delete(self):
+        client = FakeGitHub([run(value, run_attempt=1) for value in range(1, 6)])
+        original = client.request
+
+        def request(resource, **kwargs):
+            if resource == '/actions/runs/3' and kwargs.get('method', 'GET') == 'GET':
+                client.releases = [release(3), release(5)]
+            return original(resource, **kwargs)
+
+        with patch.object(client, 'request', side_effect=request):
+            report = cleanup.cleanup(client, execute=True)
+        self.assertEqual([4, 2], report.plan.kept_ids)
+        self.assertEqual([1], report.deleted_ids)
+        self.assertEqual({5: 'published release', 3: 'published release'}, report.plan.preserved)
+        self.assertEqual([3, 5], report.plan.release_run_ids)
+
+    def test_refresh_failure_preserves_remaining_candidates_and_partial_report(self):
+        client = FakeGitHub([run(value) for value in range(1, 6)])
+        original = client.request
+
+        def request(resource, **kwargs):
+            if resource == RELEASES and len(client.deleted) == 1:
+                raise cleanup.CleanupError('GitHub API GET failed (HTTP 503)')
+            return original(resource, **kwargs)
+
+        report = cleanup.CleanupReport(client.repository, 'all', 2, True)
+        with patch.object(client, 'request', side_effect=request), self.assertRaises(cleanup.CleanupError):
+            cleanup.cleanup(client, execute=True, report=report)
+        self.assertEqual([3], report.deleted_ids)
+        self.assertEqual([2, 1], report.as_dict()['remaining_candidate_ids'])
+        self.assertEqual(['/actions/runs/3'], client.deleted)
+
 
 class Response:
     def __init__(self, status=200, body=b'{}'):
@@ -444,7 +614,7 @@ class Opener:
 
 
 class TransportTests(unittest.TestCase):
-    def test_all_release_and_release_asset_endpoints_are_refused_before_network(self):
+    def test_unpaginated_release_and_release_asset_endpoints_are_refused_before_network(self):
         opener = Opener(Response())
         client = cleanup.GitHub('owner/gki', 'secret-token', opener)
         for path in ('/releases', '/releases/1', '/releases/latest',
@@ -453,6 +623,20 @@ class TransportTests(unittest.TestCase):
                 with self.subTest(path=path, method=method), self.assertRaises(cleanup.CleanupError):
                     client.request(path, method=method)
         self.assertEqual([], opener.requests)
+
+    def test_release_listing_is_allowed_only_as_fixed_read_only_paginated_path(self):
+        opener = Opener(Response(body=b'[]'))
+        client = cleanup.GitHub('owner/gki', 'secret-token', opener)
+        self.assertEqual(client.request(RELEASES), [])
+        self.assertEqual(opener.requests[0][0].full_url,
+                         'https://api.github.com/repos/owner/gki' + RELEASES)
+        for path, method in ((RELEASES, 'DELETE'), (RELEASES, 'POST'),
+                             ('/releases?per_page=10&page=1', 'GET'),
+                             ('/releases?per_page=100&page=0', 'GET'),
+                             (RELEASES + '&draft=false', 'GET')):
+            with self.subTest(path=path, method=method), self.assertRaises(cleanup.CleanupError):
+                client.request(path, method=method)
+        self.assertEqual(1, len(opener.requests))
 
     def test_repository_listing_is_allowed_only_as_a_fixed_read_only_paginated_path(self):
         opener = Opener(Response(body=b'{"total_count":0,"workflow_runs":[]}'))
@@ -567,7 +751,7 @@ class CLITests(unittest.TestCase):
         self.assertEqual(data['keep'], 2)
         self.assertIs(data['preserve_releases'], True)
         self.assertEqual(data['excluded_workflow_ids'], [EXCLUDED_ID])
-        self.assertIn('保留成功记录：2 条', summary.read_text(encoding='utf-8'))
+        self.assertIn('保留普通成功记录：2 条', summary.read_text(encoding='utf-8'))
         self.assertIn('所有发行版（Release）及其全部附件均保留，不受两条记录限制。',
                       summary.read_text(encoding='utf-8'))
 
@@ -607,9 +791,9 @@ class CLITests(unittest.TestCase):
         self.assertEqual(data['kept_ids'], [8, 7])
         self.assertEqual(data['preserved'], {'2': 'current run', '1': 'not completed'})
         text = summary.read_text(encoding='utf-8')
-        self.assertIn('保留成功记录：2 条', text)
+        self.assertIn('保留普通成功记录：2 条', text)
         self.assertIn('暂时保护：2 条', text)
-        self.assertIn('暂时保护运行 ID：2, 1', text)
+        self.assertIn('保护运行 ID：2, 1', text)
 
     def test_current_cleanup_is_excluded_and_protected_without_using_success_slot(self):
         summary = self.directory / 'summary.md'
@@ -624,6 +808,32 @@ class CLITests(unittest.TestCase):
         self.assertEqual([3], data['candidate_ids'])
         self.assertIn('不计入保留名额的工作流 ID：703',
                       summary.read_text(encoding='utf-8'))
+
+    def test_cli_reports_release_runs_separately_from_two_ordinary_successes(self):
+        summary = self.directory / 'summary.md'
+        client = FakeGitHub([run(value, run_attempt=1) for value in range(1, 6)],
+                            [release(1), release(5)])
+        status, data, _, _ = self.invoke(['--execute', '--summary', str(summary)], client)
+        self.assertEqual(0, status)
+        self.assertEqual([4, 3], data['kept_ids'])
+        self.assertEqual([1, 5], data['release_run_ids'])
+        self.assertEqual({'5': 'published release', '1': 'published release'}, data['preserved'])
+        self.assertEqual([2], data['deleted_ids'])
+        text = summary.read_text(encoding='utf-8')
+        self.assertIn('保护发行对应运行：2 条', text)
+        self.assertIn('暂时保护：0 条', text)
+        self.assertIn('发行记录不占名额', text)
+        self.assertIn('发行来源运行 ID：1, 5', text)
+
+    def test_cli_unknown_release_source_fails_before_every_delete(self):
+        client = FakeGitHub([run(value) for value in range(1, 6)],
+                            [release(1, tag_name='legacy-release')])
+        status, data, error, _ = self.invoke(['--execute'], client)
+        self.assertEqual(1, status)
+        self.assertEqual('failed', data['status'])
+        self.assertIn('unknown source run', error)
+        self.assertEqual([], data['deleted_ids'])
+        self.assertEqual([], client.deleted)
 
     def test_bad_arguments_fail_before_any_network_request(self):
         for arguments in (['--keep', '0'], ['--repo', 'https://evil/repo'], ['--workflow', '../other.yml'],

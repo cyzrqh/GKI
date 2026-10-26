@@ -147,8 +147,11 @@ def pin_dependencies(root: Path, susfs_dir: Path, variant: str, ksu_ref: str, ti
     directory = susfs_dir.resolve()
     if directory == root or not directory.is_relative_to(root) or not (directory / ".git").exists():
         raise CompatibilityError("SUSFS directory must be a separate cloned repository inside the workspace")
-    git(directory, "fetch", "--depth=1", "origin", commit)
-    git(directory, "checkout", "--detach", commit)
+    # Shared snapshots already contain the selected official commit. Avoid
+    # sending every matrix worker back to GitLab after an offline restoration.
+    if git(directory, "rev-parse", "HEAD").lower() != commit:
+        git(directory, "fetch", "--depth=1", "origin", commit)
+        git(directory, "checkout", "--detach", commit)
     if git(directory, "rev-parse", "HEAD").lower() != commit:
         raise CompatibilityError("SUSFS checkout does not match the compatibility pin")
     header = directory / "kernel_patches/include/linux/susfs.h"

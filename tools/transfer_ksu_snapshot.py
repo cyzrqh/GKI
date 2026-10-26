@@ -338,7 +338,8 @@ def install_snapshot(staged: Path, output: Path, recovery: dict) -> None:
 
 def prepared_identity(document: dict, reference: str) -> dict:
     """Keep native version and tree identities bound to the successful prepare job."""
-    if (not isinstance(document, dict) or set(document) != {'ref', 'git_tree', 'git_count', 'git_describe'}
+    fields = {'ref', 'git_tree', 'git_count', 'git_describe'}
+    if (not isinstance(document, dict) or set(document) not in (fields, fields | {'susfs_sources'})
             or document.get('ref') != reference
             or not isinstance(document.get('git_tree'), str)
             or not re.fullmatch(r'[0-9a-f]{40}', document['git_tree'])
@@ -346,6 +347,9 @@ def prepared_identity(document: dict, reference: str) -> dict:
             or not isinstance(document.get('git_describe'), str) or not 1 <= len(document['git_describe']) <= 1024
             or any(ord(char) < 32 or ord(char) == 127 for char in document['git_describe'])):
         raise TransferError('Official recovery requires this prepare job’s exact source and native version identity')
+    if 'susfs_sources' in document:
+        from shared_susfs_source import validate_sources
+        validate_sources(document['susfs_sources'])
     return dict(document)
 
 
@@ -372,11 +376,15 @@ def restore_official(output: Path, expected: Expected, identity: dict, *, root: 
                 time.sleep(attempt + 1)
         git(source, 'checkout', '--quiet', '--detach', expected.ksu_ref)
         actual = {'ref': expected.ksu_ref, **source_identity(source, expected.ksu_ref)}
-        if actual != identity:
+        if actual != {field: identity[field] for field in actual}:
             raise TransferError('Official source tree, history or version tags changed since prepare; refusing a mixed build')
+        dependencies = identity.get('susfs_sources')
+        if dependencies is not None:
+            from shared_susfs_source import recover_exact_sources
+            recover_exact_sources(source, dependencies)
         recreated = temporary / 'recreated'
         manifest = snapshot_source(source, recreated, expected.ksu_ref, root=root, susfs=susfs, tier=tier,
-                                   variant=expected.variant)
+                                   variant=expected.variant, susfs_sources=dependencies)
         if {field: manifest[field] for field in identity} != identity:
             raise TransferError('Recovered source identity changed during verification')
         with recovery_directory(output.parent) as recovery:

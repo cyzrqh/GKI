@@ -160,8 +160,8 @@ class BuildDependencyTests(unittest.TestCase):
         with patch.object(pin.subprocess, "run", side_effect=self.mock_git) as run:
             self.assertTrue(self.run_pin())
         operations = [call.args[0][3:] for call in run.call_args_list]
-        self.assertEqual(operations[:3], [["fetch", "--depth=1", "origin", SUSFS],
-                                          ["checkout", "--detach", SUSFS], ["rev-parse", "HEAD"]])
+        self.assertEqual(operations[:2], [["rev-parse", "HEAD"], ["rev-parse", "HEAD"]])
+        self.assertFalse(any(operation[0] in ('fetch', 'checkout') for operation in operations))
         for call in run.call_args_list:
             self.assertIsInstance(call.args[0], list)
             self.assertNotIn("shell", call.kwargs)
@@ -189,11 +189,15 @@ class BuildDependencyTests(unittest.TestCase):
 
     def test_failed_fetch_is_sanitized_and_stops_checkout(self):
         failure = subprocess.CompletedProcess([], 1, stdout="", stderr="secret-token-from-remote")
-        with patch.object(pin.subprocess, "run", return_value=failure) as run:
+        def missing_then_failure(args, **kwargs):
+            if args[3] == 'rev-parse':
+                return subprocess.CompletedProcess(args, 0, stdout='b' * 40 + '\n', stderr='')
+            return failure
+        with patch.object(pin.subprocess, "run", side_effect=missing_then_failure) as run:
             with self.assertRaisesRegex(pin.CompatibilityError, "fetch failed") as error:
                 self.run_pin()
         self.assertNotIn("secret-token", str(error.exception))
-        self.assertEqual(run.call_count, 1)
+        self.assertEqual(run.call_count, 2)
         self.assertFalse(self.output.exists())
 
     def test_profile_rejects_invalid_fields_and_short_shas(self):

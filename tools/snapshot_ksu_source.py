@@ -153,7 +153,8 @@ def verify_susfs_compatibility(source: Path, root: Path, tier: str, susfs: bool,
 
 
 def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = ROOT,
-                    susfs: bool = False, tier: str = "Custom(自定义)", variant: str = 'SukiSU') -> dict:
+                    susfs: bool = False, tier: str = "Custom(自定义)", variant: str = 'SukiSU',
+                    susfs_sources: dict | None = None) -> dict:
     repository = manager_profile(variant)['repository']
     reference = expected_commit(reference)
     source = source.resolve(strict=True)
@@ -165,13 +166,18 @@ def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = 
         raise SnapshotError("SukiSU snapshot parent directory does not exist")
     check_official_source(source, variant)
     identity = source_identity(source, reference)
+    dependency_refs = []
+    if susfs_sources is not None:
+        from shared_susfs_source import NAMESPACE, verify_local_sources
+        susfs_sources = verify_local_sources(source, susfs_sources)
+        dependency_refs = [NAMESPACE + target for target in susfs_sources]
     with temporary_directory(output.parent, ".gki-snapshot-") as temporary:
         prepared = temporary / "prepared"
         prepared.mkdir()
         bundle = prepared / BUNDLE_NAME
         # Tags preserve upstream git describe/versionName. HEAD includes all
         # ancestors, preserving rev-list/versionCode even after a force push.
-        git(source, "bundle", "create", str(bundle), "HEAD", "--tags", timeout=300)
+        git(source, "bundle", "create", str(bundle), "HEAD", "--tags", *dependency_refs, timeout=300)
         size = bundle.stat().st_size
         if not 0 < size <= MAX_BUNDLE_SIZE:
             raise SnapshotError("SukiSU source bundle exceeds the allowed size")
@@ -182,6 +188,8 @@ def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = 
         manifest = {"schema_version": 1, "repository": repository, "ref": reference,
                     "bundle_filename": BUNDLE_NAME, "bundle_size": size,
                     "bundle_sha256": file_digest(bundle), **identity}
+        if susfs_sources is not None:
+            manifest['susfs_sources'] = susfs_sources
         (prepared / MANIFEST_NAME).write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + "\n",
                                               encoding="utf-8", newline="\n")
         # Perform the same real restoration every consumer will perform, so a
@@ -203,10 +211,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--susfs", required=True, choices=("true", "false"))
     parser.add_argument("--tier", required=True)
     parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
+    parser.add_argument('--susfs-sources', type=Path, help='Prepared shared SUSFS target identities')
     args = parser.parse_args(argv)
     try:
+        dependencies = None
+        if args.susfs_sources is not None:
+            from shared_susfs_source import read_json, validate_sources
+            if args.susfs_sources.is_symlink() or not args.susfs_sources.is_file() or args.susfs_sources.stat().st_size > MAX_MANIFEST_SIZE:
+                raise SnapshotError('Prepared shared SUSFS metadata file is missing or invalid')
+            dependencies = validate_sources(read_json(args.susfs_sources.read_text(encoding='utf-8')))
         manifest = snapshot_source(args.source, args.output, args.expected_ref, root=args.root,
-                                   susfs=args.susfs == "true", tier=args.tier, variant=args.variant)
+                                   susfs=args.susfs == "true", tier=args.tier, variant=args.variant,
+                                   susfs_sources=dependencies)
     except (OSError, ValueError, UnicodeError) as error:
         print(f"::error::SukiSU source snapshot failed: {error}", file=sys.stderr)
         return 1

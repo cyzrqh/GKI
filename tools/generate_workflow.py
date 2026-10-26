@@ -416,11 +416,14 @@ PY
 
     # Fetch SukiSU once before the matrix expands. Every kernel receives the
     # same full-history bundle; a later upstream rebase cannot change its HEAD.
-    source_sync_index = steps.index(step_named(steps, '初始化并同步内核源码'))
-    steps[source_sync_index:source_sync_index] = [
+    dependencies_index = steps.index(step_named(steps, '克隆依赖仓库'))
+    steps[dependencies_index:dependencies_index] = [
         source_cache_restore(condition="inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU'"),
         source_backup_restore(condition="inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU'"),
         source_backup_recache(),
+    ]
+    source_sync_index = steps.index(step_named(steps, '初始化并同步内核源码'))
+    steps[source_sync_index:source_sync_index] = [
         {'name': '检出内核配套的管理器快照', 'if': "inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU'",
          'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
          'run': '''python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
@@ -450,6 +453,7 @@ PY
 '''
 
     dependencies = step_named(steps, '克隆依赖仓库')
+    dependencies['env'] = {'SUSFS_SOURCES': '${{ needs.prepare-matrix.outputs.susfs_sources }}'}
     steps.insert(steps.index(dependencies) + 1, {
         'name': '选择配套的 SUSFS 源码版本',
         'if': "inputs.enable_susfs && inputs.ksu_variant == 'SukiSU'",
@@ -496,6 +500,11 @@ fi
         'super_access_c = next((path for path in (ksu_dir / "extension/kpm/super_access.c", '
         'ksu_dir / "kpm/super_access.c") if path.is_file()), ksu_dir / "kpm/super_access.c")')
     compile_step = step_named(steps, '编译内核')
+    steps.insert(steps.index(compile_step), {
+        'name': '核实 BakaSU 原生符号接口',
+        'if': "inputs.ksu_variant == 'BakaSU'",
+        'run': 'python3 "$GITHUB_WORKSPACE/tools/ensure_bakasu_symbol_lookup.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"',
+    })
     steps.insert(steps.index(compile_step), {
         'name': '在内核中记录实际构建配置',
         'run': '''set -euo pipefail
@@ -654,6 +663,7 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
                     'source_cache_key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
                     'source_identity': '${{ steps.source-identity.outputs.source_identity }}',
+                    'susfs_sources': '${{ steps.shared-susfs.outputs.susfs_sources }}',
                     'source_backup_release_id': '${{ steps.source-backup.outputs.backup_release_id }}',
                     'ddk_matrix': '${{ steps.lkm-matrix.outputs.matrix }}',
                     'manager_package': '${{ steps.certificate.outputs.package }}',
@@ -688,6 +698,13 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
 command -v cc >/dev/null
 python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
 '''},
+            {'name': '验证共享源码还原及原生符号接口',
+             'if': BUILD_IF,
+             'run': '''set -euo pipefail
+command -v cc >/dev/null
+python3 -m unittest discover -s tests -p 'test_shared_susfs_source.py'
+python3 -m unittest discover -s tests -p 'test_bakasu_symbol_lookup.py'
+'''},
             {'name': '固定本次 KernelSU 与管理器源码', 'id': 'sources',
              'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}',
                      'KSU_TIER': '${{ inputs.kernelsu_branch }}',
@@ -714,15 +731,28 @@ PY
              'if': MANAGER_IF,
              'with': {'repository': '${{ steps.sources.outputs.ksu_repo }}', 'ref': '${{ steps.sources.outputs.ksu_ref }}',
                       'path': 'ksu-snapshot-source', 'fetch-depth': 0, 'persist-credentials': False}},
+            {'name': '矩阵展开前统一下载并固定 SUSFS', 'id': 'shared-susfs',
+             'if': BUILD_IF + ' && inputs.enable_susfs',
+             'env': {'SUSFS_MATRIX': '${{ steps.matrix.outputs.matrix }}',
+                     'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}',
+                     'KSU_TIER': '${{ steps.sources.outputs.effective_ksu_branch }}'},
+             'run': '''python3 tools/shared_susfs_source.py prepare --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \\
+  --matrix-json "$SUSFS_MATRIX" --expected-ref "$KSU_REF" --variant "$KSU_VARIANT" \\
+  --tier "$KSU_TIER" --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/susfs-sources.json"
+'''},
             {'name': '展开矩阵前验证并固定源码快照', 'id': 'source-snapshot',
              'if': MANAGER_IF,
              'env': {'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}',
                      'KSU_TIER': '${{ steps.sources.outputs.effective_ksu_branch }}',
                      'ENABLE_SUSFS': "${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}"},
              'run': '''set -euo pipefail
+snapshot_args=()
+if [ "$ENABLE_SUSFS" = true ]; then
+  snapshot_args+=(--susfs-sources "$RUNNER_TEMP/susfs-sources.json")
+fi
 python3 tools/snapshot_ksu_source.py --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \\
   --output "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \\
-  --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
+  --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER" "${snapshot_args[@]}"
 python3 - <<'PY'
 import os,sys
 sys.path.insert(0,'tools')
@@ -743,7 +773,10 @@ sys.path.insert(0,'tools')
 from checkout_ksu_snapshot import read_manifest
 from transfer_ksu_snapshot import prepared_identity
 manifest = read_manifest(pathlib.Path('ksu-source-bundle'),os.environ['KSU_REF'],variant=os.environ['KSU_VARIANT'])
-identity = prepared_identity({key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')},os.environ['KSU_REF'])
+document = {key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')}
+if 'susfs_sources' in manifest:
+    document['susfs_sources'] = manifest['susfs_sources']
+identity = prepared_identity(document,os.environ['KSU_REF'])
 with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
     output.write('source_identity='+json.dumps(identity,separators=(',',':'))+'\\n')
 PY

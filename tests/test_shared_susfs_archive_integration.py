@@ -50,12 +50,20 @@ class SharedSusfsArchiveIntegrationTests(unittest.TestCase):
                 'real archive fixture for ' + target + '\n', encoding='utf-8')
         (self.upstream / 'preserve-bytes.txt').write_bytes(b'CRLF\r\nfixture\r\n')
         (self.upstream / 'run.sh').write_bytes(b'#!/bin/sh\nprintf fixture\n')
+        # POSIX Git refreshes index executable bits from the worktree on every
+        # later add. Keep the physical mode consistent with the indexed mode;
+        # update-index alone only happened to work with Windows filemode=false.
+        (self.upstream / 'run.sh').chmod(0o755)
+        if os.name != 'nt':
+            self.git(self.upstream, 'config', 'core.filemode', 'true')
+            self.assertEqual(0o755, (self.upstream / 'run.sh').stat().st_mode & 0o777)
         self.git(self.upstream, 'add', '.')
         self.git(self.upstream, 'update-index', '--chmod=+x', 'run.sh')
         self.git(self.upstream, 'commit', '--quiet', '-m', 'official initial fixture')
         (self.upstream / 'next').write_text('second official commit\n', encoding='utf-8')
         self.commit(self.upstream, 'official exact fixture\n\nFull original message.\n')
         self.original = self.git(self.upstream, 'rev-parse', 'HEAD')
+        self.assertIn('100755', self.git(self.upstream, 'ls-tree', 'HEAD', 'run.sh'))
         self.original_tree = self.git(self.upstream, 'rev-parse', 'HEAD^{tree}')
         raw_json = self.git(self.upstream, 'show', '-s', '--format=%H%n%P%n%an%n%ae%n%aI%n%cn%n%ce%n%cI', 'HEAD').splitlines()
         original_bytes = self.git_bytes(self.upstream, 'cat-file', 'commit', self.original)

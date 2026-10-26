@@ -251,12 +251,11 @@ PY
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 python3 -c "print('y\\n' * 100)" | "$sdkmanager" --licenses > /dev/null
-"$sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0'
+"$sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;29.0.14206865'
 if [ "$KSU_VARIANT" = BakaSU ]; then
   "$sdkmanager" 'build-tools;36.1.0' 'ndk;30.0.16248370'
   echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
 else
-  "$sdkmanager" 'ndk;29.0.14206865'
   echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 fi
 '''},
@@ -274,8 +273,8 @@ rustup target add aarch64-linux-android --toolchain "$toolchain"
              'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 3,
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_CARGO_CACHE,
-                      'key': "gki-manager-cargo-v1-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh') }}",
-                      'restore-keys': 'gki-manager-cargo-v1-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-'}},
+                      'key': "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh') }}",
+                      'restore-keys': "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-"}},
             {'name': '编译管理器与同版本 ksud',
              'id': 'manager-build',
              'env': {'KSU_PACKAGE_NAME': '${{ needs.prepare-matrix.outputs.manager_package }}',

@@ -110,6 +110,29 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
         self.assertNotIn('curl ', SCRIPT)
         self.assertNotIn('wget ', SCRIPT)
 
+    def test_native_rust_uses_r29_in_a_subshell_and_leaves_gradle_ndk_unchanged(self):
+        self.assertIn('native_ndk_dir="$ANDROID_HOME/ndk/29.0.14206865"', SCRIPT)
+        self.assertIn('[ -d "$native_ndk_dir" ]', SCRIPT)
+        native_start = SCRIPT.index('(\nexport ANDROID_NDK_HOME="$native_ndk_dir"\n')
+        native_end = SCRIPT.index('\n)\n\ncd "$manager_dir"', native_start)
+        native = SCRIPT[native_start:native_end]
+        self.assertIn('export ANDROID_NDK_ROOT="$native_ndk_dir"', native)
+        helper = 'source .github/scripts/setup-rust-build.sh aarch64-linux-android 26'
+        self.assertEqual(1, SCRIPT.count(helper))
+        self.assertIn(helper, native)
+        self.assertLess(native.index('export ANDROID_NDK_HOME='), native.index(helper))
+        self.assertIn('builtins="$("$CLANG_PATH" --print-resource-dir)', native)
+        self.assertIn('cargo +nightly build --locked --manifest-path userspace/ksuinit/Cargo.toml', native)
+        self.assertIn('--manifest-path userspace/ksud/Cargo.toml', native)
+        self.assertIn('cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"', native)
+        self.assertNotIn('bash ./gradlew', native)
+        gradle = SCRIPT[native_end:]
+        self.assertIn('bash ./gradlew', gradle)
+        self.assertNotIn('export ANDROID_NDK_HOME=', gradle)
+        self.assertNotIn('export ANDROID_NDK_ROOT=', gradle)
+        self.assertNotIn('allow-multiple-definition', SCRIPT)
+        self.assertNotIn('rust_eh_personality', SCRIPT)
+
     def test_native_inputs_refuse_missing_or_non_arm64_modules(self):
         assets = self.directory / 'userspace/ksud/bin/aarch64'
         assets.mkdir(parents=True)

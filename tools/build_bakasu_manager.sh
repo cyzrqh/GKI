@@ -41,6 +41,8 @@ if [ "${KSU_PACKAGE_NAME:-com.cyzrqh.gki.bakasu}" != com.cyzrqh.gki.bakasu ]; th
 fi
 export KSU_PACKAGE_NAME=com.cyzrqh.gki.bakasu
 [ -d "$ANDROID_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] || { echo 'Android SDK or NDK directory does not exist.' >&2; exit 1; }
+native_ndk_dir="$ANDROID_HOME/ndk/29.0.14206865"
+[ -d "$native_ndk_dir" ] || { echo 'BakaSU native Rust builds require the official NDK r29 toolchain.' >&2; exit 1; }
 
 # The caller stages and validates the same-source, same-certificate modules.
 # Refuse an incomplete asset directory before running either native compiler.
@@ -141,7 +143,13 @@ print('Manager APK ABI: arm64-v8a')
 print('Release signing: separate workflow step')
 PY
 
-# The upstream helper configures the Android linker, archiver and bindgen sysroot.
+# Official ksuinit/ksud builds use NDK r29; the manager's Gradle project uses
+# its own NDK r30. Isolate all helper exports (CC/CXX/AR, Cargo linker and
+# bindgen sysroot) so the Gradle build keeps its original NDK environment.
+(
+export ANDROID_NDK_HOME="$native_ndk_dir"
+export ANDROID_NDK_ROOT="$native_ndk_dir"
+echo "BakaSU native Rust NDK: $ANDROID_NDK_HOME"
 source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
 if [ -f userspace/ksuinit/Cargo.toml ]; then
   builtins="$("$CLANG_PATH" --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
@@ -179,6 +187,7 @@ print('Verified eight native KMI assets in the built ARM64 ksud.')
 PY
 mkdir -p "$manager_dir/app/src/main/jniLibs/arm64-v8a"
 cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
+)
 
 cd "$manager_dir"
 echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'

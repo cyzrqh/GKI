@@ -645,6 +645,11 @@ class WorkflowTests(unittest.TestCase):
         cargo = next(step for step in steps if step.get('id') == 'manager-cargo-cache')
         self.assertIn('steps.manager-rust-version.outputs.version', cargo['with']['key'])
         self.assertIn('ndk29', cargo['with']['key'])
+        self.assertIn("'v2-bakasu' || 'v1'", cargo['with']['key'])
+        self.assertIn('tools/build_bakasu_manager.sh', cargo['with']['key'])
+        sdk = next(step for step in steps if step['name'] == '准备 Android SDK 与 NDK')['run']
+        self.assertIn("'ndk;29.0.14206865'", sdk)
+        self.assertIn("'ndk;30.0.16248370'", sdk)
         self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-rust-version'),
                         steps.index(cargo))
 

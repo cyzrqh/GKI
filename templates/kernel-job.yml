@@ -632,7 +632,7 @@ job:
 
       echo "克隆 AnyKernel3..."
       python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
-        https://github.com/WildKernels/AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH"
+        https://github.com/WildKernels/AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH" --depth 1
       rm -rf AnyKernel3/.git
 
       if [ "${{ inputs.enable_susfs }}" == "true" ]; then
@@ -6086,6 +6086,8 @@ job:
       path: ${{ env.BAZEL_DISK_CACHE }}
       key: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
       restore-keys: |
+        gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-
+        gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-${{ inputs.sub_level }}-
         gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}-
   - name: 选择 build.sh 编译缓存
     id: ccache-config

@@ -644,7 +644,16 @@ class WorkflowTests(unittest.TestCase):
         for axis in ('matrix.android_version', 'matrix.kernel_version', 'matrix.sub_level',
                      'matrix.os_patch_level', 'github.run_id', 'github.run_attempt'):
             self.assertIn(axis, restore['with']['key'])
-        self.assertNotIn('matrix.sub_level', restore['with']['restore-keys'])
+        prefixes = restore['with']['restore-keys'].splitlines()
+        self.assertEqual(len(prefixes), 3)
+        self.assertIn('matrix.os_patch_level', prefixes[0])
+        self.assertIn('matrix.sub_level', prefixes[0])
+        self.assertIn('matrix.sub_level', prefixes[1])
+        self.assertNotIn('matrix.os_patch_level', prefixes[1])
+        self.assertNotIn('matrix.sub_level', prefixes[2])
+        self.assertTrue(restore['with']['key'].startswith(prefixes[0]))
+        self.assertTrue(prefixes[0].startswith(prefixes[1]))
+        self.assertTrue(prefixes[1].startswith(prefixes[2]))
         self.assertIn('--disk_cache="$BAZEL_DISK_CACHE"', compile_step['with']['command'])
         self.assertNotIn('bazel-bin', restore['with']['path'])
         self.assertIn('always() && !cancelled()', trim['if'])
@@ -748,6 +757,25 @@ class WorkflowTests(unittest.TestCase):
                 self.assertNotIn('*', step['with']['path'])
                 self.assertNotIn('name', step['with'])
         self.assertNotIn('打包签名内核 Bundle', [step['name'] for step in self.steps])
+
+    def test_boot_tool_download_cache_and_key_generation_run_only_for_boot_outputs(self):
+        for name in ('缓存工具链', '下载工具链', '生成签名密钥'):
+            condition = self.find(name)['if']
+            for mode in ('仅 AK3', 'AK3 + boot 镜像'):
+                value = condition.replace('inputs.artifact_mode', repr(mode))
+                value = value.replace('env.ABK_LOCAL_CACHE_ENABLED', repr('false'))
+                value = value.replace('steps.cache-toolchain.outputs.cache-hit', repr('false'))
+                with self.subTest(step=name, mode=mode):
+                    self.assertEqual(mode != '仅 AK3', eval(value.replace('&&', ' and '), {'__builtins__': {}}, {}))
+        self.assertIn("env.ABK_LOCAL_CACHE_ENABLED != 'true'", self.find('缓存工具链')['if'])
+        self.assertIn("steps.cache-toolchain.outputs.cache-hit != 'true'", self.find('下载工具链')['if'])
+        manager = self.workflow['jobs']['build-sukisu-manager']
+        sign = next(step for step in manager['steps'] if step.get('id') == 'sign')
+        self.assertNotIn('artifact_mode', sign.get('if', ''))
+
+    def test_disposable_clone_histories_are_not_downloaded_for_every_kernel(self):
+        self.assertIn('aarch64-linux-gnu-6.4.1.git gcc --depth 1', self.find('初始化并同步内核源码')['run'])
+        self.assertIn('AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH" --depth 1', self.find('克隆依赖仓库')['run'])
 
     def test_ak3_preparation_does_not_require_compressed_image(self):
         run = self.find('准备 AK3 内核文件')['run']

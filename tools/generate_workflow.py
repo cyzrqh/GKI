@@ -110,7 +110,7 @@ def feature_inputs(source):
 
 SOURCE_SYNC = '''set -euo pipefail
 python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \\
-  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc
+  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc --depth 1
 formatted_branch="${GKI_ANDROID}-${GKI_KERNEL}-${GKI_PATCH}"
 "$REPO" init --depth=1 -u https://android.googlesource.com/kernel/manifest \\
   -b "common-${formatted_branch}" --repo-rev=v2.16
@@ -586,12 +586,14 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
           for key, label in (('boot', 'boot'), ('boot_gz', 'gzip boot'), ('boot_lz4', 'LZ4 boot'))],
     ]
     step_named(steps, '上传补丁冲突文件')['if'] = "failure() && env.REJ_COUNT > 0"
-    # mkbootimg is only needed for boot output; build-tools also supplies signing tools.
-    download = step_named(steps, '下载工具链')
-    old_line = 'retry_toolchain_clone "$AOSP_MIRROR/platform/system/tools/mkbootimg" mkbootimg'
-    if old_line not in download['run']:
-        raise ValueError('Upstream mkbootimg clone changed')
-    download['run'] = download['run'].replace(old_line, "if [ \"${{ inputs.artifact_mode }}\" != '仅 AK3' ]; then\n  " + old_line + '\nfi')
+    # These tools sign boot images. APK signing and the manifest-provided
+    # kernel compiler are independent, so AK3 builds need none of these steps.
+    for name in ('缓存工具链', '下载工具链', '生成签名密钥'):
+        boot_step = step_named(steps, name)
+        condition = "inputs.artifact_mode != '仅 AK3'"
+        if boot_step.get('if'):
+            condition += ' && (' + boot_step['if'] + ')'
+        boot_step['if'] = condition
     cache = step_named(steps, '缓存工具链')
     cache['with']['key'] = "toolchain-${{ runner.os }}-${{ inputs.artifact_mode == '仅 AK3' && 'ak3' || 'boot' }}-v2"
 

@@ -1099,7 +1099,7 @@ jobs:
         ccache --set-config=hard_link=false
         echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
     - name: 缓存工具链
-      if: env.ABK_LOCAL_CACHE_ENABLED != 'true'
+      if: inputs.artifact_mode != '仅 AK3' && (env.ABK_LOCAL_CACHE_ENABLED != 'true')
       id: cache-toolchain
       uses: actions/cache@v5
       with:
@@ -1108,7 +1108,7 @@ jobs:
           mkbootimg
         key: toolchain-${{ runner.os }}-${{ inputs.artifact_mode == '仅 AK3' && 'ak3' || 'boot' }}-v2
     - name: 下载工具链
-      if: steps.cache-toolchain.outputs.cache-hit != 'true'
+      if: inputs.artifact_mode != '仅 AK3' && (steps.cache-toolchain.outputs.cache-hit != 'true')
       run: |
         AOSP_MIRROR=https://android.googlesource.com
         BRANCH=main-kernel-build-2024
@@ -1131,12 +1131,11 @@ jobs:
         }
 
         retry_toolchain_clone "$AOSP_MIRROR/kernel/prebuilts/build-tools" kernel-build-tools
-        if [ "${{ inputs.artifact_mode }}" != '仅 AK3' ]; then
-          retry_toolchain_clone "$AOSP_MIRROR/platform/system/tools/mkbootimg" mkbootimg
-        fi
+        retry_toolchain_clone "$AOSP_MIRROR/platform/system/tools/mkbootimg" mkbootimg
     - name: 生成签名密钥
       run: |
         openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 > $BOOT_SIGN_KEY_PATH
+      if: inputs.artifact_mode != '仅 AK3'
     - name: 配置 Git
       run: |
         git config --global user.name "BuildBot"
@@ -1168,7 +1167,7 @@ jobs:
 
         echo "克隆 AnyKernel3..."
         python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
-          https://github.com/WildKernels/AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH"
+          https://github.com/WildKernels/AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH" --depth 1
         rm -rf AnyKernel3/.git
 
         if [ "${{ inputs.enable_susfs }}" == "true" ]; then
@@ -1416,7 +1415,7 @@ jobs:
       run: |
         set -euo pipefail
         python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
-          https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc
+          https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc --depth 1
         formatted_branch="${GKI_ANDROID}-${GKI_KERNEL}-${GKI_PATCH}"
         "$REPO" init --depth=1 -u https://android.googlesource.com/kernel/manifest \
           -b "common-${formatted_branch}" --repo-rev=v2.16
@@ -6343,6 +6342,8 @@ jobs:
         key: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{
           matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
+          gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
+          gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
           gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
     - name: 选择 build.sh 编译缓存
       id: ccache-config

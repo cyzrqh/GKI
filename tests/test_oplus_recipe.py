@@ -68,6 +68,8 @@ class OPlusRecipeTests(unittest.TestCase):
             config('启用内核级基带保护', 'cd kernel_workspace/common\ncurl -sSL https://github.com/cctv18/Baseband-guard/raw/master/setup.sh | bash'),
             config('添加制作名称', 'echo "${{ env.KERNEL_NAME }}"'),
         ]
+        if clang == '19':
+            steps[4]['run'] += '\npatch -p1 -F 3 < cve-2026-43499-rtmutex-6.12.patch\n'
         build = ('sudo rm -rf /usr/share/dotnet &\n'
                  'export CCACHE_COMPILERCHECK="none"\n'
                  'wget https://github.com/$GITHUB_REPOSITORY/raw/refs/heads/$GITHUB_REF_NAME/wrapper/cc-wrapper\n'
@@ -103,9 +105,19 @@ class OPlusRecipeTests(unittest.TestCase):
         return document, raw, profile
 
     def inputs(self, **updates):
-        return {'kernelsu_variant': 'SukiSU', 'enable_susfs': False, 'use_kpm': False,
+        return {'kernelsu_variant': 'SukiSU', 'kernelsu_branch': '最新版', 'enable_susfs': False, 'use_kpm': False,
                 'use_lz4kd': False, 'use_bbg': False, 'use_bbr': False,
                 'use_proxy_optimization': False, 'use_unicode_bypass': False, **updates}
+
+    def test_both_managers_accept_only_the_two_shared_version_choices(self):
+        _, _, profile = self.case(0)
+        for variant in ('SukiSU', 'BakaSU'):
+            stable = adapter.native_inputs(self.inputs(kernelsu_variant=variant, kernelsu_branch='正式版'), profile)
+            latest = adapter.native_inputs(self.inputs(kernelsu_variant=variant, kernelsu_branch='最新版'), profile)
+            self.assertEqual(stable, latest, 'The frozen parent source owns the tier; native feature flags stay the same')
+        for tier in ('Stable(标准)', 'Dev(开发)', 'Custom(自定义)', '', None, True):
+            with self.subTest(tier=tier), self.assertRaises(ValueError):
+                adapter.native_inputs(self.inputs(kernelsu_branch=tier), profile)
 
     def refresh(self, document, profile):
         raw = yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode()
@@ -132,7 +144,7 @@ class OPlusRecipeTests(unittest.TestCase):
             for forbidden in ('apt-get', 'sudo ', '/usr/bin/ccache', 'common.zip', 'android_kernel_',
                               'gh release', 'gh cache', 'KernelSU', 'setup.sh'):
                 self.assertNotIn(forbidden, script)
-            self.assertIn('common/scripts/setlocalversion', script)
+            self.assertNotIn('common/scripts/setlocalversion', script)
             self.assertIn('releases/download/LLVM-Clang', script)
             self.assertIn(') || exit 1', script)
 
@@ -204,7 +216,9 @@ class OPlusRecipeTests(unittest.TestCase):
         for index in range(len(self.references)):
             document, _, profile = self.case(index)
             config = '\n'.join(step.script for step in adapter.plan_phase('configure', document, profile, self.inputs()))
-            self.assertIn(document['env']['KERNEL_NAME'], config)
+            self.assertNotIn(document['env']['KERNEL_NAME'], config)
+            self.assertNotIn('添加制作名称', [step.name for step in adapter.plan_phase(
+                'configure', document, profile, self.inputs())])
             script = adapter.plan_phase('build', document, profile, self.inputs())[0].script
             self.assertIn('CCACHE_COMPILERCHECK="content"', script)
             self.assertNotIn('CCACHE_COMPILERCHECK="none"', script)
@@ -212,6 +226,8 @@ class OPlusRecipeTests(unittest.TestCase):
             self.assertIn('cc-wrapper', script)
             self.assertIn('ld-wrapper', script)
             if profile['kernel_version'] == '6.12':
+                self.assertIn('oplus_compat.py" rtmutex --common .', config)
+                self.assertNotIn('patch -p1 -F 3 < cve-2026-43499-rtmutex-6.12.patch', config)
                 for flag in ('-fdebug-prefix-map=', '-fmacro-prefix-map=', '-ffile-prefix-map=',
                              'export RUSTC=', 'export BINDGEN=', 'export LIBCLANG_PATH='):
                     self.assertIn(flag, script)
@@ -232,6 +248,14 @@ class OPlusRecipeTests(unittest.TestCase):
         with mock.patch.object(adapter, 'git', side_effect=AssertionError('must refuse before Git')):
             with self.assertRaises(adapter.RecipeError):
                 adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40, output)
+
+    def test_lz4_dependency_is_the_single_reviewed_patch_for_the_complete_matrix(self):
+        destination = Path('unused-pinned-lz4-fixture')
+        with (mock.patch.object(adapter, 'git', side_effect=AssertionError('moving HEAD must not be resolved')),
+              mock.patch.object(adapter, 'clone_fixed') as clone):
+            reference = adapter.dependency(adapter.LZ4_REPOSITORY, destination)
+        self.assertEqual(reference, '1aaf4283e03b0a2861bf8db1e58624028db23a85')
+        clone.assert_called_once_with(adapter.LZ4_REPOSITORY, reference, destination)
 
     def test_official_kernel_head_and_makefile_are_rechecked(self):
         document, _, profile = self.case(0)

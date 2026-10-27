@@ -29,10 +29,17 @@ class Reader:
         self.branch = {'name': profile['kernel_branch'], 'commit': {'sha': reference,
                        'commit': {'committer': {'date': '2026-10-27T00:00:00Z'}}}}
         self.file = makefile(version or profile['kernel'])
+        self.historical_file = makefile(profile['kernel'])
+        self.historical = {'sha': profile['verified_kernel_ref'], 'tree': {'sha': 'c' * 40},
+                           'committer': {'date': '2025-10-01T00:00:00Z'}}
 
     def get(self, resource):
         self.calls.append(resource)
-        return copy.deepcopy(self.file if '/contents/Makefile?' in resource else self.branch)
+        if '/git/commits/' in resource:
+            return copy.deepcopy(self.historical)
+        if '/contents/Makefile?' in resource:
+            return copy.deepcopy(self.historical_file if resource.endswith(self.historical['sha']) else self.file)
+        return copy.deepcopy(self.branch)
 
 
 class Response:
@@ -71,14 +78,19 @@ class CatalogTests(unittest.TestCase):
             return catalog.load_profiles(Path('fixture'))
 
     def test_checked_in_profiles_have_only_reviewed_official_oki_sources(self):
-        self.assertEqual(14, len(self.profiles))
-        self.assertEqual(14, len({(row['platform'], row['kernel']) for row in self.profiles}))
+        self.assertEqual(26, len(self.profiles))
+        self.assertEqual(26, len({(row['platform'], row['kernel']) for row in self.profiles}))
         self.assertEqual({'sm8650', 'sm8750', 'sm8845', 'sm8850', 'mt6897', 'mt6989', 'mt6991', 'mt6993'},
                          {row['platform'] for row in self.profiles})
         for row in self.profiles:
             self.assertIn(row['kernel_repo'], catalog.OFFICIAL_REPOSITORIES)
             self.assertNotIn('_gki', row['recipe_workflow'])
             self.assertIn('不承诺', row['compatibility'])
+        self.assertEqual(20, len({(row['recipe_repository'], row['recipe_workflow']) for row in self.profiles}))
+        identities = {row['id'] for row in self.profiles}
+        self.assertTrue({'sm8750-6.6.118', 'mt6991-6.6.118', 'sm8850-6.12.38',
+                         'sm8845-6.12.38', 'sm8750-6.6.30', 'mt6991-6.6.50',
+                         'mt6989-6.1.134', 'mt6897-6.1.75', 'mt6989-6.1.75'} <= identities)
 
     def test_recipe_mirrors_wrong_soc_unpinned_refs_and_gki_are_rejected(self):
         mutations = {'kernel_repo': 'cctv18/android_kernel_common_oneplus_sm8650',
@@ -106,8 +118,34 @@ class CatalogTests(unittest.TestCase):
 
     def test_kernel_version_drift_stops_before_any_build_matrix_is_returned(self):
         reader = Reader(self.profile, version='6.1.75')
-        with self.assertRaisesRegex(catalog.CatalogError, 'version changed.*expected 6.1.57, found 6.1.75'):
+        reader.historical_file = makefile('6.1.75')
+        with self.assertRaisesRegex(catalog.CatalogError, 'version changed.*expected 6.1.57, historical snapshot contains 6.1.75'):
             catalog.resolve_profile(self.profile, reader)
+
+    def test_official_branch_upgrade_keeps_exact_reviewed_historical_kernel_and_commit_date(self):
+        reader = Reader(self.profile, version='6.1.75')
+        row = catalog.resolve_profile(self.profile, reader)
+        reference = self.profile['verified_kernel_ref']
+        self.assertEqual(reference, row['kernel_ref'])
+        self.assertEqual('6.1.57', row['kernel'])
+        self.assertEqual('2025-10-01T00:00:00Z', row['source_committed_at'])
+        self.assertEqual('/repos/' + row['kernel_repo'] + '/git/commits/' + reference, reader.calls[2])
+        self.assertTrue(reader.calls[3].endswith('/contents/Makefile?ref=' + reference))
+        self.assertEqual('b' * 40, reader.branch['commit']['sha'])
+
+    def test_official_historical_commit_metadata_must_match_immutable_pin(self):
+        for changes in ({'sha': 'd' * 40}, {'tree': {}}, {'tree': {'sha': 'invalid'}},
+                        {'committer': {'date': '2026-10-27'}}, {'committer': []}):
+            reader = Reader(self.profile, version='6.1.75')
+            reader.historical.update(changes)
+            with self.subTest(changes=changes), self.assertRaises(catalog.CatalogError):
+                catalog.resolve_profile(self.profile, reader)
+
+    def test_older_branch_reversion_never_silently_uses_historical_fallback(self):
+        reader = Reader(self.profile, version='6.1.25')
+        with self.assertRaisesRegex(catalog.CatalogError, 'refusing an older'):
+            catalog.resolve_profile(self.profile, reader)
+        self.assertFalse(any('/git/commits/' in call for call in reader.calls))
 
     def test_bad_official_branch_metadata_is_rejected(self):
         examples = [None, [], {}, {'name': 'other', 'commit': {}},
@@ -152,10 +190,20 @@ class ReaderTests(unittest.TestCase):
         reader = catalog.OfficialReader(token='secret-test-token', opener=opener)
         for resource in ('https://evil.test/', '/repos/cctv18/android_kernel_common_oneplus_sm8650/branches/main',
                          '/repos/OnePlusOSS/android_kernel_common_oneplus_sm8650/actions/runs',
+                         '/repos/OnePlusOSS/android_kernel_common_oneplus_sm8650/git/commits/main',
                          self.resource + '\nAuthorization: unsafe'):
             with self.subTest(resource=resource), self.assertRaises(catalog.CatalogError):
                 reader.get(resource)
         opener.open.assert_not_called()
+
+    def test_historical_commit_read_is_limited_to_reviewed_official_repo_and_full_sha(self):
+        resource = '/repos/OnePlusOSS/android_kernel_common_oneplus_sm8650/git/commits/' + 'b' * 40
+        opener = mock.Mock()
+        opener.open.return_value = Response(b'{"verified":true}', 'https://api.github.com' + resource)
+        self.assertEqual({'verified': True}, catalog.OfficialReader(token='test-token', opener=opener).get(resource))
+        request = opener.open.call_args.args[0]
+        self.assertEqual('GET', request.get_method())
+        self.assertEqual('Bearer test-token', request.get_header('Authorization'))
 
     def test_authentication_is_sent_only_to_exact_github_api_destination(self):
         opener = mock.Mock()

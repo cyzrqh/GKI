@@ -26,6 +26,8 @@ COMMIT = '72bf62025e9c72e07b64c77db0801891f1088429'
 TAG = '0.13.9'
 PAGE = 4096
 EXTRA_SIZE = 128
+PI_MAP_BEFORE = bytes.fromhex('E60316AAE7031F2A3411889A')
+PI_MAP_AFTER = bytes.fromhex('E60316AAE7031F2AF40309AA')
 
 
 class KPMValidationError(ValueError):
@@ -276,6 +278,94 @@ def verify_patched(before: bytes, after: bytes, payload: bytes) -> dict:
             'map_offset': map_offset, 'map_max_size': map_max_size}
 
 
+def _original_map_extent(size: int, layout: dict) -> tuple[int, int]:
+    if not isinstance(layout, dict):
+        raise KPMValidationError('KPM report has no verified map layout')
+    offset, maximum = layout.get('map_offset'), layout.get('map_max_size')
+    if (type(offset) is not int or type(maximum) is not int or offset < 64 or offset % 16
+            or not 0 < maximum <= 0xa00 or offset + PAGE > size):
+        raise KPMValidationError('KPM report has an invalid bounded map window')
+    return offset, min(2 * maximum, size - offset)
+
+
+def _check_map_changes(before: bytes, after: bytes) -> None:
+    # Official 72bf620 tools/symbol.c changes PAC/AUT instructions to NOP in
+    # the bounded map scratch window and tools/patch.c syncs that window.
+    for offset in range(0, len(before), 4):
+        old, new = before[offset:offset + 4], after[offset:offset + 4]
+        if old == new:
+            continue
+        if (len(old) != 4 or len(new) != 4 or struct.unpack('<I', new)[0] != 0xd503201f
+                or struct.unpack('<I', old)[0] & 0xfffffd1f != 0xd503211f):
+            raise KPMValidationError('KPM changed an instruction outside its official PAC/NOP map transformation')
+
+
+def capture_original_windows(before: bytes, after: bytes, layout: dict) -> list[dict]:
+    """Retain public pre-patch bytes needed for independent full-image proof."""
+    offset, length = _original_map_extent(len(before), layout)
+    windows = []
+    if before[offset:offset + length] != after[offset:offset + length]:
+        _check_map_changes(before[offset:offset + length], after[offset:offset + length])
+        windows.append({'offset': offset, 'before_hex': before[offset:offset + length].hex()})
+    pi = before.find(PI_MAP_BEFORE)
+    if pi >= 0 and after[pi:pi + len(PI_MAP_AFTER)] == PI_MAP_AFTER:
+        windows.append({'offset': pi, 'before_hex': PI_MAP_BEFORE.hex()})
+    windows.sort(key=lambda item: item['offset'])
+    report = {'pre_image_size': len(before), 'pre_entry': image_entry(before),
+              'layout': layout, 'original_windows': windows}
+    restored = reconstruct_original_image(after, report)
+    if restored != before:
+        raise KPMValidationError('Official KPM tool changed kernel bytes outside its verified transformation windows')
+    return windows
+
+
+def reconstruct_original_image(image: bytes, report: dict) -> bytes:
+    """Undo only measured official transformations; never skip the pre-image hash."""
+    size, entry = report.get('pre_image_size'), report.get('pre_entry')
+    if type(size) is not int or not 64 <= size < len(image) or not isinstance(entry, dict):
+        raise KPMValidationError('KPM report lacks the bounded original Image extent and entry')
+    map_offset, map_length = _original_map_extent(size, report.get('layout'))
+    windows = report.get('original_windows', [])
+    if not isinstance(windows, list) or len(windows) > 2:
+        raise KPMValidationError('KPM original byte windows are missing or oversized')
+    before = bytearray(image[:size])
+    try:
+        struct.pack_into('<II', before, 0, entry['code0'], entry['code1'])
+    except (KeyError, TypeError, struct.error):
+        raise KPMValidationError('KPM report has an invalid original ARM64 entry') from None
+    previous_end, seen = 64, set()
+    for window in windows:
+        if (not isinstance(window, dict) or set(window) != {'offset', 'before_hex'}
+                or type(window['offset']) is not int or not isinstance(window['before_hex'], str)
+                or not re.fullmatch(r'(?:[0-9a-f]{2}){1,5120}', window['before_hex'])):
+            raise KPMValidationError('Invalid original KPM byte window')
+        start = window['offset']
+        original = bytes.fromhex(window['before_hex'])
+        end = start + len(original)
+        if start < previous_end or end > size:
+            raise KPMValidationError('Original KPM byte windows overlap or escape the Image')
+        if start == map_offset and len(original) == map_length:
+            if 'map' in seen:
+                raise KPMValidationError('Duplicate original KPM map window')
+            _check_map_changes(original, image[start:end])
+            seen.add('map')
+        elif original == PI_MAP_BEFORE and start % 4 == 0 and image[start:end] == PI_MAP_AFTER:
+            if 'pi' in seen:
+                raise KPMValidationError('Duplicate original KPM PI map window')
+            seen.add('pi')
+        else:
+            raise KPMValidationError('Original KPM bytes do not describe an official transformation')
+        before[start:end] = original
+        previous_end = end
+    if 'pi' in seen:
+        banner = re.search(rb'Linux version ([0-9]+)\.([0-9]+)\.([0-9]+)', before)
+        if not banner or tuple(map(int, banner.groups())) <= (6, 7, 0):
+            raise KPMValidationError('PI map transformation is not applicable to this original kernel')
+        if before.find(PI_MAP_BEFORE) != next(w['offset'] for w in windows if w['before_hex'] == PI_MAP_BEFORE.hex()):
+            raise KPMValidationError('PI map transformation differs from the official first-match patch')
+    return bytes(before)
+
+
 def patch(image: Path, cache_dir: Path, report: Path | None = None) -> dict:
     release = checked('release-lock', load_release)
     # Bazel exposes its real build outputs through bazel-bin symlinks. Resolve
@@ -327,7 +417,8 @@ def patch(image: Path, cache_dir: Path, report: Path | None = None) -> dict:
                   'tool': {key: release['assets']['kptools-linux'][key] for key in ('size', 'sha256')},
                   'payload': {**{key: release['assets']['kpimg'][key] for key in ('size', 'sha256')},
                               **validate_payload(assets['kpimg'])},
-                  'pre_entry': pre_entry, 'post_entry': checked('output-entry', image_entry, after), 'layout': layout}
+                  'pre_entry': pre_entry, 'post_entry': checked('output-entry', image_entry, after), 'layout': layout,
+                  'original_windows': checked('verify-original-kernel', capture_original_windows, before, after, layout)}
         report_bytes = (json.dumps(result, indent=2, sort_keys=True) + '\n').encode()
         if report is not None:
             report = Path(report).absolute()

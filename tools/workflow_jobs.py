@@ -1,4 +1,5 @@
 """Build, update, release, and standalone history-cleanup workflow jobs."""
+import re
 
 
 HISTORY_CLEANUP_NAME = '清理历史记录（保留2条成功及发行记录）'
@@ -196,6 +197,47 @@ def updater_workflow():
     }
 
 
+def release_publish_steps(condition: str, assets_directory='release-publish/assets',
+                          notes_file='release-publish/release.md', title_file='release-publish/title.txt'):
+    """Publish only caller-verified native assets under the shared run rules."""
+    if not isinstance(condition, str) or not condition:
+        raise ValueError('A release publish condition is required')
+    for path in (assets_directory, notes_file, title_file):
+        if (not isinstance(path, str) or not re.fullmatch(r'[A-Za-z0-9_][A-Za-z0-9_./-]*', path)
+                or path.startswith('/') or any(part in ('', '.', '..') for part in path.split('/'))):
+            raise ValueError('Release publishing requires safe relative workspace paths')
+    publish = '''set -euo pipefail
+title="$(cat release-publish/title.txt)"
+if [ "$RELEASE_EXISTS" != true ]; then
+gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \\
+  --draft --title "$title" --notes-file release-publish/release.md
+fi
+assets=(release-publish/assets/*)
+gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \\
+  --notes-file release-publish/release.md --repo "$GITHUB_REPOSITORY"
+url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+printf 'release_tag=%s\\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+printf 'release_url=%s\\n' "$url" >> "$GITHUB_OUTPUT"
+printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' "$url" >> "$GITHUB_STEP_SUMMARY"
+'''
+    publish = (publish.replace('release-publish/assets', assets_directory)
+               .replace('release-publish/release.md', notes_file)
+               .replace('release-publish/title.txt', title_file))
+    return [
+        {'name': '分配递增发行标签并绑定本次构建', 'id': 'release-tag', 'if': condition,
+         'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}'},
+         'run': 'python3 tools/release_tags.py allocate --notes ' + notes_file},
+        {'name': '发布独立安装包和刷机包', 'id': 'release', 'if': condition,
+         'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
+                 'RELEASE_TAG': '${{ steps.release-tag.outputs.release_tag }}',
+                 'RELEASE_EXISTS': '${{ steps.release-tag.outputs.release_exists }}'}, 'run': publish},
+        {'name': '核对原文件并清理发布中转包', 'if': "steps.release.outcome == 'success'",
+         'env': {'GH_TOKEN': '${{ github.token }}', 'RELEASE_TAG': '${{ steps.release.outputs.release_tag }}'},
+         'run': 'python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"'},
+    ]
+
+
 def release_job():
     condition = ("always() && !cancelled() && github.event_name == 'workflow_dispatch' && "
                  "needs.prepare-matrix.result == 'success' && "
@@ -222,34 +264,7 @@ def release_job():
             {'name': '上传同名校验文件', 'uses': 'actions/upload-artifact@v7',
              'with': {'path': 'release-publish/assets/SHA256SUMS.txt', 'archive': False,
                       'if-no-files-found': 'error', 'overwrite': True}},
-            {'name': '分配递增发行标签并绑定本次构建', 'id': 'release-tag',
-             'if': "inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true'",
-             'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}'},
-             'run': 'python3 tools/release_tags.py allocate --notes release-publish/release.md'},
-            {'name': '发布独立安装包和刷机包', 'id': 'release',
-             'if': "inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true'",
-             'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
-                     'RELEASE_TAG': '${{ steps.release-tag.outputs.release_tag }}',
-                     'RELEASE_EXISTS': '${{ steps.release-tag.outputs.release_exists }}'},
-             'run': '''set -euo pipefail
-title="$(cat release-publish/title.txt)"
-if [ "$RELEASE_EXISTS" != true ]; then
-gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \\
-  --draft --title "$title" --notes-file release-publish/release.md
-fi
-assets=(release-publish/assets/*)
-gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
-gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \\
-  --notes-file release-publish/release.md --repo "$GITHUB_REPOSITORY"
-url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
-printf 'release_tag=%s\\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
-printf 'release_url=%s\\n' "$url" >> "$GITHUB_OUTPUT"
-printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' "$url" >> "$GITHUB_STEP_SUMMARY"
-'''},
-            {'name': '核对原文件并清理发布中转包',
-             'if': "steps.release.outcome == 'success'",
-             'env': {'GH_TOKEN': '${{ github.token }}', 'RELEASE_TAG': '${{ steps.release.outputs.release_tag }}'},
-             'run': 'python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"'},
+            *release_publish_steps("inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true'"),
             {'name': '显示构建配置与发行结果', 'if': 'always() && !cancelled()',
              'env': {'ASSETS_RESULT': '${{ steps.assets.outcome }}',
                      'RELEASE_RESULT': '${{ steps.release.outcome }}',

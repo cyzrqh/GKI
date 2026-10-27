@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 from types import SimpleNamespace
 import unittest
@@ -39,7 +40,7 @@ class OPlusKernelTests(unittest.TestCase):
             'recipe_repository': 'cctv18/oppo_oplus_realme_sm8650', 'recipe_ref': 'c' * 40,
             'recipe_workflow': '.github/workflows/fastbuild_6.1.141.yml',
             'recipe_sha256': 'd' * 64, 'system': 'test system', 'compatibility': 'test only'}
-        self.inputs = {'kernelsu_variant': 'SukiSU', 'enable_susfs': False, 'use_kpm': False,
+        self.inputs = {'kernelsu_variant': 'SukiSU', 'kernelsu_branch': '最新版', 'enable_susfs': False, 'use_kpm': False,
                        'use_lz4kd': False, 'use_bbg': False, 'use_bbr': False,
                        'use_proxy_optimization': False, 'use_unicode_bypass': False}
 
@@ -130,6 +131,90 @@ class OPlusKernelTests(unittest.TestCase):
         self.assertEqual(1, command.call_count)
         self.assertIn('--dry-run', command.call_args.args[0])
         self.assertEqual(original, self.config.read_bytes())
+
+    def test_failed_patch_reports_the_file_hunk_and_stage_with_bounded_redacted_diagnostics(self):
+        response = subprocess.CompletedProcess([], 1, stdout='x' * 15000 + '\nchecking file fs/namespace.c\n'
+                                               'Hunk #1 FAILED at 32.\n', stderr='private-fixture-token')
+        output = io.StringIO()
+        with mock.patch.object(kernel.subprocess, 'run', return_value=response), \
+                mock.patch.dict(os.environ, {'GH_TOKEN': 'private-fixture-token'}), redirect_stderr(output), \
+                self.assertRaisesRegex(ValueError, 'patch.*exit 1'):
+            kernel.command(['patch', '--forward', '--dry-run', '-p1', '-i', self.workspace / 'susfs.patch'])
+        diagnostics = output.getvalue()
+        self.assertIn('susfs.patch failed during forward dry-run', diagnostics)
+        self.assertIn('checking file fs/namespace.c', diagnostics)
+        self.assertIn('Hunk #1 FAILED at 32.', diagnostics)
+        self.assertIn('[REDACTED]', diagnostics)
+        self.assertNotIn('private-fixture-token', diagnostics)
+        self.assertLess(len(diagnostics), 12500)
+        output = io.StringIO()
+        with mock.patch.object(kernel.subprocess, 'run', return_value=response), redirect_stderr(output), \
+                self.assertRaises(ValueError):
+            kernel.command(['git', 'status'])
+        self.assertEqual('', output.getvalue())
+
+    def test_checked_patch_requires_a_complete_reverse_check_after_application(self):
+        patch = self.workspace / 'test.patch'
+        original = b'fixed patch input\n'
+        patch.write_bytes(original)
+        calls = []
+        def execute(arguments, *, cwd):
+            self.assertEqual(self.root / 'common', cwd)
+            prepared = Path(arguments[arguments.index('-i') + 1])
+            self.assertEqual(original, prepared.read_bytes())
+            calls.append(list(arguments))
+            return ''
+        with mock.patch.object(kernel, 'command', side_effect=execute):
+            kernel.patch_checked(self.root / 'common', patch)
+        self.assertEqual(3, len(calls))
+        self.assertIn('--forward', calls[0])
+        self.assertIn('--dry-run', calls[0])
+        self.assertNotIn('--dry-run', calls[1])
+        self.assertIn('--reverse', calls[2])
+        self.assertIn('--dry-run', calls[2])
+        self.assertEqual(original, patch.read_bytes())
+
+    def test_official_namespace_port_is_strict_and_every_file_is_preflighted_before_applying(self):
+        fixture = ROOT / 'tests/fixtures/oplus-susfs61'
+        source = self.root / 'common/fs/namespace.c'
+        source.parent.mkdir(parents=True)
+        source.write_bytes((fixture / 'namespace-header.c').read_bytes())
+        patch = self.workspace / '50_add_susfs_in_gki-android14-6.1.patch'
+        second_section = (b'diff --git a/fs/example.c b/fs/example.c\n'
+                          b'--- a/fs/example.c\n+++ b/fs/example.c\n'
+                          b'@@ -1 +1 @@\n-before\n+after\n')
+        original = (fixture / 'namespace-header.patch').read_bytes() + second_section
+        patch.write_bytes(original)
+        observed = []
+        def execute(arguments, *, cwd):
+            content = Path(arguments[arguments.index('-i') + 1]).read_bytes()
+            observed.append((arguments, content))
+            return ''
+        with mock.patch.object(kernel, 'command', side_effect=execute):
+            kernel.patch_checked(self.root / 'common', patch)
+        self.assertEqual(6, len(observed))
+        self.assertTrue(all('--dry-run' in command for command, _ in observed[:2]))
+        self.assertTrue(all('--dry-run' not in command for command, _ in observed[2:4]))
+        self.assertTrue(all('--reverse' in command for command, _ in observed[4:]))
+        for command, content in observed[::2]:
+            self.assertIn('--fuzz=0', command)
+            self.assertIn(b'fs/namespace.c', content)
+            self.assertNotIn(second_section, content)
+        for command, content in observed[1::2]:
+            self.assertIn('--fuzz=3', command)
+            self.assertEqual(second_section, content)
+        self.assertEqual(original, patch.read_bytes())
+
+        observed.clear()
+        def rejected(arguments, *, cwd):
+            execute(arguments, cwd=cwd)
+            if len(observed) == 2:
+                raise ValueError('another file failed its dry-run')
+        with mock.patch.object(kernel, 'command', side_effect=rejected), self.assertRaisesRegex(ValueError, 'another file'):
+            kernel.patch_checked(self.root / 'common', patch)
+        self.assertEqual(2, len(observed))
+        self.assertTrue(all('--dry-run' in command for command, _ in observed))
+        self.assertEqual((fixture / 'namespace-header.c').read_bytes(), source.read_bytes())
 
     def test_disabled_susfs_never_restores_ports_or_downloads_it(self):
         with mock.patch.object(kernel, 'checked_root', return_value=self.root), \

@@ -33,6 +33,8 @@ OFFICIAL_REPOSITORIES = frozenset({
     'OnePlusOSS/android_kernel_oneplus_mt6991',
     'OnePlusOSS/android_kernel_oneplus_mt6993',
     'oppo-source/android_kernel_oppo_mt6993',
+    'oppo-source/android_kernel_oppo_mt6897',
+    'oppo-source/android_kernel_oppo_mt6989',
 })
 RECIPE_REPOSITORIES = frozenset('cctv18/oppo_oplus_realme_' + chip
                               for chip in ('sm8650', 'sm8750', 'sm8850'))
@@ -136,8 +138,9 @@ class OfficialReader:
         suffix = next(resource[len('/repos/' + repo + '/'):]
                       for repo in OFFICIAL_REPOSITORIES if resource.startswith('/repos/' + repo + '/'))
         if not (re.fullmatch(r'branches/[A-Za-z0-9_.%/-]+', suffix)
+                or re.fullmatch(r'git/commits/[0-9a-f]{40}', suffix)
                 or re.fullmatch(r'contents/Makefile\?ref=[0-9a-f]{40}', suffix)):
-            raise CatalogError('Only official branch identity and immutable Makefile reads are permitted')
+            raise CatalogError('Only official branch/commit identity and immutable Makefile reads are permitted')
         request = Request('https://api.github.com' + resource,
                           headers={'Accept': 'application/vnd.github+json',
                                    'User-Agent': 'gki-oplus-official-catalog',
@@ -210,9 +213,30 @@ def resolve_profile(profile: dict, reader) -> dict:
     document = reader.get('/repos/' + repository + '/contents/Makefile?ref=' + reference)
     actual = kernel_version(document)
     if actual != profile['kernel']:
-        raise CatalogError('Official source version changed for ' + profile['id'] + ': expected '
-                           + profile['kernel'] + ', found ' + actual
-                           + '; review the matching build recipe before compiling')
+        if tuple(map(int, actual.split('.'))) <= tuple(map(int, profile['kernel'].split('.'))):
+            raise CatalogError('Official source version changed for ' + profile['id'] + ': expected '
+                               + profile['kernel'] + ', found ' + actual
+                               + '; refusing an older or different unreviewed branch')
+        # This exact snapshot was audited in the official branch's history.
+        # Never give a newer kernel the old recipe's filename or ABI profile.
+        reference = profile['verified_kernel_ref']
+        frozen = reader.get('/repos/' + repository + '/git/commits/' + reference)
+        tree = frozen.get('tree') if isinstance(frozen, dict) else None
+        committer = frozen.get('committer') if isinstance(frozen, dict) else None
+        date = committer.get('date') if isinstance(committer, dict) else None
+        if (not isinstance(frozen, dict) or frozen.get('sha') != reference
+                or not isinstance(tree, dict) or not isinstance(tree.get('sha'), str)
+                or not SHA.fullmatch(tree['sha']) or not isinstance(date, str) or len(date) > 64):
+            raise CatalogError('Official historical snapshot returned invalid immutable commit metadata')
+        try:
+            if datetime.fromisoformat(date.replace('Z', '+00:00')).tzinfo is None:
+                raise ValueError()
+        except ValueError as error:
+            raise CatalogError('Official historical source commit has an invalid timestamp') from error
+        frozen_version = kernel_version(reader.get('/repos/' + repository + '/contents/Makefile?ref=' + reference))
+        if frozen_version != profile['kernel']:
+            raise CatalogError('Official source version changed for ' + profile['id'] + ': expected '
+                               + profile['kernel'] + ', historical snapshot contains ' + frozen_version)
     row = {key: value for key, value in profile.items() if key != 'verified_kernel_ref'}
     row.update(kernel_ref=reference, source_committed_at=date)
     return row
@@ -255,9 +279,11 @@ def main(argv=None) -> int:
             with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as summary:
                 summary.write('## 欧加真官方源码构建范围\n\n')
                 summary.write('仅构建下列已审核平台与完整内核版本；同版本不代表其他机型可通刷。\n\n')
+                summary.write('官方分支已升级时，本版本使用已审核的官方历史提交；不会把新版内核冒充旧版本。\n\n')
                 summary.write('| 平台 | 内核 | 官方源码 | 适用系统依据 |\n|---|---|---|---|\n')
                 for row in matrix['include']:
-                    summary.write('| ' + row['platform'] + ' | ' + row['kernel'] + ' | '
+                    platform = ('天玑 ' if row['platform'].startswith('mt') else '骁龙 ') + row['platform']
+                    summary.write('| ' + platform + ' | ' + row['kernel'] + ' | '
                                   + row['kernel_repo'] + ' @ `' + row['kernel_ref'][:12] + '` | '
                                   + row['system'].replace('|', '\\|') + ' |\n')
     except (CatalogError, OSError, KeyError, UnicodeError) as error:

@@ -4,3 +4,6 @@
 tests/fixtures/historical-susfs23/*.patch -whitespace
 # Full Android source fixtures retain their official checksum, including EOF.
 tests/fixtures/historical-rekernel/**/*.c -whitespace
+# Exact vendor source prefixes and unified-diff context are checksum fixtures.
+tests/fixtures/oplus-susfs61/*.c -whitespace
+tests/fixtures/oplus-susfs61/*.patch -whitespace

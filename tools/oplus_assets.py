@@ -21,6 +21,7 @@ import apply_kpm_patch as kpm
 from capture_build_metadata import collect as capture, parse_config, state
 from embedded_build_metadata import metadata_json, read_manager_apk, read_member, validate_members
 from manager_variants import MANAGERS, manager_profile, valid_manager_apk_filename
+from prepare_release import release_title
 import oplus_catalog as catalog
 from validate_arm64_image import validate_image
 
@@ -212,15 +213,11 @@ def verify_kpm(image: bytes, report: dict, payload: bytes) -> None:
             or report.get('post_image_sha256') != digest(image) or report.get('post_image_size') != len(image)
             or report.get('post_entry') != validate_image(image)):
         raise AssetError('KPM Image/report/payload differs from the fixed verified official release')
-    size, entry = report.get('pre_image_size'), report.get('pre_entry')
-    if type(size) is not int or not 64 <= size < len(image) or not isinstance(entry, dict):
-        raise AssetError('KPM report lacks the original Image extent and entry')
-    before = bytearray(image[:size])
     try:
-        struct.pack_into('<II', before, 0, entry['code0'], entry['code1'])
-    except (KeyError, TypeError, struct.error):
-        raise AssetError('KPM report has an invalid original entry') from None
-    if (digest(before) != report.get('pre_image_sha256') or validate_image(before) != entry
+        before = kpm.reconstruct_original_image(image, report)
+    except ValueError as error:
+        raise AssetError(str(error)) from None
+    if (digest(before) != report.get('pre_image_sha256') or validate_image(before) != report.get('pre_entry')
             or kpm.verify_patched(before, image, payload) != report.get('layout')):
         raise AssetError('KPM preset/layout does not describe the actual complete patched Image')
 
@@ -537,6 +534,7 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
         records.append(kernel)
     if seen != {(*key, variant) for key in identities for variant in expected_variants}:
         raise AssetError('OPlus native outputs do not cover the complete prepared build matrix')
+    title = ' / '.join(release_title(managers[variant]) for variant in sorted(managers))
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise AssetError('OPlus report output must be empty; existing files are preserved')
@@ -558,10 +556,12 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
     lines += ['', '## 适用构建范围', '', '| 平台 | 完整内核 | 原生 release | 系统源码依据 |', '|---|---|---|---|']
     for row in sorted(records, key=lambda item: (catalog.order(item['profile']), item['ksu_variant'])):
         profile = row['profile']
-        lines.append('| ' + profile['platform'] + ' | ' + profile['kernel'] + ' | `' + row['kernel_release']
+        platform = ('天玑 ' if profile['platform'].startswith('mt') else '骁龙 ') + profile['platform']
+        lines.append('| ' + platform + ' | ' + profile['kernel'] + ' | `' + row['kernel_release']
                      + '` | ' + profile['system'].replace('|', '\\|') + ' |')
     lines += ['', '仅证明产物及编译配置配套；同内核版本不代表所有机型或固件均可通刷。', '']
     (output / 'summary.md').write_text('\n'.join(lines), encoding='utf-8', newline='\n')
+    (output / 'title.txt').write_text(title, encoding='utf-8')
     return {'count': len(records), 'managers': sorted(managers), 'files': hashes}
 
 

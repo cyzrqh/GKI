@@ -164,7 +164,8 @@ class OplusAssetsTests(unittest.TestCase):
         self.manager = self.use_manager('SukiSU')
 
     def use_manager(self, variant, **changes):
-        manager = manager_metadata(file=f'{variant}_v4.2.0_40922-release.apk',
+        code = changes.get('ksu_version_code', '40922')
+        manager = manager_metadata(file=f'{variant}_v4.2.0_{code}-release.apk',
                                    package=manager_profile(variant)['package'], ksu_ref=self.ksu_ref,
                                    ksu_variant=variant, **changes)
         apk = self.inputs / manager['file']
@@ -221,7 +222,7 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertNotIn('patch_cmdline', script)
         self.assertNotIn('replace_string', script)
 
-    def test_collect_validates_true_signed_apk_and_emits_only_two_reports(self):
+    def test_collect_validates_true_signed_apk_and_emits_only_reports_and_public_title(self):
         path = self.pack()
         nested = self.inputs / 'downloaded-artifact'
         nested.mkdir()
@@ -229,7 +230,7 @@ class OplusAssetsTests(unittest.TestCase):
         result = self.gather()
         self.assertEqual(result['count'], 1)
         self.assertEqual(result['managers'], ['SukiSU'])
-        self.assertEqual({item.name for item in self.output.iterdir()}, {'SHA256SUMS.txt', 'summary.md'})
+        self.assertEqual({item.name for item in self.output.iterdir()}, {'SHA256SUMS.txt', 'summary.md', 'title.txt'})
         hashes = self.output.joinpath('SHA256SUMS.txt').read_text(encoding='utf-8')
         self.assertIn(self.manager['apk_sha256'] + '  ' + self.manager['file'], hashes)
         summary = self.output.joinpath('summary.md').read_text(encoding='utf-8')
@@ -242,6 +243,34 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertNotIn('null', summary)
         self.assertIn('| SUSFS | 开启 |', summary)
         self.assertIn('| KPM | 关闭 |', summary)
+        self.assertEqual('SukiSU 40922 开发版', (self.output / 'title.txt').read_text())
+        self.assertNotIn('title.txt', hashes)
+        self.assertNotIn('summary.md', hashes)
+
+    def test_title_uses_actual_signed_manager_numeric_code_and_resolved_tier(self):
+        for variant, branch, code, label in (('SukiSU', 'Stable(标准)', '41095', '正式版'),
+                                            ('SukiSU', 'Latest(最新)', '41099', '最新测试版'),
+                                            ('BakaSU', 'Latest(最新)', '35252', '最新测试版')):
+            with self.subTest(variant=variant, branch=branch):
+                self.inputs.joinpath(self.manager['file']).unlink()
+                self.manager = self.use_manager(variant, ksu_branch=branch, ksu_version_code=code)
+                path = self.pack()
+                with mock.patch.dict(os.environ, {'MANAGER_VERSION_CODE': '999999', 'KSU_BRANCH': 'Custom(自定义)'}):
+                    self.gather(variants=variant)
+                self.assertEqual(variant + ' ' + code + ' ' + label, (self.output / 'title.txt').read_text())
+                self.assertNotIn('999999', (self.output / 'title.txt').read_text())
+                path.unlink()
+                shutil.rmtree(self.output)
+
+    def test_actual_manager_and_kernel_tier_or_numeric_version_mismatch_cannot_publish_title(self):
+        path = self.pack()
+        original = path.read_bytes()
+        for field, changed in (('ksu_branch', 'Stable(标准)'), ('ksu_version_code', '41099')):
+            path.write_bytes(original)
+            rewrite_zip(path, change=lambda data: change_metadata(data, lambda doc: doc.update({field: changed})))
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                self.gather()
+            self.assertFalse((self.output / 'title.txt').exists())
 
     def test_bakasu_has_matching_manager_and_multi_manager_kernel(self):
         self.inputs.joinpath(self.manager['file']).unlink()
@@ -459,7 +488,7 @@ class OplusAssetsTests(unittest.TestCase):
             with self.subTest(variant=value), self.assertRaises(ValueError):
                 assets.variants_list(value)
 
-    def prepare_kpm(self):
+    def prepare_kpm(self, *, pac=False):
         payload, tool = payload_fixture(), tool_fixture()
         lock = {'schema_version': 1, 'repository': assets.kpm.REPOSITORY, 'tag': assets.kpm.TAG,
                 'commit': assets.kpm.COMMIT, 'assets': {}}
@@ -470,7 +499,15 @@ class OplusAssetsTests(unittest.TestCase):
         cache.joinpath('kpimg').write_bytes(payload)
         os.environ['KPM_CACHE_DIR'] = str(cache)
         before = self.image.read_bytes()
-        after = patched_fixture(before, payload)
+        if pac:
+            modified = bytearray(before)
+            struct.pack_into('<II', modified, 128, 0xd503233f, 0xd50323bf)
+            struct.pack_into('<Q', modified, 16, len(modified) + 8192)
+            before = bytes(modified)
+        after = bytearray(patched_fixture(before, payload))
+        if pac:
+            struct.pack_into('<II', after, 128, 0xd503201f, 0xd503201f)
+        after = bytes(after)
         self.image.write_bytes(after)
         report = {'schema_version': 1, 'release': {key: lock[key] for key in ('repository', 'tag', 'commit')},
                   'tool': dict(lock['assets']['kptools-linux']),
@@ -479,6 +516,7 @@ class OplusAssetsTests(unittest.TestCase):
                   'post_image_sha256': assets.digest(after), 'post_image_size': len(after),
                   'pre_entry': validate_image(before), 'post_entry': validate_image(after),
                   'layout': assets.kpm.verify_patched(before, after, payload)}
+        report['original_windows'] = assets.kpm.capture_original_windows(before, after, report['layout'])
         report_path = self.workspace / 'common/out/gki-kpm-patch.json'
         report_path.write_text(json.dumps(report))
         patch = mock.patch.object(assets.kpm, 'load_release', return_value=lock)
@@ -509,6 +547,16 @@ class OplusAssetsTests(unittest.TestCase):
         cache.joinpath('kpimg').write_bytes(payload + b'bad')
         with self.assertRaisesRegex(ValueError, 'payload'):
             self.pack()
+
+    def test_actual_kpm_map_pac_changes_are_preserved_through_package_and_collect(self):
+        _, report, _, _ = self.prepare_kpm(pac=True)
+        self.assertEqual(len(report['original_windows']), 1)
+        path = self.pack()
+        self.assertTrue(assets.read_kernel(path)['features']['kpm'])
+        self.assertEqual(self.gather()['count'], 1)
+        with zipfile.ZipFile(path) as archive:
+            metadata = json.loads(archive.read(assets.MEMBER))
+            self.assertEqual(metadata['kpm_patch']['original_windows'], report['original_windows'])
 
     def test_kpm_image_without_report_and_corrupted_embedded_payload_are_rejected(self):
         report_path, _, _, _ = self.prepare_kpm()

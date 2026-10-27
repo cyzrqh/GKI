@@ -50,8 +50,9 @@ def patched_fixture(before, payload):
     offset = (len(before) + 4095) // 4096 * 4096
     data = bytearray(before + bytes(offset - len(before)) + payload + bytes(128))
     struct.pack_into('<I', data, 4, 0x14000000 | ((offset + 4096 - 4) // 4))
-    start = (max(len(before), len(data)) + 4095) // 4096 * 4096
-    struct.pack_into('<9Q', data, offset + 64 + 8, len(before), len(payload), len(before),
+    memory_size = struct.unpack_from('<Q', before, 16)[0]
+    start = (max(memory_size, len(data)) + 4095) // 4096 * 4096
+    struct.pack_into('<9Q', data, offset + 64 + 8, len(before), len(payload), memory_size,
                      12, offset, start, 128, 64, 0x100)
     data[offset + 64 + 160:offset + 64 + 168] = before[:8]
     return bytes(data)
@@ -339,6 +340,75 @@ class KpmPatchTests(unittest.TestCase):
             bad[position] ^= 1
             with self.subTest(position=position), self.assertRaises(ValueError):
                 kpm.verify_patched(self.before, bytes(bad), self.payload)
+
+    def test_original_map_pac_instructions_survive_independent_image_reconstruction(self):
+        before = bytearray(self.before)
+        struct.pack_into('<II', before, 128, 0xd503233f, 0xd50323bf)
+        struct.pack_into('<Q', before, 16, len(before) + 8192)
+        after = bytearray(patched_fixture(before, self.payload))
+        struct.pack_into('<II', after, 128, 0xd503201f, 0xd503201f)
+        layout = kpm.verify_patched(before, after, self.payload)
+        windows = kpm.capture_original_windows(before, after, layout)
+        report = {'pre_image_size':len(before), 'pre_entry':kpm.image_entry(before),
+                  'layout':layout, 'original_windows':windows}
+        self.assertEqual(kpm.reconstruct_original_image(after, report), before)
+        self.assertEqual(len(windows), 1)
+        # Restoring only the header, as before this fix, loses PAC/AUT bytes.
+        self.assertNotEqual(kpm.reconstruct_original_image(after, dict(report, original_windows=[])), before)
+
+    def test_original_pi_map_transformation_is_bound_to_the_official_pattern_and_kernel(self):
+        before = bytearray(self.before)
+        before[1024:1056] = b'Linux version 6.12.58-test'.ljust(32, b'\0')
+        before[4096:4108] = kpm.PI_MAP_BEFORE
+        after = bytearray(patched_fixture(before, self.payload))
+        after[4096:4108] = kpm.PI_MAP_AFTER
+        layout = kpm.verify_patched(before, after, self.payload)
+        windows = kpm.capture_original_windows(before, after, layout)
+        report = {'pre_image_size':len(before), 'pre_entry':kpm.image_entry(before),
+                  'layout':layout, 'original_windows':windows}
+        self.assertEqual(kpm.reconstruct_original_image(after, report), before)
+        wrong = bytearray(before)
+        wrong[1024:1056] = b'Linux version 6.1.118-test'.ljust(32, b'\0')
+        changed = bytearray(patched_fixture(wrong, self.payload))
+        changed[4096:4108] = kpm.PI_MAP_AFTER
+        with self.assertRaisesRegex(ValueError, 'not applicable'):
+            kpm.capture_original_windows(wrong, changed, kpm.verify_patched(wrong, changed, self.payload))
+        for version, supported in (('6.7.0', False), ('6.7.1', True), ('6.8.0', True)):
+            candidate = bytearray(before)
+            candidate[1024:1056] = ('Linux version ' + version + '-test').encode().ljust(32, b'\0')
+            patched = bytearray(patched_fixture(candidate, self.payload))
+            patched[4096:4108] = kpm.PI_MAP_AFTER
+            native_layout = kpm.verify_patched(candidate, patched, self.payload)
+            with self.subTest(version=version):
+                if supported:
+                    self.assertEqual(len(kpm.capture_original_windows(candidate, patched, native_layout)), 1)
+                else:
+                    with self.assertRaisesRegex(ValueError, 'not applicable'):
+                        kpm.capture_original_windows(candidate, patched, native_layout)
+
+    def test_unexpected_kernel_modification_is_never_accepted_as_an_original_window(self):
+        after = bytearray(patched_fixture(self.before, self.payload))
+        after[4096] = 0x55
+        layout = kpm.verify_patched(self.before, after, self.payload)
+        with self.assertRaisesRegex(ValueError, 'outside'):
+            kpm.capture_original_windows(self.before, after, layout)
+        after[4096] = 0
+        after[256] = 0x55
+        with self.assertRaisesRegex(ValueError, 'PAC/NOP'):
+            kpm.capture_original_windows(self.before, after, layout)
+
+    def test_original_windows_reject_duplicate_overlap_oversize_and_nonofficial_bytes(self):
+        after = patched_fixture(self.before, self.payload)
+        layout = kpm.verify_patched(self.before, after, self.payload)
+        base = {'pre_image_size':len(self.before), 'pre_entry':kpm.image_entry(self.before), 'layout':layout}
+        for windows in ([{'offset':4096,'before_hex':'00'}],
+                        [{'offset':64,'before_hex':'00' * 5121}],
+                        [{'offset':64,'before_hex':'00' * 512}] * 2,
+                        [{'offset':True,'before_hex':'00'}],
+                        [{'offset':64,'before_hex':'zz'}],
+                        [{'offset':64,'before_hex':'00','extra':1}]):
+            with self.subTest(windows=windows[:1]), self.assertRaises(ValueError):
+                kpm.reconstruct_original_image(after, dict(base, original_windows=windows))
 
     def map_fixture(self, remaining):
         # The native selector floor-aligns a usable text anchor to 16 bytes.

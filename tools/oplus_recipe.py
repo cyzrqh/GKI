@@ -24,11 +24,11 @@ from oplus_catalog import OFFICIAL_REPOSITORIES, RECIPE_REPOSITORIES
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 SERIES = {'6.1': ('android14', '20'), '6.6': ('android15', '18'), '6.12': ('android16', '19')}
-INPUTS = {'kernelsu_variant', 'enable_susfs', 'use_kpm', 'use_lz4kd', 'use_bbg',
+INPUTS = {'kernelsu_variant', 'kernelsu_branch', 'enable_susfs', 'use_kpm', 'use_lz4kd', 'use_bbg',
           'use_bbr', 'use_proxy_optimization', 'use_unicode_bypass'}
 CONFIG_NAMES = ('添加SUSFS 配置项', '添加 KSU & 其他配置项', '应用 lz4kd 补丁',
                 '启用网络功能增强优化配置', '添加 BBR 等一系列拥塞控制算法',
-                '启用内核级基带保护', '添加制作名称')
+                '启用内核级基带保护')
 CORE_NAMES = ('添加KernelSU', '应用 KernelSU & SUSFS 补丁', '添加SUSFS 配置项',
               '添加 KSU & 其他配置项', '添加制作名称', '构建内核', '克隆 AnyKernel3 并打包')
 CONDITIONS = {'添加SUSFS 配置项': 'inputs.susfs_enable', '添加 KSU & 其他配置项': '',
@@ -37,6 +37,9 @@ CONDITIONS = {'添加SUSFS 配置项': 'inputs.susfs_enable', '添加 KSU & 其�
               '添加制作名称': ''}
 BBG_REPOSITORY = 'vc-teahouse/Baseband-guard'
 LZ4_REPOSITORY = 'ShirkNeko/SukiSU_patch'
+# Reviewed against all eleven official 6.1 profiles and used by the successful
+# 6.6 compilation stages in run 40487592098. One matrix must use one patch.
+LZ4_REFERENCE = '1aaf4283e03b0a2861bf8db1e58624028db23a85'
 MAX_RECIPE = 2 * 1024 * 1024
 EXPRESSION = re.compile(r'\$\{\{\s*(.*?)\s*\}\}')
 
@@ -99,9 +102,12 @@ def bool_value(value) -> bool:
 
 
 def native_inputs(inputs: dict, profile: dict) -> dict[str, str]:
-    if not isinstance(inputs, dict) or set(inputs) != INPUTS or inputs['kernelsu_variant'] not in ('SukiSU', 'BakaSU'):
-        raise RecipeError('Expected the eight supported OPlus menu inputs')
-    flags = {key: bool_value(value) for key, value in inputs.items() if key != 'kernelsu_variant'}
+    if (not isinstance(inputs, dict) or set(inputs) != INPUTS
+            or inputs['kernelsu_variant'] not in ('SukiSU', 'BakaSU')
+            or inputs['kernelsu_branch'] not in ('正式版', '最新版')):
+        raise RecipeError('Expected the supported OPlus menu inputs and manager version choice')
+    flags = {key: bool_value(value) for key, value in inputs.items()
+             if key not in ('kernelsu_variant', 'kernelsu_branch')}
     yes = lambda name: 'true' if flags[name] else 'false'
     return {'ksu_type': 'sukisu' if inputs['kernelsu_variant'] == 'SukiSU' else 'resukisu',
             'susfs_enable': yes('enable_susfs'), 'kpm_enable': yes('use_kpm'),
@@ -232,11 +238,9 @@ def toolchain_script(recipe: dict, profile: dict, values: dict[str, str]) -> Ste
         block = re.sub(r'\s*&\s*$', '', block).strip()
         # Each pinned group is one AND-chain, and its failure is made explicit.
         rendered.append('(\n' + render(block, recipe, profile, values) + '\n) || exit 1')
-    loops = re.findall(r'(?m)^for f in common/scripts/setlocalversion; do\n.*?^done\s*$', run, re.S)
-    if len(loops) != 1 or any(token in loops[0] for token in ('curl ', 'wget ', 'rm ', 'git ')):
-        raise RecipeError('Native local-version initialization changed')
-    return Step('固定参考工具链与原生本地版本方法', 'cd "$GITHUB_WORKSPACE/kernel_workspace"\n'
-                + '\n'.join(rendered) + '\n' + render(loops[0], recipe, profile, values))
+    # Native setlocalversion belongs to the official kernel. Reference steps
+    # that remove dirty state or hardcode a different KMI/hash never run.
+    return Step('固定参考工具链', 'cd "$GITHUB_WORKSPACE/kernel_workspace"\n' + '\n'.join(rendered))
 
 
 def configure_steps(recipe: dict, profile: dict, values: dict[str, str]) -> list[Step]:
@@ -264,6 +268,13 @@ def configure_steps(recipe: dict, profile: dict, values: dict[str, str]) -> list
             if script.count(original) != 1:
                 raise RecipeError('Native BBG setup layout changed')
             script = script.replace(original, 'bash Baseband-guard/setup.sh "$OPLUS_BBG_REF"', 1)
+        if name == '添加 KSU & 其他配置项' and profile['kernel_version'] == '6.12':
+            original = 'patch -p1 -F 3 < cve-2026-43499-rtmutex-6.12.patch'
+            if script.count(original) != 1:
+                raise RecipeError('Native 6.12 rtmutex compatibility patch entry changed')
+            script = script.replace(original,
+                'python3 "$GITHUB_WORKSPACE/tools/oplus_compat.py" rtmutex --common . '
+                '--patch cve-2026-43499-rtmutex-6.12.patch', 1)
         # A selected patch must stop on rejection instead of producing a
         # deceptively successful feature configuration.
         script = re.sub(r'(?m)^(\s*patch[^\n]*?)\s*\|\|\s*true\s*$', r'\1', script)
@@ -337,6 +348,9 @@ def clone_fixed(repository: str, reference: str, directory: Path) -> None:
 def dependency(repository: str, destination: Path) -> str:
     if repository not in (BBG_REPOSITORY, LZ4_REPOSITORY):
         raise RecipeError('Unreviewed community feature dependency')
+    if repository == LZ4_REPOSITORY:
+        clone_fixed(repository, LZ4_REFERENCE, destination)
+        return LZ4_REFERENCE
     reference = git(destination.parent, 'ls-remote', 'https://github.com/' + repository + '.git', 'HEAD').split()
     if len(reference) != 2 or not SHA.fullmatch(reference[0]) or reference[1] != 'HEAD':
         raise RecipeError('Community feature dependency returned an invalid fixed ref')
@@ -383,6 +397,13 @@ def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, wo
             raise RecipeError('Native 6.12 compiler archives did not supply bindgen on their PATH')
     else:
         check_kernel(common, profile)
+        expected_release = None
+        if phase == 'build':
+            from oplus_compat import prepare_native_release
+            expected_release = prepare_native_release(common, profile)
+        if phase == 'build' and profile['kernel_version'] == '6.12':
+            from oplus_compat import prepare_rust_bitcode
+            prepare_rust_bitcode(common)
         extra, records = {}, []
         if phase == 'configure':
             values = native_inputs(inputs, profile)
@@ -402,6 +423,10 @@ def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, wo
         check_kernel(common, profile)
         if phase == 'build' and not (common / 'out/arch/arm64/boot/Image').is_file():
             raise RecipeError('Native build did not produce an ARM64 Image')
+        if phase == 'build':
+            actual_release = (common / 'out/include/config/kernel.release').read_text(encoding='utf-8').strip()
+            if not (actual_release == expected_release or actual_release.startswith(expected_release + '-')):
+                raise RecipeError('Native kernel.release differs from its official Android/KMI generation')
 
 
 def main(argv=None) -> int:

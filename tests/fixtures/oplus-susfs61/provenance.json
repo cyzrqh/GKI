@@ -1,0 +1,39 @@
+{
+  "license": "GPL-2.0-only",
+  "source_file": "fs/namespace.c",
+  "source_note": "Unmodified file prefix through the mount limit; all five selected official 6.1 trees share this exact prefix.",
+  "sources": [
+    {
+      "repository": "OnePlusOSS/android_kernel_common_oneplus_sm8650",
+      "ref": "e02429a7e0f337d517be2c01e12d1cf153df4542",
+      "profile": "sm8650-6.1.57"
+    },
+    {
+      "repository": "OnePlusOSS/android_kernel_common_oneplus_sm8650",
+      "ref": "d4ebeebda66f400ef47524375c42ac61b27e66ba",
+      "profile": "sm8650-6.1.118"
+    },
+    {
+      "repository": "OnePlusOSS/android_kernel_common_oneplus_sm8650",
+      "ref": "ebdd1643cfdbf719fb59c6573ce0abe6e794a5cc",
+      "profile": "sm8650-6.1.141"
+    },
+    {
+      "repository": "OnePlusOSS/android_kernel_oneplus_mt6897",
+      "ref": "bdf1628572ce25c64d3fd33f09a925d54d616454",
+      "profile": "mt6897-6.1.128"
+    },
+    {
+      "repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "ref": "b1ea2c8ce2ef0f73927a593aa450f88143e3584a",
+      "profile": "mt6989-6.1.115"
+    }
+  ],
+  "patch_repository": "https://gitlab.com/simonpunk/susfs4ksu",
+  "patch_ref": "b57ed1998b82c4e3a2a81cdbf11172a560979c40",
+  "patch_file": "kernel_patches/50_add_susfs_in_gki-android14-6.1.patch",
+  "sha256": {
+    "namespace-header.c": "f934969f60d205c8186ff50300ecd757c35e7d0bb57492bb86b7264413235862",
+    "namespace-header.patch": "b970756a04e974589f2c58a4ae081e074315401d23418276a466b6f9645ca5ee"
+  }
+}

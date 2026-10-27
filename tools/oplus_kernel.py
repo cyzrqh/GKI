@@ -18,6 +18,7 @@ from manager_variants import manager_profile
 from oplus_recipe import bool_value, check_kernel, git as source_git, native_inputs, strict_json, validate_profile
 from set_manager_signature import configure
 from shared_susfs_source import read_json, restore_source
+from snapshot_ksu_source import temporary_directory
 from validate_susfs_hooks import validate_hooks
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -98,6 +99,15 @@ def command(arguments, *, cwd=None):
     result = subprocess.run([str(item) for item in arguments], cwd=cwd,
                             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=240)
     if result.returncode:
+        if Path(str(arguments[0])).name.lower() in ('patch', 'patch.exe'):
+            phase = 'reverse' if '--reverse' in arguments else 'forward'
+            phase += ' dry-run' if '--dry-run' in arguments else ' apply'
+            patch_name = Path(str(arguments[arguments.index('-i') + 1])).name if '-i' in arguments else 'unknown.patch'
+            diagnostics = result.stdout + '\n' + result.stderr
+            for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'SUKISU_APK_PASSWORD', 'SUKISU_APK_KEYSTORE'):
+                if secret := os.environ.get(name):
+                    diagnostics = diagnostics.replace(secret, '[REDACTED]')
+            print(f'OPlus patch {patch_name} failed during {phase}:\n' + diagnostics[-12 * 1024:], file=sys.stderr)
         raise ValueError('OPlus integration command failed: ' + str(arguments[0])
                          + ' (exit ' + str(result.returncode) + ')')
     return result.stdout.strip()
@@ -106,9 +116,43 @@ def command(arguments, *, cwd=None):
 def patch_checked(common: Path, patch: Path):
     if patch.is_symlink() or not patch.is_file() or not 0 < patch.stat().st_size <= 16 * 1024 * 1024:
         raise ValueError('The selected compatibility patch is missing or invalid')
-    options = ['patch', '--batch', '--forward', '--fuzz=3', '-p1', '-i', patch.resolve()]
-    command([*options, '--dry-run'], cwd=common)
-    command(options, cwd=common)
+    data = patch.read_bytes()
+    strict_file = None
+    if patch.name == '50_add_susfs_in_gki-android14-6.1.patch':
+        from oplus_susfs_headers import adapt_namespace_header
+        data = adapt_namespace_header(common, data)
+        strict_file = 'fs/namespace.c'
+    elif patch.name == '50_add_susfs_in_gki-android16-6.12.patch':
+        from oplus_compat import adapt_susfs_patch
+        data = adapt_susfs_patch(common, data)
+        strict_file = 'fs/proc/task_mmu.c'
+    # Never edit the immutable official SUSFS checkout. Known vendor context
+    # adaptations keep all added code, and the complete resulting patch must
+    # pass forward and reverse checks rather than ignoring rejected hunks.
+    with temporary_directory(common.parent, '.oplus-patch-') as temporary:
+        pieces = [(data, False)]
+        if strict_file is not None:
+            # Preserve the exact vendor function/header port independently of
+            # unrelated include-context differences in the other official files.
+            pattern = rb'(?ms)^diff --git a/' + re.escape(strict_file.encode()) + rb' b/' + re.escape(strict_file.encode()) + rb'\n.*?(?=^diff --git |\Z)'
+            matches = list(re.finditer(pattern, data))
+            if len(matches) != 1:
+                raise ValueError('The adapted official SUSFS file must have exactly one complete patch section')
+            selected = matches[0]
+            pieces = [(selected[0], True), (data[:selected.start()] + data[selected.end():], False)]
+        commands = []
+        for index, (content, strict) in enumerate(pieces):
+            prepared = temporary / (str(index) + '-' + patch.name)
+            prepared.write_bytes(content)
+            commands.append(['patch', '--batch', '--fuzz=0' if strict else '--fuzz=3', '-p1', '-i', prepared])
+        # All files pass before any source is modified, including the native
+        # show_smap/rollup function port that must never use fuzzy placement.
+        for options in commands:
+            command([*options, '--forward', '--dry-run'], cwd=common)
+        for options in commands:
+            command([*options, '--forward'], cwd=common)
+        for options in commands:
+            command([*options, '--reverse', '--dry-run'], cwd=common)
 
 
 def checked_root(workspace: Path, profile: dict) -> Path:

@@ -1,4 +1,4 @@
-"""Exercise the independent eight-input OPlus workflow and its real data flow."""
+"""Exercise the independent OPlus workflow and its frozen manager data flow."""
 import copy
 import json
 import os
@@ -35,17 +35,18 @@ class OplusWorkflowTests(unittest.TestCase):
         self.directory.mkdir(parents=True)
         self.addCleanup(shutil.rmtree, self.directory)
 
-    def test_exact_eight_menu_fields_and_defaults_from_requested_menu(self):
+    def test_original_feature_menu_and_shared_manager_version_choice_keep_their_defaults(self):
         self.assertEqual(self.document['name'], '欧加真全属性内核构建矩阵')
         self.assertEqual(list(self.document['on']), ['workflow_dispatch'])
         fields = self.document['on']['workflow_dispatch']['inputs']
         self.assertEqual(set(fields), recipe.INPUTS)
-        self.assertEqual(len(fields), 8)
+        self.assertEqual(len(fields), 9)
         self.assertEqual(fields['kernelsu_variant']['options'], ['SukiSU', 'BakaSU'])
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
         self.assertEqual([key for key in fields if fields[key]['default'] is True],
                          ['enable_susfs', 'use_kpm', 'use_lz4kd'])
-        self.assertNotIn('kernelsu_branch', fields)
+        self.assertEqual(fields['kernelsu_branch'], self.base['on']['workflow_dispatch']['inputs']['kernelsu_branch'])
+        self.assertEqual(fields['kernelsu_branch']['options'], ['正式版', '最新版'])
         self.assertNotIn('models', fields)
         self.assertNotIn('schedule', self.document['on'])
 
@@ -57,7 +58,7 @@ class OplusWorkflowTests(unittest.TestCase):
         fields = set(re.findall(r'\binputs\.(\w+)', ' '.join(expressions + conditions)))
         self.assertFalse(fields - set(workflow.INPUTS), fields)
         self.assertNotIn('inputs.operation', text)
-        self.assertNotIn('inputs.kernelsu_branch', text)
+        self.assertIn('inputs.kernelsu_branch', text)
         self.assertTrue(all('uses' not in job for job in self.document['jobs'].values()))
         self.assertNotIn('workflow_call', self.document['on'])
 
@@ -75,13 +76,13 @@ class OplusWorkflowTests(unittest.TestCase):
         upload = next(item for item in manager['steps'] if item.get('name') == '上传管理器安装包')
         self.assertIs(upload['with']['archive'], False)
 
-    def test_official_catalog_and_latest_manager_are_fixed_before_snapshot_and_matrix_jobs(self):
+    def test_official_catalog_and_selected_manager_are_fixed_before_snapshot_and_matrix_jobs(self):
         prepare = self.document['jobs']['prepare-matrix']
         indexed = {item['id']: (index, item) for index, item in enumerate(prepare['steps']) if 'id' in item}
         self.assertEqual(indexed['matrix'][1]['run'], 'python3 tools/oplus_catalog.py --github-output --summary')
         self.assertLess(indexed['matrix'][0], indexed['sources'][0])
         self.assertLess(indexed['sources'][0], indexed['source-snapshot'][0])
-        self.assertEqual(indexed['sources'][1]['env']['KSU_TIER'], '最新版')
+        self.assertEqual(indexed['sources'][1]['env']['KSU_TIER'], '${{ inputs.kernelsu_branch }}')
         self.assertEqual(indexed['sources'][1]['env']['CUSTOM_REF'], '')
         self.assertIn('prepare-deps', indexed['oplus-deps'][1]['run'])
         self.assertIn('--unicode-bypass "$UNICODE_BYPASS"', indexed['oplus-deps'][1]['run'])
@@ -94,6 +95,22 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(source['env']['SUSFS_MATRIX'], '${{ steps.matrix.outputs.matrix }}')
         self.assertIn('inputs.enable_susfs', source['if'])
         self.assertLess(indexed['shared-susfs'][0], indexed['source-snapshot'][0])
+
+    def test_version_choice_inherits_the_gki_default_without_replacing_the_selected_tier(self):
+        base = copy.deepcopy(self.base)
+        base['on']['workflow_dispatch']['inputs']['kernelsu_branch']['default'] = '正式版'
+        document = workflow.create_workflow(ROOT, base)
+        self.assertEqual('正式版', document['on']['workflow_dispatch']['inputs']['kernelsu_branch']['default'])
+        self.assertEqual('${{ inputs.kernelsu_branch }}', workflow.adapt('${{ inputs.kernelsu_branch }}'))
+        prepare = document['jobs']['prepare-matrix']
+        self.assertEqual('${{ steps.sources.outputs.effective_ksu_branch }}', prepare['outputs']['effective_ksu_branch'])
+        for job_name in ('build-sukisu-lkm', 'build-sukisu-manager'):
+            checkout = next(step for step in document['jobs'][job_name]['steps']
+                            if 'checkout_ksu_snapshot.py' in step.get('run', ''))
+            self.assertEqual('${{ needs.prepare-matrix.outputs.ksu_ref }}', checkout['env']['KSU_REF'])
+        worker = document['jobs']['build-oplus-kernel']
+        self.assertEqual('${{ needs.prepare-matrix.outputs.ksu_ref }}', worker['env']['KSU_REF'])
+        self.assertEqual('${{ needs.prepare-matrix.outputs.effective_ksu_branch }}', worker['env']['KSU_BRANCH'])
 
     def test_worker_waits_for_signed_manager_and_restores_same_snapshot(self):
         worker = self.document['jobs']['build-oplus-kernel']
@@ -119,6 +136,8 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(worker['env']['SUSFS_SOURCES'], '${{ needs.prepare-matrix.outputs.susfs_sources }}')
         self.assertEqual(worker['strategy']['matrix'], '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}')
         self.assertFalse(worker['strategy']['fail-fast'])
+        self.assertIn("startsWith(matrix.platform, 'mt') && '天玑' || '骁龙'", worker['name'])
+        self.assertEqual(worker['strategy']['max-parallel'], 20)
 
     def test_worker_orders_real_native_phases_then_verified_payload_package_upload(self):
         worker = self.document['jobs']['build-oplus-kernel']
@@ -138,13 +157,21 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertIn('common/out/arch/arm64/boot/Image', package['run'])
         kpm = worker['steps'][locate('apply_kpm_patch.py patch')]
         self.assertIn('common/out/gki-kpm-patch.json', kpm['run'])
-        self.assertEqual(kpm['if'], 'inputs.use_kpm')
-        self.assertEqual(worker['steps'][locate('apply_kpm_patch.py prepare')]['if'], 'inputs.use_kpm')
+        self.assertEqual(kpm['if'], workflow.KPM_IF)
+        self.assertEqual(worker['steps'][locate('apply_kpm_patch.py prepare')]['if'], workflow.KPM_IF)
+        self.assertIn("inputs.kernelsu_variant == 'SukiSU'", workflow.KPM_IF)
+        self.assertIn("effective_ksu_branch == 'Stable(标准)'", workflow.KPM_IF)
+        self.assertIn("effective_ksu_branch == 'Custom(自定义)'", workflow.KPM_IF)
         upload = next(item for item in worker['steps'] if item.get('uses') == 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)
         self.assertNotIn('name', upload['with'])
         self.assertEqual(upload['with']['path'], 'oplus-ready/${{ steps.oplus-assets.outputs.file }}')
         self.assertEqual(sum('actions/upload-artifact' in item.get('uses', '') for item in worker['steps']), 1)
+        self.assertEqual(worker['steps'][locate('--phase build')]['id'], 'oplus-build')
+        cache = next(item for item in worker['steps'] if item.get('uses') == 'actions/cache/save@v5'
+                     and item.get('with', {}).get('path') == '${{ env.CCACHE_DIR }}')
+        self.assertIn("always() && !cancelled() && steps.oplus-build.outcome == 'success'", cache['if'])
+        self.assertNotIn('oplus-assets.outcome', cache['if'])
 
     def test_worker_uses_reviewed_method_and_official_ak3_and_optional_fixed_unicode(self):
         worker = self.document['jobs']['build-oplus-kernel']
@@ -178,9 +205,9 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertIn('${{ github.run_id }}-${{ github.run_attempt }}', restore['with']['key'])
         self.assertEqual(save['with']['key'], '${{ steps.oplus-ccache.outputs.cache-primary-key }}')
         self.assertEqual(save['timeout-minutes'], 2)
-        self.assertIn("steps.oplus-assets.outcome == 'success'", save['if'])
+        self.assertIn("steps.oplus-build.outcome == 'success'", save['if'])
 
-    def test_profile_and_eight_input_heredoc_really_validates_and_writes_json(self):
+    def test_profile_and_selected_input_heredoc_really_validates_and_writes_json(self):
         profile = copy.deepcopy(catalog.load_profiles()[0])
         profile['kernel_ref'] = profile.pop('verified_kernel_ref')
         profile['source_committed_at'] = '2026-10-27T00:00:00Z'
@@ -235,22 +262,32 @@ class OplusWorkflowTests(unittest.TestCase):
                 import oplus_assets
                 result = oplus_assets.collect(fixture.inputs, fixture.directory / 'oplus-report',
                                               {'include': [fixture.profile]}, 'SukiSU')
+                exec(compile(heredoc(workflow.NATIVE_ASSETS), '<stage verified native originals>', 'exec'), {})
             finally:
                 os.chdir(previous)
             self.assertEqual(result['count'], 1)
             reports = fixture.directory / 'oplus-report'
-            self.assertEqual({path.name for path in reports.iterdir()}, {'SHA256SUMS.txt', 'summary.md'})
+            self.assertEqual({path.name for path in reports.iterdir()}, {'SHA256SUMS.txt', 'summary.md', 'title.txt'})
             checksums = (reports / 'SHA256SUMS.txt').read_text()
             self.assertIn(fixture.manager['file'], checksums)
             self.assertIn('Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip', checksums)
             self.assertFalse((fixture.directory / 'oplus-verified-assets').exists())
+            from transfer_ksu_snapshot import native_assets
+            staged = native_assets((fixture.directory / 'oplus-publish/assets').resolve())
+            self.assertEqual(set(staged), {fixture.manager['file'], 'SHA256SUMS.txt',
+                                          'Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip'})
+            self.assertNotIn('title.txt', staged)
+            self.assertNotIn('summary.md', staged)
         finally:
             fixture.doCleanups()
             OplusAssetsTests.tearDownClass()
 
-    def test_collect_is_all_success_only_native_downloads_and_never_public_release(self):
+    def test_collect_publishes_only_after_complete_native_matrix_verification(self):
         aggregate = self.document['jobs']['verify-oplus-assets']
         self.assertIn("needs.build-oplus-kernel.result == 'success'", aggregate['if'])
+        self.assertIn("needs.prepare-matrix.result == 'success'", aggregate['if'])
+        self.assertIn("needs.build-sukisu-manager.result == 'success'", aggregate['if'])
+        self.assertEqual(aggregate['permissions'], {'contents': 'write', 'actions': 'write'})
         download = next(item for item in aggregate['steps'] if item.get('uses') == 'actions/download-artifact@v8')
         self.assertIs(download['with']['skip-decompress'], True)
         self.assertIs(download['with']['merge-multiple'], False)
@@ -264,13 +301,20 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(upload['with']['path'], 'oplus-report/SHA256SUMS.txt')
         self.assertIs(upload['with']['archive'], False)
         self.assertNotIn('publish-release', self.document['jobs'])
-        self.assertNotIn('gh release create', json.dumps(self.document))
+        expected = workflow.release_publish_steps('success()', assets_directory='oplus-publish/assets',
+                                                   notes_file='oplus-report/summary.md', title_file='oplus-report/title.txt')
+        publish_steps = [step for step in steps if step.get('id') in ('release-tag', 'release')
+                         or 'cleanup_build_artifacts.py' in step.get('run', '')]
+        self.assertEqual(publish_steps, expected)
+        self.assertLess(steps.index(upload), steps.index(publish_steps[0]))
+        self.assertIn('--notes op', publish_steps[0]['run'])
+        self.assertIn('oplus-publish/assets/*', publish_steps[1]['run'])
+        self.assertIn('--release-tag "$RELEASE_TAG"', publish_steps[-1]['run'])
         self.assertNotIn('transfer_ksu_snapshot.py create', json.dumps(self.document))
         self.assertNotIn('source_backup_release_id', json.dumps(self.document))
         self.assertNotIn('delete-actions', json.dumps(self.document))
-        self.assertNotIn('native_assets', collect['run'])
+        self.assertIn('native_assets(output.resolve())', collect['run'])
         self.assertNotIn('oplus-verified-assets', collect['run'])
-        self.assertEqual(aggregate['permissions'], {'contents': 'read', 'actions': 'read'})
         summary = steps[-1]
         self.assertIn('oplus-report/summary.md', summary['run'])
         self.assertIn("steps.assets.outcome == 'success'", summary['if'])

@@ -192,7 +192,7 @@ class ManagerBuildArtifactTests(unittest.TestCase):
         script = (ROOT / 'tools/build_sukisu_manager.sh').read_text(encoding='utf-8')
         marker = 'python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools" <<\'PY\'\n'
         self.inspect = script.split(marker, 1)[1].split('\nPY\n', 1)[0]
-        self.badging = "package: name='com.cyzrqh.gki.sukisu' versionCode='41030' versionName='v4.2.1'\n"
+        self.badging = "package: name='com.sukisu.ultra' versionCode='41030' versionName='v4.2.1'\n"
 
     def inspect_artifact(self, badging=None, returncode=0):
         result = subprocess.CompletedProcess(['aapt2'], returncode, stdout=badging or self.badging, stderr='')
@@ -209,7 +209,7 @@ class ManagerBuildArtifactTests(unittest.TestCase):
         metadata = json.loads((self.output / 'manager-build-metadata.json').read_text(encoding='utf-8'))
         self.assertEqual(metadata, {'source_apk_filename': self.apk.name,
                                     'apk_filename': 'SukiSU_v4.2.1_41030-release.apk',
-                                    'manager_package': 'com.cyzrqh.gki.sukisu',
+                                    'manager_package': 'com.sukisu.ultra',
                                     'manager_version_name': 'v4.2.1', 'manager_version_code': 41030})
         self.assertEqual((self.output / 'manager-unsigned.apk').read_bytes(), self.apk.read_bytes())
         self.assertEqual(run.call_args.args[0][-3:], ['dump', 'badging', str(self.apk)])
@@ -233,7 +233,9 @@ class ManagerBuildArtifactTests(unittest.TestCase):
                         self.badging.replace("versionName='v4.2.1'", "versionName=''"),
                         self.badging.replace("versionName='v4.2.1'", "versionName='bad\nversion'"),
                         self.badging + self.badging,
-                        self.badging.replace("com.cyzrqh.gki.sukisu", 'com.invalid-package')]:
+                        self.badging.replace("com.sukisu.ultra", 'com.invalid-package'),
+                        self.badging.replace("com.sukisu.ultra", 'com.example.othermanager'),
+                        self.badging.replace("com.sukisu.ultra", 'com.cyzrqh.gki.sukisu')]:
             with self.subTest(badging=badging), self.assertRaises(SystemExit):
                 self.inspect_artifact(badging)
             self.assertEqual(list(self.output.iterdir()), [])

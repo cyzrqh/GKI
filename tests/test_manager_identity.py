@@ -1,5 +1,6 @@
 import contextlib
 import copy
+from dataclasses import replace
 import hashlib
 import io
 import json
@@ -187,6 +188,12 @@ class ManagerIdentityTests(unittest.TestCase):
                 with self.assertRaises(identity.IdentityError):
                     identity.validate_metadata(changed, self.expected)
 
+    def test_current_kernel_requires_the_selected_official_application_id(self):
+        for package in ('com.example.othermanager', 'com.cyzrqh.gki.sukisu',
+                        'com.sukisu.ultra.pr', 'com.resukisu.resukisu'):
+            with self.subTest(package=package), self.assertRaisesRegex(identity.IdentityError, 'application ID'):
+                identity.validate_metadata({**self.metadata, 'package': package}, self.expected)
+
     def test_rejects_missing_fields_and_control_characters_everywhere(self):
         for key in self.metadata.keys() - {'schema_version', 'ksu_branch'}:
             with self.subTest(missing=key):
@@ -279,7 +286,7 @@ class ManagerIdentityTests(unittest.TestCase):
         values = identity.validate_metadata(metadata, self.expected)
         envfile = directory / 'github-env'
         identity.write_environment(envfile, values)
-        self.assertIn('MANAGER_PACKAGE=com.cyzrqh.gki.sukisu\n', envfile.read_text())
+        self.assertIn('MANAGER_PACKAGE=com.sukisu.ultra\n', envfile.read_text())
         self.assertNotIn('SUKISU_APK_PASSWORD', envfile.read_text())
 
     def test_capture_reports_susfs_for_verified_checked_patch_sources_and_preserves_strict_policy(self):
@@ -437,6 +444,263 @@ class GitHubIdentityReaderTests(unittest.TestCase):
         with self.assertRaisesRegex(identity.IdentityError, 'source commits differ'):
             identity.read_identity_archive(raw, fixture.expected)
         self.assertNotEqual(apk, raw)
+
+
+class FullMatrixProducerPaginationTests(unittest.TestCase):
+    def setUp(self):
+        self.expected = identity.Expected('cyzrqh/gki', 123, 1, 'a' * 40, 'b' * 40)
+        self.jobs = [{'id': 1000 + index, 'name': f'kernel-{index}', 'run_id': 123,
+                      'head_sha': 'a' * 40, 'run_attempt': 1, 'status': 'completed',
+                      'conclusion': 'success'} for index in range(108)]
+        self.jobs[5] = {**self.jobs[5], 'name': self.expected.manager_job}
+
+    def reader(self, *, fail_page=None, jobs=None):
+        source = self.jobs if jobs is None else jobs
+        class Reader:
+            def __init__(self):
+                self.paths = []
+            def get(reader, suffix, **kwargs):
+                reader.paths.append(suffix)
+                self.assertIn('per_page=20', suffix)
+                self.assertNotIn('per_page=100', suffix)
+                page = int(suffix.rsplit('page=', 1)[1])
+                if page == fail_page:
+                    raise identity.IdentityError('HTTP 502 fixture')
+                return {'total_count': len(source), 'jobs': source[(page - 1) * 20:page * 20]}
+        return Reader()
+
+    def test_all_108_jobs_are_checked_using_small_pages_even_when_manager_is_in_first_page(self):
+        reader = self.reader()
+        actual = identity._check_manager_job(reader, self.expected)
+        self.assertEqual(1005, actual['id'])
+        self.assertEqual(6, len(reader.paths))
+        self.assertTrue(reader.paths[-1].endswith('per_page=20&page=6'))
+
+    def test_duplicate_manager_in_later_page_cannot_be_hidden_by_early_success(self):
+        jobs = list(self.jobs)
+        jobs[107] = {**jobs[107], 'name': self.expected.manager_job}
+        reader = self.reader(jobs=jobs)
+        with self.assertRaisesRegex(identity.IdentityError, 'More than one manager'):
+            identity._check_manager_job(reader, self.expected)
+        self.assertEqual(6, len(reader.paths))
+
+    def test_failed_later_page_does_not_accept_a_partially_checked_producer(self):
+        reader = self.reader(fail_page=3)
+        with self.assertRaisesRegex(identity.IdentityError, 'HTTP 502'):
+            identity._check_manager_job(reader, self.expected)
+        self.assertEqual(3, len(reader.paths))
+
+    def test_server_cannot_expand_a_job_page_beyond_the_requested_limit(self):
+        class Reader:
+            def get(self, suffix):
+                return {'jobs': [{}] * 21}
+        with self.assertRaisesRegex(identity.IdentityError, 'page size'):
+            list(identity._pages(Reader(), 'actions/runs/123/jobs', 'jobs'))
+
+
+class ExactProducerReader(FakeReader):
+    def __init__(self, expected, rounds, archives, *, producer=None, states=None):
+        job = {'id': 456, 'name': expected.manager_job, 'run_id': expected.run_id,
+               'head_sha': expected.head_sha, 'run_attempt': expected.run_attempt,
+               'status': 'completed', 'conclusion': 'success'}
+        if producer is not None:
+            job.update(producer)
+        super().__init__(expected, rounds, archives, current_job=job)
+        self.states = iter(states or [job])
+        self.last_state = job
+
+    def get(self, suffix, *, binary=False):
+        if suffix == 'actions/jobs/456':
+            self.paths.append(suffix)
+            self.last_state = next(self.states, self.last_state)
+            return self.last_state
+        return super().get(suffix, binary=binary)
+
+
+class ExactManagerProducerTests(unittest.TestCase):
+    def setUp(self):
+        self.fixture = ManagerIdentityTests()
+        self.fixture.setUp()
+        self.expected = replace(self.fixture.expected, manager_job_id=456)
+        self.context = identity.ProducerContext(self.expected.repository, self.expected.run_id,
+                                               self.expected.run_attempt, self.expected.head_sha,
+                                               self.expected.manager_job, self.expected.variant)
+
+    def reader(self, *, metadata=None, **kwargs):
+        raw = self.fixture.zip(metadata)
+        artifact = self.fixture.artifact(name=self.expected.artifact_name,
+                                         digest='sha256:' + hashlib.sha256(raw).hexdigest())
+        return ExactProducerReader(self.expected, [[artifact]], {7: raw}, **kwargs)
+
+    def wait(self, reader, **kwargs):
+        self.clock = Clock()
+        return identity.wait_for_identity(self.expected, reader, monotonic=self.clock.monotonic,
+                                          sleep=self.clock.sleep, **kwargs)
+
+    def test_matrix_worker_reads_one_exact_completed_producer_instead_of_108_jobs(self):
+        reader = self.reader()
+        self.assertEqual('com.sukisu.ultra', self.wait(reader)['MANAGER_PACKAGE'])
+        self.assertEqual(4, len(reader.paths))
+        self.assertEqual('actions/jobs/456', reader.paths[1])
+        self.assertEqual('actions/runs/123/artifacts?name=SukiSU_v4.2.0_40922-release.apk&per_page=100&page=1',
+                         reader.paths[2])
+        self.assertFalse(any('/jobs?' in path for path in reader.paths))
+
+    def test_exact_producer_checks_id_name_run_head_and_attempt_before_downloading(self):
+        invalid = ({'id': 457}, {'id': True}, {'name': 'different job'}, {'run_id': 124},
+                   {'head_sha': 'e' * 40}, {'run_attempt': 2}, {'run_attempt': 0},
+                   {'run_attempt': True}, {'status': 'unknown'})
+        for changes in invalid:
+            with self.subTest(changes=changes):
+                reader = self.reader(producer=changes)
+                with self.assertRaises(identity.IdentityError):
+                    self.wait(reader)
+                self.assertEqual(2, len(reader.paths))
+                self.assertEqual([], self.clock.waits)
+
+    def test_failed_cancelled_skipped_or_timed_out_exact_producer_is_never_accepted(self):
+        for conclusion in ('failure', 'cancelled', 'skipped', 'timed_out', None):
+            with self.subTest(conclusion=conclusion):
+                reader = self.reader(producer={'conclusion': conclusion})
+                with self.assertRaisesRegex(identity.IdentityError, 'APK job failed'):
+                    self.wait(reader)
+                self.assertFalse(any('/artifacts' in path for path in reader.paths))
+
+    def test_api_completion_lag_waits_without_reading_any_apk_until_producer_success(self):
+        job = self.reader().current_job
+        states = [{**job, 'status': 'queued', 'conclusion': None},
+                  {**job, 'status': 'in_progress', 'conclusion': None}, job]
+        reader = self.reader(states=states)
+        self.wait(reader)
+        self.assertEqual([15, 15], self.clock.waits)
+        self.assertEqual(['actions/runs/123/attempts/1'] + ['actions/jobs/456'] * 3, reader.paths[:4])
+        self.assertEqual(1, sum('/artifacts?' in path for path in reader.paths))
+
+    def test_same_run_rerun_reuses_only_exact_successful_producer_attempt(self):
+        self.expected = replace(self.expected, run_attempt=3)
+        reader = self.reader(producer={'run_attempt': 1})
+        self.assertEqual('40922', self.wait(reader)['MANAGER_VERSION_CODE'])
+        for metadata_attempt in ('2', '3'):
+            with self.subTest(metadata_attempt=metadata_attempt):
+                reader = self.reader(producer={'run_attempt': 1},
+                                     metadata={**self.fixture.metadata, 'producer_run_attempt': metadata_attempt})
+                with self.assertRaisesRegex(identity.IdentityError, 'selected producer|Timed out'):
+                    self.wait(reader, timeout=15)
+
+    def test_current_producer_does_not_accept_previous_attempt_apk(self):
+        self.expected = replace(self.expected, run_attempt=2)
+        reader = self.reader()
+        with self.assertRaisesRegex(identity.IdentityError, 'Timed out'):
+            self.wait(reader, timeout=15)
+        self.assertEqual(1, reader.paths.count('actions/artifacts/7/zip'))
+
+    def test_exact_job_does_not_bypass_apk_signature_source_package_or_digest_validation(self):
+        for metadata in ({**self.fixture.metadata, 'ksu_ref': 'e' * 40},
+                         {**self.fixture.metadata, 'package': 'com.cyzrqh.gki.sukisu'},
+                         {**self.fixture.metadata, 'producer_head_sha': 'e' * 40}):
+            with self.subTest(metadata=metadata), self.assertRaises(identity.IdentityError):
+                self.wait(self.reader(metadata=metadata))
+        reader = self.reader()
+        reader.archives[7] = reader.archives[7][:-1] + b'x'
+        with self.assertRaisesRegex(identity.IdentityError, 'GitHub digest'):
+            self.wait(reader)
+
+    def test_exact_apk_filter_encodes_plus_in_official_filename(self):
+        self.expected = replace(self.expected, artifact_name='SukiSU_v4.2.1+test_40922-release.apk')
+        raw = {**self.fixture.metadata, 'file': self.expected.artifact_name}
+        reader = self.reader(metadata=raw)
+        self.wait(reader)
+        self.assertIn('?name=SukiSU_v4.2.1%2Btest_40922-release.apk&', reader.paths[2])
+
+    def test_recording_current_producer_reads_unique_current_job_before_matrix_expansion(self):
+        reader = self.reader(producer={'status': 'in_progress', 'conclusion': None})
+        self.assertEqual(456, identity.record_producer_job(self.context, reader))
+        self.assertEqual(['actions/runs/123/attempts/1',
+                          'actions/runs/123/attempts/1/jobs?per_page=20&page=1'], reader.paths)
+
+    def test_bakasu_uses_its_own_exact_producer_and_official_application_id(self):
+        self.expected = replace(self.expected, variant='BakaSU', manager_job='编译配套 BakaSU 管理器 APK',
+                                artifact_name='BakaSU_v4.2.0_35252-release.apk')
+        metadata = {**self.fixture.metadata, 'ksu_variant': 'BakaSU', 'package': 'com.resukisu.resukisu',
+                    'ksu_version_code': '35252', 'file': self.expected.artifact_name}
+        reader = self.reader(metadata=metadata)
+        self.assertEqual('com.resukisu.resukisu', self.wait(reader)['MANAGER_PACKAGE'])
+        context = identity.ProducerContext('cyzrqh/gki', 123, 1, 'a' * 40,
+                                           self.expected.manager_job, 'BakaSU')
+        self.assertEqual(456, identity.record_producer_job(context, self.reader(metadata=metadata)))
+        with self.assertRaises(identity.IdentityError):
+            self.wait(self.reader(metadata=metadata, producer={'name': self.context.manager_job}))
+
+    def test_recording_rejects_wrong_current_context_and_duplicate_producers(self):
+        for changes in ({'run_attempt': 2}, {'run_attempt': 0}, {'run_id': 124},
+                        {'head_sha': 'e' * 40}, {'id': False}, {'conclusion': 'failure'}):
+            with self.subTest(changes=changes), self.assertRaises(identity.IdentityError):
+                identity.record_producer_job(self.context, self.reader(producer=changes))
+        reader = self.reader()
+        reader.current_job = 'absent'
+        with self.assertRaisesRegex(identity.IdentityError, 'exactly one'):
+            identity.record_producer_job(self.context, reader)
+        # The entire listing is checked, even when the first page already has a producer.
+        jobs = [self.reader().current_job] + [{'name': 'kernel'}] * 19
+        class DuplicateReader:
+            def get(inner, suffix):
+                if suffix == 'actions/runs/123/attempts/1':
+                    return {'id': 123, 'head_sha': 'a' * 40, 'run_attempt': 1,
+                            'repository': {'full_name': 'cyzrqh/gki'}}
+                return {'jobs': jobs if suffix.endswith('page=1') else [jobs[0]]}
+        with self.assertRaisesRegex(identity.IdentityError, 'exactly one'):
+            identity.record_producer_job(self.context, DuplicateReader())
+
+    def test_invalid_trusted_producer_id_is_rejected_before_any_request(self):
+        for job_id in (0, -1, True, '', '456\n', '1;false'):
+            with self.subTest(job_id=job_id):
+                self.expected = replace(self.expected, manager_job_id=job_id)
+                reader = self.reader()
+                with self.assertRaisesRegex(identity.IdentityError, 'producer job ID'):
+                    self.wait(reader)
+                self.assertEqual([], reader.paths)
+
+    def test_record_cli_publishes_only_verified_numeric_output_without_expected_ref(self):
+        directory = ROOT / 'tests' / ('.producer-id-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        output = directory / 'output'
+        environment = {'GITHUB_REPOSITORY': 'cyzrqh/gki', 'GITHUB_RUN_ID': '123',
+                       'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40,
+                       'GITHUB_OUTPUT': str(output), 'KSU_VARIANT': 'SukiSU'}
+        with patch.dict(os.environ, environment, clear=True), \
+                patch.object(identity, 'GitHubReader', return_value=self.reader()), \
+                patch.object(sys, 'argv', ['identity', '--record-producer-job']), \
+                contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(0, identity.main())
+        self.assertEqual('manager_job_id=456\n', output.read_text(encoding='utf-8'))
+
+    def test_record_cli_rejects_discovery_plus_existing_id_and_never_writes_outputs(self):
+        with patch.dict(os.environ, {}, clear=True), \
+                patch.object(identity, 'GitHubReader') as reader, \
+                patch.object(sys, 'argv', ['identity', '--record-producer-job', '--manager-job-id', '456']), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(1, identity.main())
+        reader.assert_not_called()
+
+    def test_consumer_cli_still_requires_source_ref_and_env_before_requesting_any_api(self):
+        for arguments in ([], ['--expected-ref', 'b' * 40]):
+            with self.subTest(arguments=arguments), patch.dict(os.environ, {}, clear=True), \
+                    patch.object(identity, 'GitHubReader') as reader, \
+                    patch.object(sys, 'argv', ['identity', *arguments]), \
+                    contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(1, identity.main())
+            reader.assert_not_called()
+
+    def test_reader_rejects_encoded_path_traversal_and_malformed_query_encoding(self):
+        reader = identity.GitHubReader('cyzrqh/gki')
+        with patch.object(identity.subprocess, 'run') as run:
+            for path in ('actions/%2e%2e/secrets', 'actions/jobs/%34',
+                         'actions/runs/123/artifacts?name=bad%2',
+                         'actions/runs/123/artifacts?name=bad%ZZ'):
+                with self.subTest(path=path), self.assertRaises(identity.IdentityError):
+                    reader.get(path)
+        run.assert_not_called()
 
 
 if __name__ == '__main__':

@@ -43,7 +43,7 @@ class RepairTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, self.root)
         self.name = 'SukiSU_manager-ci_41065-release.apk'
         self.identity = manager_metadata(file=self.name, ksu_version_name='manager-ci', ksu_version_code=41065,
-                                         ksu_branch='Latest(最新)')
+                                         ksu_branch='Latest(最新)', package=repair.LEGACY_PACKAGE)
         self.input = self.root / self.name
         self.original = add_legacy_v3_block(signed_apk(self.identity))
         self.input.write_bytes(self.original)
@@ -65,7 +65,8 @@ class RepairTests(unittest.TestCase):
         self.mock_signer = self.signer.start(); self.addCleanup(self.signer.stop)
         self.sign_mode = 'valid'
 
-    def sign_sdk(self, unsigned, *, output_dir, build_metadata):
+    def sign_sdk(self, unsigned, *, output_dir, build_metadata, legacy_41065=False):
+        self.assertTrue(legacy_41065)
         metadata = json.loads(build_metadata.read_text())
         self.assertEqual(metadata['source_apk_filename'], self.name.removesuffix('.apk') + '-unsigned.apk')
         self.assertEqual(repair.signing.apk_filename(build_metadata, self.android), self.name)

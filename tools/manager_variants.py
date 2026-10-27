@@ -6,11 +6,13 @@ import re
 
 
 MANAGERS = ('SukiSU', 'BakaSU')
+# Actual Gradle application IDs, not Kotlin namespaces. BakaSU retains its
+# upstream ReSukiSU ID; its current Kotlin namespace is org.bakasu.bakasu.
 _PROFILES = {
     'SukiSU': {'repository': 'SukiSU-Ultra/SukiSU-Ultra',
-               'package': 'com.cyzrqh.gki.sukisu', 'apk_prefixes': ('SukiSU',)},
+               'package': 'com.sukisu.ultra', 'apk_prefixes': ('SukiSU',)},
     'BakaSU': {'repository': 'Baka-SU/BakaSU',
-               'package': 'com.cyzrqh.gki.bakasu', 'apk_prefixes': ('BakaSU', 'ReSukiSU')},
+               'package': 'com.resukisu.resukisu', 'apk_prefixes': ('BakaSU', 'ReSukiSU')},
 }
 
 

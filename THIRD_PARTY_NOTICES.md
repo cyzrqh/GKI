@@ -17,9 +17,24 @@
 | --- | --- | --- |
 | Android GKI 内核及 manifest | [kernel/common](https://android.googlesource.com/kernel/common)、[kernel/manifest](https://android.googlesource.com/kernel/manifest) | 按各官方仓库及文件中的 `COPYING`、`LICENSE`、SPDX 声明 |
 | SukiSU | [SukiSU-Ultra/SukiSU-Ultra](https://github.com/SukiSU-Ultra/SukiSU-Ultra) | 当前适配提交的根目录 `LICENSE` 为 GNU GPL v3，`kernel/LICENSE` 为 GNU GPL v2；其他文件按其自身声明 |
+| BakaSU | [Baka-SU/BakaSU](https://github.com/Baka-SU/BakaSU) | 按每次固定源码提交中的许可文件与文件内声明 |
 | SUSFS | [simonpunk/susfs4ksu](https://gitlab.com/simonpunk/susfs4ksu) | 当前采用源码的 `LICENSE` 为 GNU GPL v3；保留具体文件的原有声明 |
 
 GKI 目录更新直接核对 Android 官方 Gitiles refs 与 Makefile，新增条目固定完整源码提交。SukiSU/SUSFS 官方更新检查只记录候选；实际构建采用的兼容配对记录在 `build-compatibility.json`。
+
+## 欧加真构建方法参考
+
+独立的欧加真工作流使用 [OnePlusOSS](https://github.com/OnePlusOSS) 与 [oppo-source](https://github.com/oppo-source) 官方内核仓库，按审核目录解析官方分支并固定完整提交。平台与完整内核版本对应关系记录在 `config/oplus-kernel-profiles.json`。
+
+菜单参考 [cyzrqh/ABK](https://github.com/cyzrqh/ABK) 的 `a3b95e4a77eb782e15853c37e0bf5bb6a5e35417`；编译工具链、原生配置与 Make 调用方法参考以下固定提交中的工作流，保留其原有声明：
+
+| 构建方法参考 | 固定提交 |
+| --- | --- |
+| [cctv18/oppo_oplus_realme_sm8650](https://github.com/cctv18/oppo_oplus_realme_sm8650) | `f4e3a8084a7a5f8203e16ea177c8847c7ff517dc` |
+| [cctv18/oppo_oplus_realme_sm8750](https://github.com/cctv18/oppo_oplus_realme_sm8750) | `0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746` |
+| [cctv18/oppo_oplus_realme_sm8850](https://github.com/cctv18/oppo_oplus_realme_sm8850) | `6c1ffdac3ebf7ebb80254427a7972262b0a8f64e` |
+
+这些参考仓库仅提供已审核的构建方法，不作为内核、KernelSU 或 SUSFS 的源码更新来源。欧加真刷机包使用 [osm0sis/AnyKernel3](https://github.com/osm0sis/AnyKernel3) 官方运行文件；可选 Unicode 补丁参考 [Xiaomichael/kernel_patches](https://github.com/Xiaomichael/kernel_patches)。每次构建分别固定其提交并保留相关许可文件。
 
 ## 保留的本地代码声明
 
@@ -38,7 +53,7 @@ GKI 目录更新直接核对 Android 官方 Gitiles refs 与 Makefile，新增�
 
 配套 ARM64 SukiSU APK 从选定的 SukiSU 提交编译管理器、JNI 与 `ksud`，该版本需要时同时编译 `ksuinit`。其 Rust、Android 和 Gradle 依赖由同一源码提交中的 `Cargo.lock`、`Cargo.toml`、`manager/gradle/libs.versions.toml` 等声明；本仓库未提交预编译的 `ksud`。
 
-APK 显示名为 SukiSU，包名为 `com.cyzrqh.gki.sukisu`，由本仓库固定密钥签名。源码提交与实际包信息随构建元数据记录，公开 Release 不包含签名私钥或密码。
+早期 SukiSU 配套 APK 使用包名 `com.cyzrqh.gki.sukisu`。后续构建保留上游的实际应用 ID：SukiSU 为 `com.sukisu.ultra`，BakaSU 为 `com.resukisu.resukisu`；它们仍由本仓库固定密钥签名，采用相同包名不代表采用上游作者的官方签名。源码提交与实际包信息随构建元数据记录，公开 Release 不包含签名私钥或密码。
 
 ## 历史署名
 

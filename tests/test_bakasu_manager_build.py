@@ -113,7 +113,7 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
                 self.assertEqual(source, self.gradle.read_text(encoding='utf-8'))
 
     def test_separate_crates_use_nightly_and_the_same_package_in_daemon_and_apk(self):
-        self.assertIn('export KSU_PACKAGE_NAME=com.cyzrqh.gki.bakasu', SCRIPT)
+        self.assertIn('export KSU_PACKAGE_NAME=com.resukisu.resukisu', SCRIPT)
         self.assertIn('assembleRelease -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"', SCRIPT)
         self.assertIn('cargo +nightly build --locked --manifest-path userspace/ksuinit/Cargo.toml', SCRIPT)
         self.assertIn('cargo +nightly clean --manifest-path userspace/ksud/Cargo.toml -p ksud', SCRIPT)
@@ -186,7 +186,7 @@ class BakasuManagerArtifactTests(unittest.TestCase):
                          'lib/arm64-v8a/libadbroot.so': b'adbroot fixture'}
         self.write_apk()
         self.inspect = snippet('python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools"')
-        self.badging = "package: name='com.cyzrqh.gki.bakasu' versionCode='35252' versionName='v4.2.0-rc3'\n"
+        self.badging = "package: name='com.resukisu.resukisu' versionCode='35252' versionName='v4.2.0-rc3'\n"
 
     def write_apk(self, contents=None):
         with zipfile.ZipFile(self.apath, 'w') as archive:
@@ -205,7 +205,7 @@ class BakasuManagerArtifactTests(unittest.TestCase):
         actual = json.loads((self.output / 'manager-build-metadata.json').read_text(encoding='utf-8'))
         self.assertEqual({'source_apk_filename': self.apath.name,
                           'apk_filename': self.apath.name.removesuffix('-unsigned.apk') + '.apk',
-                          'manager_package': 'com.cyzrqh.gki.bakasu',
+                          'manager_package': 'com.resukisu.resukisu',
                           'manager_version_name': 'v4.2.0-rc3', 'manager_version_code': 35252}, actual)
         self.assertEqual(self.apath.read_bytes(), (self.output / 'manager-unsigned.apk').read_bytes())
 
@@ -216,7 +216,8 @@ class BakasuManagerArtifactTests(unittest.TestCase):
         self.assertTrue(actual['apk_filename'].startswith('ReSukiSU_'))
 
     def test_another_package_or_invalid_version_is_not_exported(self):
-        for badging in (self.badging.replace('com.cyzrqh.gki.bakasu', 'com.resukisu.resukisu'),
+        for badging in (self.badging.replace('com.resukisu.resukisu', 'org.bakasu.bakasu'),
+                        self.badging.replace('com.resukisu.resukisu', 'com.cyzrqh.gki.bakasu'),
                         self.badging.replace("versionCode='35252'", "versionCode='0'"),
                         self.badging.replace("versionName='v4.2.0-rc3'", "versionName=''"),
                         self.badging + self.badging):

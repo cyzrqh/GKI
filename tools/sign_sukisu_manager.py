@@ -193,11 +193,21 @@ def write_outputs(metadata: dict[str, str | int]) -> None:
                 stream.write(f"{key}={value}\n")
 
 
-def public_build_identity(actual: dict, certificate: bytes, filename: str) -> dict:
+def public_build_identity(actual: dict, certificate: bytes, filename: str, *, legacy_41065: bool = False) -> dict:
     """Only trusted workflow/source values and measured public APK identity."""
     variant = selected_variant()
-    if variant == 'BakaSU' and actual.get('manager_package') != manager_profile(variant)['package']:
-        raise SigningError('The BakaSU APK package differs from its paired manager profile.')
+    if type(legacy_41065) is not bool:
+        raise SigningError('Legacy manager signing requires an explicit compatibility flag.')
+    if legacy_41065:
+        # Only the measured historical repair utility enables this exception.
+        # It cannot turn a current build into a different-package APK.
+        if (variant != 'SukiSU' or actual.get('manager_package') != 'com.cyzrqh.gki.sukisu'
+                or actual.get('manager_version_code') != 41065 or len(certificate) != 730
+                or hashlib.sha256(certificate).hexdigest()
+                   != 'c8e9af2b51e0f76b4e9133726c17a8034a131fec4235f6b779ab8b1e83127c12'):
+            raise SigningError('Legacy signing is limited to the original fixed 41065 SukiSU identity.')
+    elif actual.get('manager_package') != manager_profile(variant)['package']:
+        raise SigningError('The ' + variant + ' APK package differs from its paired manager profile.')
     ref = os.environ.get('KSU_REF', '')
     branch = os.environ.get('KSU_BRANCH', '')
     repository = os.environ.get('GITHUB_REPOSITORY', '')
@@ -236,7 +246,7 @@ def embed_identity(unsigned: Path, destination: Path, identity: dict) -> None:
 
 
 def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path | None = None,
-                 build_metadata: Path | None = None) -> dict[str, str | int]:
+                 build_metadata: Path | None = None, legacy_41065: bool = False) -> dict[str, str | int]:
     unsigned = Path(unsigned).resolve()
     if (output is None) == (output_dir is None):
         raise SigningError("Choose exactly one signed output file or output directory.")
@@ -285,7 +295,8 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
             raise SigningError("keytool did not export the signing certificate.") from None
         if not certificate or len(certificate) > 4096:
             raise SigningError('keytool did not export a valid-sized public manager certificate.')
-        embedded_identity = public_build_identity(source_metadata, certificate, output.name)
+        embedded_identity = public_build_identity(source_metadata, certificate, output.name,
+                                                  legacy_41065=legacy_41065)
         embed_identity(unsigned, embedded, embedded_identity)
         run_command([tools["zipalign"], "-P", "16", "-f", "4", str(embedded), str(aligned)],
                     password, secrets)

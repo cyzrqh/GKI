@@ -15,7 +15,7 @@ import release_notes as notes
 
 UTC = datetime(2026, 10, 22, 6, 7, 8, tzinfo=timezone.utc)
 MANAGER = {
-    "file": "SukiSU-Manager-17ff94d-arm64.apk", "package": "com.cyzrqh.gki.sukisu",
+    "file": "SukiSU-Manager-17ff94d-arm64.apk", "package": "com.sukisu.ultra",
     "ksu_variant": "SukiSU", "ksu_branch": "Dev(开发)", "ksu_ref": "17ff94d" + "a" * 33,
     "ksu_version_code": 40321, "ksu_version_name": "v4.0.2-17ff94d", "susfs_version": "v2.3.0",
     "built_at_utc": "2026-10-22T05:30:00+00:00",
@@ -52,7 +52,7 @@ class ReleaseNotesTests(unittest.TestCase):
     def test_actual_versions_time_and_all_selected_feature_states(self):
         body = self.render()
         for expected in ("# GKI Kernel Release", "| 发布类型 | Release |", "2026-10-22 06:07:08 UTC",
-                         "v4.0.2-17ff94d（版本号 40321）", "v2.3.0", "com.cyzrqh.gki.sukisu",
+                         "v4.0.2-17ff94d（版本号 40321）", "v2.3.0", "com.sukisu.ultra",
                          "| 构建范围 | Android 14 / 6.1 |", "| SUSFS | 启用（v2.3.0） |",
                          "| Hook 方式 | inline |", "| 挂载方式 | 未知 |", "| LTO | thin |",
                          "| BBG 安全补丁 | 启用 |", "| ZRAM | 关闭 |", "| LZ4KD | 关闭 |",

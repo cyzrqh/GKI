@@ -15,7 +15,7 @@ import sign_sukisu_manager as signing
 from manager_variants import MANAGERS, manager_profile
 
 
-MANAGER_PACKAGE = 'com.cyzrqh.gki.sukisu'
+MANAGER_PACKAGE = 'com.sukisu.ultra'
 
 
 def export_certificate(output: Path, variant: str = 'SukiSU') -> dict[str, str | int]:

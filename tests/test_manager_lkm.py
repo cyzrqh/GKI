@@ -44,7 +44,7 @@ class ManagerLkmTests(unittest.TestCase):
         self.compiler_record = self.source / 'kernel/core/.init.o.cmd'
         self.compiler_record.write_text('cmd_core/init.o := clang -DCONFIG_KSU=1 -DKSU_VERSION='
                                         + str(self.version) + ' -c core/init.c\n', encoding='utf-8')
-        self.identity = {'manager_package': 'com.cyzrqh.gki.sukisu', 'manager_cert_size': 730,
+        self.identity = {'manager_package': 'com.sukisu.ultra', 'manager_cert_size': 730,
                          'manager_cert_sha256': 'c8' * 32}
         self.identity_file = self.root / 'identity.json'
         self.identity_file.write_text(json.dumps(self.identity), encoding='utf-8')
@@ -152,7 +152,7 @@ class ManagerLkmTests(unittest.TestCase):
                              ('ksu_version_code', 41000), ('compiler_records', 0), ('compiler_records_sha256', 'bad'),
                              ('ddk_image', None), ('ddk_image', 'ghcr.io/ylarod/ddk-min:latest'),
                              ('ddk_image', lkm.locked_ddk('android14-5.15')['image']),
-                             ('manager_package', 'com.sukisu.ultra'), ('manager_cert_size', 860),
+                             ('manager_package', 'com.example.othermanager'), ('manager_cert_size', 860),
                              ('manager_cert_sha256', 'f' * 64), ('file', '../outside.ko'),
                              ('sha256', '0' * 64), ('size', 1), ('kmi', 'android14-6.1')):
             path.write_text(json.dumps({**metadata, field: value}), encoding='utf-8')
@@ -288,7 +288,7 @@ class ManagerLkmTests(unittest.TestCase):
         self.git('commit', '--quiet', '-m', 'BakaSU source version fixture')
         self.reference = self.git('rev-parse', 'HEAD')
         self.version = 30702
-        self.identity['manager_package'] = 'com.cyzrqh.gki.bakasu'
+        self.identity['manager_package'] = 'com.resukisu.resukisu'
         self.identity_file.write_text(json.dumps(self.identity), encoding='utf-8')
         self.compiler_record.write_text('cmd_core/init.o := clang -DCONFIG_KSU=1 -DKSU_VERSION='
                                        + str(self.version) + ' -c core/init.c\n', encoding='utf-8')
@@ -301,7 +301,7 @@ class ManagerLkmTests(unittest.TestCase):
             self.assertEqual('Baka-SU/BakaSU', record['repository'])
             self.assertEqual(self.version, record['ksu_version_code'])
             self.assertEqual(record, staged['modules'][0])
-            self.assertEqual('com.cyzrqh.gki.bakasu', staged['manager_package'])
+            self.assertEqual('com.resukisu.resukisu', staged['manager_package'])
         with mock.patch.dict(os.environ, {'KSU_VARIANT': 'SukiSU'}), self.assertRaisesRegex(lkm.LkmError, 'formula changed'):
             lkm.selected_source(self.source, self.reference)
 
@@ -316,7 +316,7 @@ class ManagerLkmTests(unittest.TestCase):
             with self.subTest(text=text), self.assertRaisesRegex(lkm.LkmError, 'formula changed'):
                 lkm.native_version_code(self.source, 2, variant='BakaSU')
         path.write_text(original, encoding='utf-8')
-        self.identity['manager_package'] = 'com.cyzrqh.gki.sukisu'
+        self.identity['manager_package'] = 'com.sukisu.ultra'
         self.identity_file.write_text(json.dumps(self.identity), encoding='utf-8')
         with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}), self.assertRaisesRegex(lkm.LkmError, 'selected manager variant'):
             self.record()

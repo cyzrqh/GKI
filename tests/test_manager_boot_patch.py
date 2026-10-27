@@ -236,7 +236,7 @@ class ManagerBootPatchTests(unittest.TestCase):
             self.assertIn('userspace/ksuinit/Cargo.lock', protected)
             self.assertNotIn('Cargo.toml', protected)
             self.assertNotIn('Cargo.lock', protected)
-            self.assertEqual('com.cyzrqh.gki.bakasu', boot.host_environment(source)['KSU_PACKAGE_NAME'])
+            self.assertEqual('com.resukisu.resukisu', boot.host_environment(source)['KSU_PACKAGE_NAME'])
 
     def test_bakasu_unguarded_android_modules_or_new_feature_layout_require_review(self):
         original = (b'#[cfg(target_os = "android")]\nmod android;\n'

@@ -537,7 +537,11 @@ jobs:
     - build-sukisu-lkm
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    permissions:
+      contents: read
+      actions: read
     outputs:
+      manager_job_id: ${{ steps.manager-producer.outputs.manager_job_id }}
       manager_package: ${{ steps.sign.outputs.manager_package }}
       manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
       manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
@@ -550,6 +554,11 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
+    - name: 记录本次管理器生产任务
+      id: manager-producer
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: python3 tools/wait_manager_identity.py --record-producer-job
     - name: 准备 APK 内容签名验证
       run: python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check
         cryptography
@@ -6079,10 +6088,12 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         KSU_SHORT: ${{ needs.prepare-matrix.outputs.ksu_short }}
+        MANAGER_JOB_ID: ${{ needs.build-sukisu-manager.outputs.manager_job_id }}
         MANAGER_ARTIFACT: ${{ needs.build-sukisu-manager.outputs.apk_filename }}
       run: |
         python3 "$GITHUB_WORKSPACE/tools/wait_manager_identity.py" \
           --expected-ref "$KSU_REF" \
+          --manager-job-id "$MANAGER_JOB_ID" \
           --artifact-name "$MANAGER_ARTIFACT" \
           --github-env "$GITHUB_ENV"
     - name: 配对管理器包名与签名

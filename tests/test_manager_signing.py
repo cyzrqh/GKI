@@ -445,6 +445,34 @@ class ManagerSigningTests(unittest.TestCase):
                 self.assertFalse(self.workflow_output.exists())
                 self.assertFalse(list(self.private_root.iterdir()))
 
+    def test_current_signing_requires_the_official_application_id_for_each_variant(self):
+        for variant, package, rejected in (
+                ('SukiSU', 'com.sukisu.ultra', ('com.cyzrqh.gki.sukisu', 'com.sukisu.ultra.pr')),
+                ('BakaSU', 'com.resukisu.resukisu', ('com.cyzrqh.gki.bakasu', 'org.bakasu.bakasu'))):
+            actual = {'manager_package': package, 'manager_version_code': 41030,
+                      'manager_version_name': 'v4.2.1'}
+            with patch.dict(os.environ, {'KSU_VARIANT': variant}):
+                self.assertEqual(package, signing.public_build_identity(actual, CERTIFICATE, variant + '.apk')['package'])
+                for wrong in rejected:
+                    with self.subTest(variant=variant, wrong=wrong), self.assertRaisesRegex(signing.SigningError, 'profile'):
+                        signing.public_build_identity({**actual, 'manager_package': wrong}, CERTIFICATE, variant + '.apk')
+
+    def test_frozen_41065_exception_cannot_be_used_for_current_builds_or_other_certificates(self):
+        old = {'manager_package': 'com.cyzrqh.gki.sukisu', 'manager_version_code': 41065,
+               'manager_version_name': 'manager-ci'}
+        with patch.dict(os.environ, {'KSU_VARIANT': 'SukiSU'}):
+            with self.assertRaises(signing.SigningError):
+                signing.public_build_identity(old, CERTIFICATE, 'old.apk', legacy_41065=True)
+            digest = type('Digest', (), {'hexdigest': lambda self: 'c8e9af2b51e0f76b4e9133726c17a8034a131fec4235f6b779ab8b1e83127c12'})()
+            with patch.object(signing.hashlib, 'sha256', return_value=digest):
+                self.assertEqual(old['manager_package'], signing.public_build_identity(
+                    old, b'x' * 730, 'old.apk', legacy_41065=True)['package'])
+                for changes, certificate in (({'manager_version_code': 41066}, b'x' * 730),
+                                              ({'manager_package': 'com.sukisu.ultra'}, b'x' * 730),
+                                              ({}, b'x' * 731)):
+                    with self.subTest(changes=changes), self.assertRaises(signing.SigningError):
+                        signing.public_build_identity({**old, **changes}, certificate, 'old.apk', legacy_41065=True)
+
     def test_output_directory_cli_is_supported_and_output_flags_are_exclusive(self):
         stdout = io.StringIO()
         directory = self.root / 'versioned-artifacts'

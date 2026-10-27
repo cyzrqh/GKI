@@ -35,11 +35,11 @@ ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point to the prepared Android NDK}"
 export ANDROID_NDK_HOME
 export CARGO_TARGET_DIR="$source_dir/target"
-if [ "${KSU_PACKAGE_NAME:-com.cyzrqh.gki.bakasu}" != com.cyzrqh.gki.bakasu ]; then
+if [ "${KSU_PACKAGE_NAME:-com.resukisu.resukisu}" != com.resukisu.resukisu ]; then
   echo 'The BakaSU manager package must match the fixed kernel pairing.' >&2
   exit 1
 fi
-export KSU_PACKAGE_NAME=com.cyzrqh.gki.bakasu
+export KSU_PACKAGE_NAME=com.resukisu.resukisu
 [ -d "$ANDROID_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] || { echo 'Android SDK or NDK directory does not exist.' >&2; exit 1; }
 native_ndk_dir="$ANDROID_HOME/ndk/29.0.14206865"
 [ -d "$native_ndk_dir" ] || { echo 'BakaSU native Rust builds require the official NDK r29 toolchain.' >&2; exit 1; }
@@ -258,7 +258,7 @@ for name in ('name', 'versionName', 'versionCode'):
     fields[name] = values[0]
 if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', fields['name']):
     raise SystemExit('The built manager application ID is not a valid ASCII package.')
-if fields['name'] != 'com.cyzrqh.gki.bakasu':
+if fields['name'] != 'com.resukisu.resukisu':
     raise SystemExit('The BakaSU APK package does not match the fixed kernel pairing.')
 version = fields['versionName']
 if not version or len(version) > 128 or any(ord(char) < 32 or ord(char) > 126 for char in version):

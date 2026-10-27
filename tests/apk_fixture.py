@@ -33,7 +33,7 @@ def material():
 def manager_metadata(**changes):
     _, certificate = material()
     value = {'schema_version': 1, 'file': 'SukiSU_v4.2.0_40922-release.apk',
-             'package': 'com.cyzrqh.gki.sukisu', 'ksu_ref': 'b' * 40,
+             'package': 'com.sukisu.ultra', 'ksu_ref': 'b' * 40,
              'ksu_branch': 'Dev(开发)', 'ksu_variant': 'SukiSU', 'ksu_version_code': '40922',
              'ksu_version_name': '4.2.0', 'manager_cert_size': str(len(certificate)),
              'manager_cert_sha256': hashlib.sha256(certificate).hexdigest(),

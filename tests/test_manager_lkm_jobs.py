@@ -19,7 +19,7 @@ import manager_lkm_jobs as jobs
 def render_key(template, **changes):
     values = {'runner.os': 'Linux', 'runner.arch': 'X64',
               'needs.prepare-matrix.outputs.ksu_ref': 'a' * 40,
-              'needs.prepare-matrix.outputs.manager_package': 'com.cyzrqh.gki.sukisu',
+              'needs.prepare-matrix.outputs.manager_package': 'com.sukisu.ultra',
               'needs.prepare-matrix.outputs.manager_cert_size': '730',
               'needs.prepare-matrix.outputs.manager_cert_sha256': 'b' * 64,
               'matrix.kmi': 'android12-5.10', 'matrix.ddk_short': 'c' * 16}
@@ -208,7 +208,7 @@ class ManagerLkmJobTests(unittest.TestCase):
         step = next(step for step in jobs.manager_lkm_job('true')['steps']
                     if step['name'] == '核实管理器公开签名身份')
         script = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
-        environment = {'MANAGER_PACKAGE': 'com.cyzrqh.gki.sukisu',
+        environment = {'MANAGER_PACKAGE': 'com.sukisu.ultra',
                        'MANAGER_CERT_SIZE': '730', 'MANAGER_CERT_SHA256': 'b' * 64}
         previous = Path.cwd()
         try:

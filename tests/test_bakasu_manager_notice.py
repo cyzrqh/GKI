@@ -42,7 +42,7 @@ fun HomePage() {
 }
 ''',
 }
-IDENTITY = {'manager_package': 'com.cyzrqh.gki.bakasu', 'manager_cert_size': 730,
+IDENTITY = {'manager_package': 'com.resukisu.resukisu', 'manager_cert_size': 730,
             'manager_cert_sha256': 'c8e9af2b51e0f76b4e9133726c17a8034a131fec4235f6b779ab8b1e83127c12'}
 
 
@@ -95,7 +95,7 @@ class BakaSUManagerNoticeTests(unittest.TestCase):
         self.apply()
         cli = self.paths['cli'].read_text(encoding='utf-8')
         method = cli.split('// ' + notice.MARKER, 1)[1].split('fun untouchedDaemonOperation', 1)[0]
-        self.assertIn('if (packageName != "com.cyzrqh.gki.bakasu") return@withContext false', method)
+        self.assertIn('if (packageName != "com.resukisu.resukisu") return@withContext false', method)
         self.assertIn('debug get-sign ${shellQuote(packageResourcePath)}', method)
         self.assertIn('if (!result.isSuccess || result.out.size != 1) return@withContext false', method)
         self.assertIn('result.out.single().trim() == "size: 0x2da, hash: ' + IDENTITY['manager_cert_sha256'] + '"', method)
@@ -203,7 +203,7 @@ class BakaSUManagerNoticeTests(unittest.TestCase):
 
     def test_invalid_public_identities_are_rejected_before_any_source_changes(self):
         values = [None, [], {}, {**IDENTITY, 'schema_version': True}, {**IDENTITY, 'schema_version': 2},
-                  {**IDENTITY, 'manager_package': 'com.cyzrqh.gki.sukisu'},
+                  {**IDENTITY, 'manager_package': 'com.sukisu.ultra'},
                   {**IDENTITY, 'manager_cert_size': True}, {**IDENTITY, 'manager_cert_size': '730'},
                   {**IDENTITY, 'manager_cert_size': 63}, {**IDENTITY, 'manager_cert_size': 4097},
                   {**IDENTITY, 'manager_cert_sha256': 'X' * 64},

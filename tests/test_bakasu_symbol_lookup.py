@@ -187,7 +187,7 @@ class BakaSUSymbolLookupTests(unittest.TestCase):
 
     def test_certificate_version_kbuild_changes_are_allowed(self):
         path = self.ksu / 'Kbuild'
-        path.write_text(path.read_text() + '\nKSU_MANAGER_PACKAGE := com.cyzrqh.gki.bakasu\nKSU_VERSION := 35252\n', encoding='utf-8')
+        path.write_text(path.read_text() + '\nKSU_MANAGER_PACKAGE := com.resukisu.resukisu\nKSU_VERSION := 35252\n', encoding='utf-8')
         self.assertTrue(lookup.validate_native_symbol_lookup(self.root, self.reference))
 
     def test_cli_success_failure_and_sources_untouched(self):

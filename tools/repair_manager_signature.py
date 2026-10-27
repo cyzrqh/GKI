@@ -17,7 +17,11 @@ from embedded_build_metadata import APK_MEMBER, MAX_APK_BYTES, read_manager_apk,
 import sign_sukisu_manager as signing
 from snapshot_ksu_source import temporary_directory
 
-PACKAGE = 'com.cyzrqh.gki.sukisu'
+# Frozen compatibility for the existing 41065 artifact. Current builders use
+# the upstream application IDs in manager_variants.py; never migrate this old
+# payload's package while repairing only its signing block.
+LEGACY_PACKAGE = 'com.cyzrqh.gki.sukisu'
+PACKAGE = LEGACY_PACKAGE
 CERTIFICATE_SHA256 = 'c8e9af2b51e0f76b4e9133726c17a8034a131fec4235f6b779ab8b1e83127c12'
 CERTIFICATE_SIZE = 730
 VERSION_CODE = 41065
@@ -113,7 +117,8 @@ def repair(input_path: Path, expected_sha256: str, expected_ref: str, output_dir
         build_path = temporary / 'manager-build-metadata.json'
         build_path.write_text(json.dumps(build_metadata, ensure_ascii=True), encoding='utf-8')
         with source_environment(expected_ref, original['ksu_branch']):
-            signed_metadata = signing.sign_manager(unsigned, output_dir=temporary / 'signed', build_metadata=build_path)
+            signed_metadata = signing.sign_manager(unsigned, output_dir=temporary / 'signed',
+                                                   build_metadata=build_path, legacy_41065=True)
         signed = temporary / 'signed' / filename
         verified = read_manager_apk(signed)  # Default strict native SukiSU scheme validation.
         for field in ('file', 'package', 'ksu_ref', 'ksu_branch', 'ksu_version_name', 'manager_cert_sha256'):

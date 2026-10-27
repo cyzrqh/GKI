@@ -15,7 +15,7 @@ import re
 import sys
 import uuid
 
-PACKAGE = 'com.cyzrqh.gki.bakasu'
+PACKAGE = 'com.resukisu.resukisu'
 MARKER = 'GKI_REPOSITORY_MANAGER_TRUST_V1'
 JAVA = 'manager/app/src/main/java/org/bakasu/bakasu/'
 FILES = {

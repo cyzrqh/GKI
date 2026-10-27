@@ -35,6 +35,11 @@ ANDROID_NDK_HOME="${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT:-}}"
 : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point to the prepared Android NDK}"
 export ANDROID_NDK_HOME
 export CARGO_TARGET_DIR="$source_dir/target"
+if [ "${KSU_PACKAGE_NAME:-com.sukisu.ultra}" != com.sukisu.ultra ]; then
+  echo 'The SukiSU manager package must match the official application ID.' >&2
+  exit 1
+fi
+export KSU_PACKAGE_NAME=com.sukisu.ultra
 [ -d "$ANDROID_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] || { echo 'Android SDK or NDK directory does not exist.' >&2; exit 1; }
 
 # The caller stages and validates the same-source, same-certificate modules.
@@ -156,7 +161,7 @@ cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
 
 cd "$manager_dir"
 echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
-bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease
+bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"
 
 python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools" <<'PY'
 from pathlib import Path
@@ -217,6 +222,8 @@ for name in ('name', 'versionName', 'versionCode'):
     fields[name] = values[0]
 if not re.fullmatch(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+', fields['name']):
     raise SystemExit('The built manager application ID is not a valid ASCII package.')
+if fields['name'] != 'com.sukisu.ultra':
+    raise SystemExit('The built SukiSU manager package must retain the official application ID.')
 version = fields['versionName']
 if not version or len(version) > 128 or any(ord(char) < 32 or ord(char) > 126 for char in version):
     raise SystemExit('The built manager versionName must be nonempty printable ASCII.')

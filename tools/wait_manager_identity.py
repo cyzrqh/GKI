@@ -16,6 +16,7 @@ import sys
 import time
 from typing import Callable
 import zipfile
+from urllib.parse import quote, unquote
 
 from embedded_build_metadata import MAX_APK_BYTES, read_manager_apk, validate_members
 from manager_variants import MANAGERS, manager_profile
@@ -24,6 +25,8 @@ from manager_variants import MANAGERS, manager_profile
 MAX_ARCHIVE_BYTES = MAX_APK_BYTES
 MAX_METADATA_BYTES = 16 * 1024
 MAX_API_BYTES = 4 * 1024 * 1024
+JOBS_PAGE_SIZE = 20
+ARTIFACTS_PAGE_SIZE = 100
 READ_ATTEMPTS = 3
 TRANSIENT_HTTP = frozenset((408, 429, 500, 502, 503, 504))
 NETWORK_FAILURES = (
@@ -73,6 +76,7 @@ class Expected:
     artifact_name: str = ''
     manager_job: str = DEFAULT_MANAGER_JOB
     variant: str = 'SukiSU'
+    manager_job_id: int | None = None
 
     def validate(self):
         try:
@@ -87,6 +91,27 @@ class Expected:
         if (self.artifact_name and not APK_NAME.fullmatch(self.artifact_name)
                 or not self.manager_job or any(ord(c) < 32 for c in self.manager_job)):
             raise IdentityError("Invalid manager identity artifact or job name")
+        if self.manager_job_id is not None:
+            positive_integer(self.manager_job_id, "manager producer job ID")
+
+
+@dataclass(frozen=True)
+class ProducerContext:
+    repository: str
+    run_id: int
+    run_attempt: int
+    head_sha: str
+    manager_job: str
+    variant: str
+
+    def validate(self):
+        validate_repository(self.repository)
+        positive_integer(self.run_id, 'workflow run ID')
+        positive_integer(self.run_attempt, 'workflow run attempt')
+        manager_profile(self.variant)
+        if (not SHA40.fullmatch(self.head_sha) or not self.manager_job
+                or any(ord(c) < 32 for c in self.manager_job)):
+            raise IdentityError('Invalid manager producer workflow context')
 
 
 def _no_duplicate_keys(pairs):
@@ -111,7 +136,8 @@ def _check_strings(value):
 
 
 def validate_metadata(metadata: dict, expected: Expected, *,
-                      reusable_attempt: int | None = None) -> dict[str, str]:
+                      reusable_attempt: int | None = None,
+                      producer_attempt: int | None = None) -> dict[str, str]:
     """Return only verified public values that are safe for GITHUB_ENV."""
     if not isinstance(metadata, dict):
         raise IdentityError("Manager metadata must be an object")
@@ -133,9 +159,15 @@ def validate_metadata(metadata: dict, expected: Expected, *,
         raise StaleIdentity("Waiting for this attempt's signed manager identity")
     if attempt > expected.run_attempt:
         raise IdentityError("Manager identity belongs to a different workflow attempt")
+    if producer_attempt is not None and attempt != producer_attempt:
+        if attempt < producer_attempt:
+            raise StaleIdentity("Waiting for the selected producer's signed manager identity")
+        raise IdentityError("Manager identity differs from the selected producer's exact attempt")
     package, filename = metadata["package"], metadata["file"]
     if not isinstance(package, str) or len(package) > 255 or not PACKAGE.fullmatch(package):
         raise IdentityError("Invalid signed manager Android package ID")
+    if package != manager_profile(expected.variant)['package']:
+        raise IdentityError("Signed manager package differs from the selected upstream application ID")
     if not isinstance(filename, str) or len(filename) > 240 or not APK_NAME.fullmatch(filename):
         raise IdentityError("Invalid signed manager APK filename")
     size = positive_integer(metadata["manager_cert_size"], "manager certificate size", 4096)
@@ -156,7 +188,8 @@ def validate_metadata(metadata: dict, expected: Expected, *,
 
 
 def read_identity_archive(archive: bytes, expected: Expected, *,
-                          reusable_attempt: int | None = None, filename: str | None = None) -> dict[str, str]:
+                          reusable_attempt: int | None = None, filename: str | None = None,
+                          producer_attempt: int | None = None) -> dict[str, str]:
     if not archive or len(archive) > MAX_ARCHIVE_BYTES:
         raise IdentityError("Manager APK exceeds the size limit")
     try:
@@ -182,7 +215,8 @@ def read_identity_archive(archive: bytes, expected: Expected, *,
         if isinstance(error, IdentityError):
             raise
         raise IdentityError('Could not verify the final signed manager APK: ' + str(error)) from None
-    return validate_metadata(metadata, expected, reusable_attempt=reusable_attempt)
+    return validate_metadata(metadata, expected, reusable_attempt=reusable_attempt,
+                             producer_attempt=producer_attempt)
 
 
 class GitHubReader:
@@ -217,7 +251,9 @@ class GitHubReader:
         return 'GitHub CLI request failed', False
 
     def get(self, suffix: str, *, binary: bool = False):
-        if not re.fullmatch(r"actions/[A-Za-z0-9_/?=&.-]+", suffix) or ".." in suffix:
+        if (not re.fullmatch(r"actions/[A-Za-z0-9_/?=&.%+-]+", suffix)
+                or ".." in unquote(suffix) or '%' in suffix.partition('?')[0]
+                or re.search(r'%(?![0-9a-fA-F]{2})', suffix)):
             raise IdentityError("Invalid workflow API path")
         endpoint = f"repos/{self.repository}/{suffix}"
         # No token is put in command arguments, and gh errors are not echoed.
@@ -259,14 +295,20 @@ class GitHubReader:
 
 def _pages(reader, suffix: str, key: str):
     # Avoid silently missing the identity in a large matrix's artifact list.
+    # Job records contain every step and become very large in a full matrix.
+    # GitHub can repeatedly return 502 for per_page=100 even when every job is
+    # healthy; use bounded job pages while still checking the complete listing.
+    page_size = JOBS_PAGE_SIZE if key == 'jobs' else ARTIFACTS_PAGE_SIZE
     for page in range(1, 101):
         separator = "&" if "?" in suffix else "?"
-        data = reader.get(f"{suffix}{separator}per_page=100&page={page}")
+        data = reader.get(f"{suffix}{separator}per_page={page_size}&page={page}")
         if not isinstance(data, dict) or not isinstance(data.get(key), list):
             raise IdentityError("Invalid workflow API listing")
         values = data[key]
+        if len(values) > page_size:
+            raise IdentityError("Workflow API listing exceeds the requested page size")
         yield from values
-        if len(values) < 100:
+        if len(values) < page_size:
             return
     raise IdentityError("Workflow API listing is unexpectedly large")
 
@@ -282,7 +324,27 @@ def _check_run(reader, expected: Expected):
     return run
 
 
+def _validate_producer(job, expected: Expected | ProducerContext, *, job_id: int | None = None,
+                       current_attempt: bool = False):
+    if (not isinstance(job, dict) or job.get('name') != expected.manager_job
+            or job.get('run_id') != expected.run_id or job.get('head_sha') != expected.head_sha):
+        raise IdentityError('Manager producer belongs to a different job, workflow run or commit')
+    actual_id = positive_integer(job.get('id'), 'manager producer job ID')
+    attempt = positive_integer(job.get('run_attempt'), 'manager job attempt')
+    if ((job_id is not None and actual_id != job_id) or attempt > expected.run_attempt
+            or (current_attempt and attempt != expected.run_attempt)):
+        raise IdentityError('Manager producer job ID or attempt differs from its trusted workflow output')
+    if job.get('status') not in ('queued', 'in_progress', 'completed'):
+        raise IdentityError('Invalid manager producer status')
+    if job['status'] == 'completed' and job.get('conclusion') != 'success':
+        raise IdentityError('The ' + expected.variant + ' APK job failed or was cancelled; no identity can be accepted')
+    return {**job, 'id': actual_id, 'run_attempt': attempt}
+
+
 def _check_manager_job(reader, expected: Expected):
+    if expected.manager_job_id is not None:
+        job = reader.get(f'actions/jobs/{expected.manager_job_id}')
+        return _validate_producer(job, expected, job_id=expected.manager_job_id)
     jobs = list(_pages(reader, f"actions/runs/{expected.run_id}/attempts/{expected.run_attempt}/jobs", "jobs"))
     matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == expected.manager_job]
     if not matches:
@@ -296,6 +358,18 @@ def _check_manager_job(reader, expected: Expected):
     if matches and matches[0].get("status") == "completed" and matches[0].get("conclusion") != "success":
         raise IdentityError("The " + expected.variant + " APK job failed or was cancelled; no identity can be accepted")
     return matches[0] if matches else None
+
+
+def record_producer_job(context: ProducerContext, reader) -> int:
+    """Record the unique current producer once, before kernel matrix expansion."""
+    context.validate()
+    _check_run(reader, context)
+    jobs = list(_pages(reader, f'actions/runs/{context.run_id}/attempts/{context.run_attempt}/jobs', 'jobs'))
+    matches = [job for job in jobs if isinstance(job, dict) and job.get('name') == context.manager_job]
+    if len(matches) != 1:
+        raise IdentityError('Expected exactly one current manager producer before expanding the kernel matrix')
+    job = _validate_producer(matches[0], context, current_attempt=True)
+    return positive_integer(job['id'], 'manager producer job ID')
 
 
 def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, interval: float = 15,
@@ -314,7 +388,15 @@ def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, inte
             attempt = positive_integer(manager.get("run_attempt"), "manager job attempt")
             if attempt < expected.run_attempt:
                 reusable_attempt = attempt
-        artifacts = list(_pages(reader, f"actions/runs/{expected.run_id}/artifacts", "artifacts"))
+        # A successful manager job passes its numeric ID as a trusted needs
+        # output. Consumers validate that one exact producer instead of each
+        # downloading every step of 108 matrix jobs. If API completion lags,
+        # keep waiting; never accept an unfinished exact producer.
+        pending_producer = (expected.manager_job_id is not None and manager.get('status') != 'completed')
+        artifact_listing = f"actions/runs/{expected.run_id}/artifacts"
+        if expected.artifact_name:
+            artifact_listing += '?name=' + quote(expected.artifact_name, safe='')
+        artifacts = [] if pending_producer else list(_pages(reader, artifact_listing, "artifacts"))
         matches = [item for item in artifacts if isinstance(item, dict)
                    and isinstance(item.get('name'), str) and APK_NAME.fullmatch(item['name'])
                    and (not expected.artifact_name or item['name'] == expected.artifact_name)
@@ -337,7 +419,9 @@ def wait_for_identity(expected: Expected, reader, *, timeout: float = 1200, inte
                     or hashlib.sha256(raw).hexdigest() != digest.removeprefix('sha256:')):
                 raise IdentityError('Manager artifact SHA256 does not match the GitHub digest')
             try:
-                return read_identity_archive(raw, expected, reusable_attempt=reusable_attempt, filename=artifact['name'])
+                return read_identity_archive(raw, expected, reusable_attempt=reusable_attempt, filename=artifact['name'],
+                                             producer_attempt=manager['run_attempt']
+                                             if expected.manager_job_id is not None else None)
             except StaleIdentity:
                 stale_archives[artifact_id] = raw
         remaining = deadline - monotonic()
@@ -356,7 +440,10 @@ def write_environment(path: Path, values: dict[str, str]):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--expected-ref", required=True)
+    parser.add_argument("--expected-ref")
+    parser.add_argument('--record-producer-job', action='store_true',
+                        help='Record the unique current manager job ID before the matrix expands')
+    parser.add_argument('--manager-job-id', help='Trusted numeric output from the successful manager producer')
     parser.add_argument("--artifact-name", default='', help='Optional exact final APK filename; otherwise require one APK')
     parser.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     parser.add_argument("--run-id", default=os.environ.get("GITHUB_RUN_ID", ""))
@@ -369,12 +456,31 @@ def main():
     parser.add_argument("--interval", type=float, default=15)
     args = parser.parse_args()
     try:
+        manager_job = args.manager_job_name or f'编译配套 {args.variant} 管理器 APK'
+        if args.record_producer_job:
+            if args.manager_job_id is not None:
+                raise IdentityError('Producer discovery cannot be combined with an existing producer job ID')
+            context = ProducerContext(args.repo, positive_integer(args.run_id, 'run ID'),
+                                      positive_integer(args.run_attempt, 'run attempt'),
+                                      args.head_sha, manager_job, args.variant)
+            job_id = record_producer_job(context, GitHubReader(context.repository))
+            output = os.environ.get('GITHUB_OUTPUT', '')
+            if not output:
+                raise IdentityError('GITHUB_OUTPUT is required to publish the current manager producer ID')
+            with Path(output).open('a', encoding='utf-8', newline='\n') as stream:
+                stream.write(f'manager_job_id={job_id}\n')
+            print(f'Verified current {args.variant} manager producer job {job_id}.')
+            return 0
+        if args.expected_ref is None:
+            raise IdentityError('--expected-ref is required when consuming a signed manager identity')
         if args.github_env is None:
             raise IdentityError("GITHUB_ENV or --github-env is required")
         expected = Expected(args.repo, positive_integer(args.run_id, "run ID"),
                             positive_integer(args.run_attempt, "run attempt"), args.head_sha,
                             args.expected_ref, args.artifact_name,
-                            args.manager_job_name or f'编译配套 {args.variant} 管理器 APK', args.variant)
+                            manager_job, args.variant,
+                            positive_integer(args.manager_job_id, 'manager producer job ID')
+                            if args.manager_job_id is not None else None)
         values = wait_for_identity(expected, GitHubReader(expected.repository),
                                    timeout=args.timeout, interval=args.interval)
         write_environment(args.github_env, values)

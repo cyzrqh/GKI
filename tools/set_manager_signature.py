@@ -10,7 +10,7 @@ import stat
 import tempfile
 
 
-DEFAULT_PACKAGE = 'com.cyzrqh.gki.sukisu'
+DEFAULT_PACKAGE = 'com.sukisu.ultra'
 PACKAGE = re.compile(r'[A-Za-z][A-Za-z0-9_]*(?:\.[A-Za-z][A-Za-z0-9_]*)+\Z')
 PACKAGE_SETTING = (
     r'KSU_PACKAGE_NAME[ \t]*\?=[ \t]*'

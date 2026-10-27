@@ -26,7 +26,7 @@ from kernel_fixture import kernel_fixture, ak3_bytes
 
 
 def baka_metadata(**changes):
-    return manager_metadata(ksu_variant='BakaSU', package='com.cyzrqh.gki.bakasu',
+    return manager_metadata(ksu_variant='BakaSU', package='com.resukisu.resukisu',
                             file='BakaSU_v3.1.6_40922-arm64-v8a-release.apk', **changes)
 
 
@@ -38,10 +38,10 @@ class BakaManagerIdentityTests(unittest.TestCase):
 
     def test_profiles_are_allowlisted_independent_and_return_copies(self):
         self.assertEqual('SukiSU-Ultra/SukiSU-Ultra', variants.manager_profile()['repository'])
-        self.assertEqual('com.cyzrqh.gki.sukisu', variants.manager_profile()['package'])
+        self.assertEqual('com.sukisu.ultra', variants.manager_profile()['package'])
         baka = variants.manager_profile('BakaSU')
         self.assertEqual('Baka-SU/BakaSU', baka['repository'])
-        self.assertEqual('com.cyzrqh.gki.bakasu', baka['package'])
+        self.assertEqual('com.resukisu.resukisu', baka['package'])
         baka['repository'] = 'untrusted/other'
         self.assertEqual('Baka-SU/BakaSU', variants.manager_profile('BakaSU')['repository'])
         for value in ('Official', '', None, 'bakasu', 'BakaSU\n', ['BakaSU']):
@@ -49,7 +49,7 @@ class BakaManagerIdentityTests(unittest.TestCase):
                 variants.manager_profile(value)
 
     def test_native_stable_and_development_filenames_keep_their_original_names(self):
-        actual = {'manager_package': 'com.cyzrqh.gki.bakasu',
+        actual = {'manager_package': 'com.resukisu.resukisu',
                   'manager_version_name': 'v3.1.6', 'manager_version_code': 40922}
         for name in ('BakaSU_v3.1.6_40922-arm64-v8a-release.apk',
                      'ReSukiSU_v3.1.6_40922-release.apk'):
@@ -70,7 +70,7 @@ class BakaManagerIdentityTests(unittest.TestCase):
         expected = identity.Expected('cyzrqh/gki', 123, 1, 'a' * 40, 'b' * 40, variant='BakaSU')
         expected.validate()
         public = identity.validate_metadata(manager, expected)
-        self.assertEqual('com.cyzrqh.gki.bakasu', public['MANAGER_PACKAGE'])
+        self.assertEqual('com.resukisu.resukisu', public['MANAGER_PACKAGE'])
         self.assertEqual(hashlib.sha256(raw).hexdigest(), public['MANAGER_APK_SHA256'])
         with self.assertRaises(identity.IdentityError):
             identity.validate_metadata(manager, identity.Expected('cyzrqh/gki', 123, 1, 'a' * 40, 'b' * 40))
@@ -158,15 +158,15 @@ class BakaManagerIdentityTests(unittest.TestCase):
         path = self.directory / 'KernelSU/kernel/Kbuild'
         path.parent.mkdir(parents=True)
         path.write_bytes(raw)
-        signature.configure(self.directory, '730', 'a' * 64, 'com.cyzrqh.gki.bakasu', '40922')
+        signature.configure(self.directory, '730', 'a' * 64, 'com.resukisu.resukisu', '40922')
         result = path.read_text()
         self.assertIn('KSU_EXPECTED_SIZE := 730\nifdef KSU_EXPECTED_SIZE', result)
         self.assertIn('KSU_EXPECTED_HASH := ' + 'a' * 64 + '\nifdef KSU_EXPECTED_HASH', result)
-        self.assertIn('KSU_MANAGER_PACKAGE := com.cyzrqh.gki.bakasu', result)
+        self.assertIn('KSU_MANAGER_PACKAGE := com.resukisu.resukisu', result)
         self.assertIn('KSU_VERSION := 40922', result)
         self.assertIn('ifdef CONFIG_KSU_MULTI_MANAGER_SUPPORT', result)
         first = path.read_bytes()
-        signature.configure(self.directory, '730', 'a' * 64, 'com.cyzrqh.gki.bakasu', '40922')
+        signature.configure(self.directory, '730', 'a' * 64, 'com.resukisu.resukisu', '40922')
         self.assertEqual(first, path.read_bytes())
         for old, new in (('ccflags-y += -DEXPECTED_SIZE=', 'ccflags-y += -DCHANGED_SIZE='),
                          ('ifdef KSU_EXPECTED_HASH', 'ifdef FUTURE_EXPECTED_HASH'),
@@ -175,7 +175,7 @@ class BakaManagerIdentityTests(unittest.TestCase):
             path.write_text(broken)
             before = path.read_bytes()
             with self.subTest(changed=old), self.assertRaises(ValueError):
-                signature.configure(self.directory, '730', 'a' * 64, 'com.cyzrqh.gki.bakasu', '40922')
+                signature.configure(self.directory, '730', 'a' * 64, 'com.resukisu.resukisu', '40922')
             self.assertEqual(before, path.read_bytes())
 
     def test_reviewed_resukisu_named_tag_keeps_its_native_name_and_accepts_the_certificate(self):
@@ -186,15 +186,15 @@ class BakaManagerIdentityTests(unittest.TestCase):
         path = self.directory / 'KernelSU/kernel/Kbuild'
         path.parent.mkdir(parents=True)
         path.write_bytes(raw)
-        signature.configure(self.directory, '730', 'a' * 64, 'com.cyzrqh.gki.bakasu', '40922')
+        signature.configure(self.directory, '730', 'a' * 64, 'com.resukisu.resukisu', '40922')
         result = path.read_text()
         self.assertIn('REPO_NAME := ReSukiSU', result)
         self.assertIn('KSU_EXPECTED_SIZE := 730', result)
         self.assertIn('KSU_EXPECTED_HASH := ' + 'a' * 64, result)
-        self.assertIn('KSU_MANAGER_PACKAGE := com.cyzrqh.gki.bakasu', result)
+        self.assertIn('KSU_MANAGER_PACKAGE := com.resukisu.resukisu', result)
         self.assertIn('KSU_VERSION := 40922', result)
         first = path.read_bytes()
-        signature.configure(self.directory, '730', 'a' * 64, 'com.cyzrqh.gki.bakasu', '40922')
+        signature.configure(self.directory, '730', 'a' * 64, 'com.resukisu.resukisu', '40922')
         self.assertEqual(first, path.read_bytes())
 
     def test_preparation_preserves_raw_baka_apk_and_ak3_and_uses_baka_title(self):

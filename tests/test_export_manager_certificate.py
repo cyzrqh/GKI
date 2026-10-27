@@ -80,7 +80,7 @@ class ManagerCertificateTests(unittest.TestCase):
     def test_exports_only_public_identity_and_needs_no_apk_or_android_sdk(self):
         with patch.object(certificate.signing.subprocess, 'run', side_effect=self.fake_keytool):
             metadata = certificate.export_certificate(self.output)
-        expected = {'schema_version': 1, 'manager_package': 'com.cyzrqh.gki.sukisu',
+        expected = {'schema_version': 1, 'manager_package': 'com.sukisu.ultra',
                     'manager_cert_size': len(CERTIFICATE), 'manager_cert_sha256': CERT_SHA}
         self.assertEqual(expected, metadata)
         self.assertEqual(expected, json.loads(self.output.read_text(encoding='utf-8')))
@@ -97,7 +97,7 @@ class ManagerCertificateTests(unittest.TestCase):
     def test_baka_uses_the_same_fixed_certificate_with_its_own_package(self):
         with patch.object(certificate.signing.subprocess, 'run', side_effect=self.fake_keytool):
             metadata = certificate.export_certificate(self.output, 'BakaSU')
-        self.assertEqual('com.cyzrqh.gki.bakasu', metadata['manager_package'])
+        self.assertEqual('com.resukisu.resukisu', metadata['manager_package'])
         self.assertEqual(CERT_SHA, metadata['manager_cert_sha256'])
         self.assertEqual(len(CERTIFICATE), metadata['manager_cert_size'])
         export = self.calls[0][0]

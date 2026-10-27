@@ -182,7 +182,7 @@ ccache --set-config=compiler_check=content
 '''},
         {'name': '核实官方 KPM 工具和原始载荷', 'if': KPM_IF,
          'run': '''python3 tools/apply_kpm_patch.py prepare --cache-dir "$RUNNER_TEMP/oplus-kpm-official" \\
-  --github-env "$GITHUB_ENV"
+  --github-env "$GITHUB_ENV" --ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"
 '''},
         recipe_step('build', '使用原生 Make 与对应 Clang/Rust 编译内核'),
         {'name': '应用并验证独立 KPM 启动载荷', 'if': KPM_IF,

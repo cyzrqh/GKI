@@ -562,7 +562,8 @@ fi
     steps.insert(steps.index(compile_step), {
         'name': '编译前核实官方 KPM 工具及真实载荷', 'if': kpm['if'],
         'run': '''python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \\
-  --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV"
+  --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \\
+  --ksu-source "$KERNEL_ROOT/KernelSU"
 ''',
     })
     kpm['env'] = {'KPM_PASSWORD': '${{ inputs.kpm_password }}',

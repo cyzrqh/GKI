@@ -903,6 +903,7 @@ class WorkflowTests(unittest.TestCase):
         entry = self.find('核对最终 ARM64 启动入口')
         self.assertLess(names.index(prepare['name']), names.index('编译内核'))
         self.assertIn('tools/apply_kpm_patch.py" prepare', prepare['run'])
+        self.assertIn('--ksu-source "$KERNEL_ROOT/KernelSU"', prepare['run'])
         self.assertIn('tools/apply_kpm_patch.py" patch', patch['run'])
         self.assertNotIn('patch_linux', patch['run'])
         self.assertNotIn('./patch', patch['run'])

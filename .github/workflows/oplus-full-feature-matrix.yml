@@ -974,7 +974,7 @@ jobs:
         == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))
       run: |
         python3 tools/apply_kpm_patch.py prepare --cache-dir "$RUNNER_TEMP/oplus-kpm-official" \
-          --github-env "$GITHUB_ENV"
+          --github-env "$GITHUB_ENV" --ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"
     - name: 使用原生 Make 与对应 Clang/Rust 编译内核
       run: |
         python3 tools/oplus_recipe.py --phase build --recipe-root "$GITHUB_WORKSPACE/oplus-reference" \

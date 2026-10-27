@@ -55,6 +55,9 @@ def patched_fixture(before, payload):
     struct.pack_into('<9Q', data, offset + 64 + 8, len(before), len(payload), memory_size,
                      12, offset, start, 128, 64, 0x100)
     data[offset + 64 + 160:offset + 64 + 168] = before[:8]
+    if payload[8:12] == bytes((0, 0, 14, 0)):
+        resized = (start + len(payload) + 128 + 4095) // 4096 * 4096
+        struct.pack_into('<Q', data, 16, resized)
     return bytes(data)
 
 
@@ -101,6 +104,123 @@ class KpmPatchTests(unittest.TestCase):
             self.assertEqual(kpm.prepare(self.cache, env), self.cache)
         download.assert_not_called()
         self.assertEqual(env.read_text(), f'KPM_CACHE_DIR={self.cache}\n')
+        profile = json.loads((self.cache / kpm.PROFILE_MANIFEST).read_text())
+        self.assertEqual(profile, {'schema_version': 1, 'release': self.lock})
+
+    def bridge_fixture(self):
+        # Synthetic bytes exercise profile selection/transport, never bootability.
+        payload = bytearray(self.payload)
+        payload[8:12] = bytes((0, 0, 14, 0))
+        self.payload = bytes(payload)
+        (self.cache / 'kpimg').write_bytes(self.payload)
+        bridge = json.loads(json.dumps(self.lock))
+        bridge['tag'] = '0.14.0'
+        bridge['commit'] = 'd958d2582fe3b7eaaeaf238b3bf9af4507a81174'
+        bridge['assets']['kpimg']['sha256'] = kpm.digest(self.payload)
+        for name, spec in bridge['assets'].items():
+            spec['url'] = f'https://github.com/{kpm.REPOSITORY}/releases/download/0.14.0/{name}'
+        return bridge
+
+    def test_frozen_source_bridge_profile_is_bound_to_cache_and_patch_report(self):
+        bridge = self.bridge_fixture()
+        source = self.directory / 'frozen-sukisu'
+        contract = {'version': '0.14.0', 'flags': 2, 'bridge_abi': 2}
+        with mock.patch.object(kpm, 'resolve_profile', return_value=bridge) as resolve, \
+                mock.patch.object(kpm, 'load_bridge_release', return_value=bridge), \
+                mock.patch.object(kpm, 'validate_bridge_payload', return_value=contract) as validate, \
+                mock.patch.object(kpm, 'download') as download, \
+                mock.patch.object(kpm.subprocess, 'run', side_effect=self.run_tool):
+            kpm.prepare(self.cache, ksu_source=source)
+            resolve.assert_called_once_with(source)
+            report = kpm.patch(self.image, self.cache)
+        download.assert_not_called()
+        self.assertGreaterEqual(validate.call_count, 2)
+        self.assertEqual(report['release'], {key: bridge[key] for key in ('repository', 'tag', 'commit')})
+        self.assertEqual(report['payload']['bridge_abi'], 2)
+        self.assertEqual(report['payload']['version'], '0.14.0')
+        self.assertEqual(report['pre_image_sha256'], kpm.digest(self.before))
+        self.assertEqual(report['post_image_sha256'], kpm.digest(self.image.read_bytes()))
+        self.assertEqual(report['layout']['payload_size'], len(self.payload))
+        self.assertEqual(json.loads((self.cache / kpm.PROFILE_MANIFEST).read_text())['release'], bridge)
+
+    def test_unknown_source_contract_fails_before_cache_changes_or_download(self):
+        with mock.patch.object(kpm, 'resolve_profile', side_effect=ValueError('unsupported KPM ABI')), \
+                mock.patch.object(kpm, 'download') as download, self.assertRaises(ValueError):
+            kpm.prepare(self.cache, ksu_source=self.directory / 'unknown-source')
+        download.assert_not_called()
+        self.assertEqual((self.cache / 'kpimg').read_bytes(), self.payload)
+        self.assertFalse((self.cache / kpm.PROFILE_MANIFEST).exists())
+
+    def test_report_provenance_selects_only_exact_locked_release(self):
+        bridge = self.bridge_fixture()
+        with mock.patch.object(kpm, 'load_bridge_release', return_value=bridge):
+            for release in (self.lock, bridge):
+                provenance = {key: release[key] for key in ('repository', 'tag', 'commit')}
+                self.assertEqual(kpm.release_for_provenance(provenance), release)
+            for bad in (None, {}, {'repository': kpm.REPOSITORY, 'tag': '0.14.0', 'commit': '0' * 40},
+                        {'repository': kpm.REPOSITORY, 'tag': kpm.TAG, 'commit': kpm.COMMIT, 'extra': 1}):
+                with self.subTest(bad=bad), self.assertRaises(ValueError):
+                    kpm.release_for_provenance(bad)
+
+    def test_bridge_assets_without_profile_never_fall_back_to_legacy_contract(self):
+        self.bridge_fixture()
+        with mock.patch.object(kpm.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'size/SHA256'):
+            kpm.patch(self.image, self.cache)
+        run.assert_not_called()
+        self.assertEqual(self.image.read_bytes(), self.before)
+
+    def test_manifest_rejects_unlocked_assets_source_and_duplicate_keys(self):
+        kpm.prepare(self.cache)
+        manifest = self.cache / kpm.PROFILE_MANIFEST
+        good = json.loads(manifest.read_text())
+        for field, value in (('commit', '0' * 40), ('tag', 'latest'), ('repository', 'untrusted/payload')):
+            bad = json.loads(json.dumps(good))
+            bad['release'][field] = value
+            manifest.write_text(json.dumps(bad))
+            with self.subTest(field=field), mock.patch.object(kpm.subprocess, 'run') as run, \
+                    self.assertRaises(ValueError):
+                kpm.patch(self.image, self.cache)
+            run.assert_not_called()
+        for field, value in (('sha256', '0' * 64), ('url', 'https://example.com/kpimg')):
+            bad = json.loads(json.dumps(good))
+            bad['release']['assets']['kpimg'][field] = value
+            manifest.write_text(json.dumps(bad))
+            with self.subTest(field=field), mock.patch.object(kpm.subprocess, 'run') as run, \
+                    self.assertRaises(ValueError):
+                kpm.patch(self.image, self.cache)
+            run.assert_not_called()
+        for nested in ('schema_version', 'size'):
+            bad = json.loads(json.dumps(good))
+            if nested == 'schema_version':
+                bad['release']['schema_version'] = True
+            else:
+                bad['release']['assets']['kpimg']['size'] = float(len(self.payload))
+            manifest.write_text(json.dumps(bad))
+            with self.subTest(invalid_type=nested), self.assertRaises(ValueError):
+                kpm.patch(self.image, self.cache)
+        manifest.write_text('{"schema_version":1,"schema_version":1,"release":' + json.dumps(self.lock) + '}')
+        with mock.patch.object(kpm.subprocess, 'run') as run, self.assertRaisesRegex(ValueError, 'Duplicate'):
+            kpm.patch(self.image, self.cache)
+        run.assert_not_called()
+        self.assertEqual(self.image.read_bytes(), self.before)
+
+    def test_prepare_refuses_to_switch_contract_in_an_existing_cache(self):
+        kpm.prepare(self.cache)
+        bridge = json.loads(json.dumps(self.lock))
+        bridge.update(tag='0.14.0', commit='d958d2582fe3b7eaaeaf238b3bf9af4507a81174')
+        with mock.patch.object(kpm, 'resolve_profile', return_value=bridge), \
+                mock.patch.object(kpm, 'load_bridge_release', return_value=bridge), \
+                mock.patch.object(kpm, 'download') as download, self.assertRaisesRegex(ValueError, 'different'):
+            kpm.prepare(self.cache, ksu_source=self.directory / 'bridge-source')
+        download.assert_not_called()
+        self.assertEqual((self.cache / 'kpimg').read_bytes(), self.payload)
+
+    def test_prepare_cli_passes_frozen_source_for_contract_detection(self):
+        source = self.directory / 'source'
+        with mock.patch.object(kpm, 'prepare') as prepare, contextlib.redirect_stdout(io.StringIO()):
+            status = kpm.main(['prepare', '--cache-dir', str(self.cache), '--ksu-source', str(source)])
+        self.assertEqual(status, 0)
+        prepare.assert_called_once_with(self.cache, None, source)
 
     def test_corrupt_existing_cache_is_rejected_without_download_or_replacement(self):
         cached = self.cache / 'kpimg'
@@ -355,6 +475,69 @@ class KpmPatchTests(unittest.TestCase):
         self.assertEqual(len(windows), 1)
         # Restoring only the header, as before this fix, loses PAC/AUT bytes.
         self.assertNotEqual(kpm.reconstruct_original_image(after, dict(report, original_windows=[])), before)
+
+    def test_bridge_layout_resizes_only_the_exact_official_image_header_field(self):
+        self.bridge_fixture()
+        contract = {'version': '0.14.0', 'flags': 2, 'bridge_abi': 2}
+        after = patched_fixture(self.before, self.payload)
+        with mock.patch.object(kpm, 'validate_bridge_payload', return_value=contract):
+            layout = kpm.verify_patched(self.before, after, self.payload)
+            self.assertEqual(layout['payload_contract'], kpm.BRIDGE_CONTRACT)
+            original_size = struct.unpack_from('<Q', self.before, 16)[0]
+            expected_size = (layout['start_offset'] + len(self.payload) + 128 + 4095) // 4096 * 4096
+            self.assertEqual(struct.unpack_from('<Q', after, 16)[0], expected_size)
+            self.assertGreater(expected_size, original_size)
+            report = {'pre_image_size':len(self.before), 'pre_entry':kpm.image_entry(self.before),
+                      'layout':layout, 'original_windows':[]}
+            self.assertEqual(kpm.reconstruct_original_image(after, report), self.before)
+            for position in (8, 16, 24, 8192 + 64 + 24):
+                bad = bytearray(after)
+                bad[position] ^= 1
+                with self.subTest(position=position), self.assertRaises(ValueError):
+                    kpm.verify_patched(self.before, bytes(bad), self.payload)
+            for position in (16, 8192 + 64 + 24):
+                bad = bytearray(after)
+                bad[position] ^= 1
+                with self.subTest(restoration_position=position), self.assertRaises(ValueError):
+                    kpm.reconstruct_original_image(bytes(bad), report)
+
+    def test_legacy_layout_rejects_new_bridge_resize_behavior(self):
+        after = bytearray(patched_fixture(self.before, self.payload))
+        struct.pack_into('<Q', after, 16, len(after) + 4096)
+        with self.assertRaisesRegex(ValueError, 'size header'):
+            kpm.verify_patched(self.before, bytes(after), self.payload)
+
+    def test_bridge_map_supports_only_its_bounded_8192_byte_official_sync_window(self):
+        self.bridge_fixture()
+        before = bytearray(self.before + bytes(8192))
+        struct.pack_into('<Q', before, 16, len(before))
+        for position in (4096, 12284):
+            struct.pack_into('<I', before, position, 0xd503233f)
+        after = bytearray(patched_fixture(bytes(before), self.payload))
+        offset = 16384
+        struct.pack_into('<QQ', after, offset + 64 + 64, 4096, 0x1000)
+        for position in (4096, 12284):
+            struct.pack_into('<I', after, position, 0xd503201f)
+        contract = {'version': '0.14.0', 'flags': 2, 'bridge_abi': 2}
+        with mock.patch.object(kpm, 'validate_bridge_payload', return_value=contract):
+            layout = kpm.verify_patched(bytes(before), bytes(after), self.payload)
+            windows = kpm.capture_original_windows(bytes(before), bytes(after), layout)
+            self.assertEqual(len(bytes.fromhex(windows[0]['before_hex'])), 8192)
+            report = {'pre_image_size':len(before), 'pre_entry':kpm.image_entry(before),
+                      'layout':layout, 'original_windows':windows}
+            self.assertEqual(kpm.reconstruct_original_image(bytes(after), report), bytes(before))
+            bad = bytearray(after)
+            struct.pack_into('<Q', bad, offset + 64 + 72, 0x1001)
+            with self.assertRaisesRegex(ValueError, 'preset'):
+                kpm.verify_patched(bytes(before), bytes(bad), self.payload)
+            # An otherwise identical old contract cannot claim the larger map.
+            old = dict(layout)
+            old.pop('payload_contract')
+            with self.assertRaisesRegex(ValueError, 'bounded map'):
+                kpm.reconstruct_original_image(bytes(after), dict(report, layout=old))
+            unknown = dict(layout, payload_contract='arbitrary-next-version')
+            with self.assertRaisesRegex(ValueError, 'unknown payload'):
+                kpm.reconstruct_original_image(bytes(after), dict(report, layout=unknown))
 
     def test_original_pi_map_transformation_is_bound_to_the_official_pattern_and_kernel(self):
         before = bytearray(self.before)

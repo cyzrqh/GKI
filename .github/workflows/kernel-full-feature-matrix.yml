@@ -6127,7 +6127,8 @@ jobs:
         == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       run: |
         python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \
-          --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV"
+          --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \
+          --ksu-source "$KERNEL_ROOT/KernelSU"
     - name: 编译内核
       id: compile-kernel
       uses: nick-fields/retry@v4

@@ -17,6 +17,7 @@ import urllib.parse
 import urllib.request
 
 from validate_arm64_image import MAX_IMAGE_SIZE, validate_image
+from kpm_payload_profiles import KPMProfileError, load_bridge_release, resolve_profile, validate_bridge_payload
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,6 +27,8 @@ COMMIT = '72bf62025e9c72e07b64c77db0801891f1088429'
 TAG = '0.13.9'
 PAGE = 4096
 EXTRA_SIZE = 128
+PROFILE_MANIFEST = 'kpm-profile.json'
+BRIDGE_CONTRACT = 'truncate-bridge-v2'
 PI_MAP_BEFORE = bytes.fromhex('E60316AAE7031F2A3411889A')
 PI_MAP_AFTER = bytes.fromhex('E60316AAE7031F2AF40309AA')
 
@@ -48,7 +51,7 @@ def checked(stage: str, function, *args, **kwargs):
         return function(*args, **kwargs)
     except KPMError:
         raise
-    except KPMValidationError as error:
+    except (KPMValidationError, KPMProfileError) as error:
         raise KPMError(stage, str(error)) from None
     except OSError:
         raise KPMError(stage, 'File or network operation failed') from None
@@ -216,13 +219,101 @@ def _verified(data: bytes, name: str, release: dict) -> bytes:
     expected = release['assets'][name]
     if len(data) != expected['size'] or digest(data) != expected['sha256']:
         raise KPMValidationError(f'Fixed official KPM asset failed size/SHA256 verification: {name}')
-    (validate_payload if name == 'kpimg' else validate_tool)(data)
+    if name == 'kpimg':
+        payload_metadata(data, release)
+    else:
+        validate_tool(data)
     return data
 
 
-def prepare(cache_dir: Path, github_env: Path | None = None) -> Path:
-    release = load_release()
+def payload_metadata(data: bytes, release: dict) -> dict:
+    if release['tag'] == TAG:
+        return validate_payload(data)
+    if release['tag'] == '0.14.0':
+        return validate_bridge_payload(data)
+    raise KPMValidationError('Unsupported fixed official KPM payload contract')
+
+
+def _allowed_release(release: dict, legacy: dict | None = None) -> dict:
+    if (not isinstance(release, dict) or type(release.get('schema_version')) is not int
+            or not isinstance(release.get('assets'), dict)
+            or any(not isinstance(item, dict) or type(item.get('size')) is not int
+                   for item in release['assets'].values())):
+        raise KPMValidationError('Invalid typed KPM profile release lock')
+    legacy = load_release() if legacy is None else legacy
+    if release == legacy:
+        return legacy
+    bridge = load_bridge_release()
+    if release == bridge:
+        return bridge
+    raise KPMValidationError('KPM profile does not match a fixed official release lock')
+
+
+def release_for_provenance(provenance: dict) -> dict:
+    fields = {'repository', 'tag', 'commit'}
+    if not isinstance(provenance, dict) or set(provenance) != fields:
+        raise KPMValidationError('Invalid fixed official KPM release provenance')
+    legacy = load_release()
+    if provenance == {key: legacy[key] for key in fields}:
+        return legacy
+    bridge = load_bridge_release()
+    if provenance == {key: bridge[key] for key in fields}:
+        return bridge
+    raise KPMValidationError('KPM provenance does not match a fixed official release lock')
+
+
+def _profile_document(raw: bytes) -> dict:
+    def unique_pairs(pairs):
+        result = {}
+        for key, value in pairs:
+            if key in result:
+                raise KPMValidationError('Duplicate KPM profile manifest field')
+            result[key] = value
+        return result
+    document = json.loads(raw, object_pairs_hook=unique_pairs)
+    if (not isinstance(document, dict) or set(document) != {'schema_version', 'release'}
+            or type(document['schema_version']) is not int or document['schema_version'] != 1
+            or not isinstance(document['release'], dict)):
+        raise KPMValidationError('Invalid KPM profile manifest')
+    return document
+
+
+def cached_release(cache_dir: Path) -> dict:
+    # An old cache without a manifest is accepted only against the legacy lock;
+    # bridge assets never select themselves by their filename or version bytes.
+    legacy = load_release()
+    manifest = Path(cache_dir) / PROFILE_MANIFEST
+    if not manifest.exists() and not manifest.is_symlink():
+        return legacy
+    return _allowed_release(_profile_document(_read_regular(manifest, 16384))['release'], legacy)
+
+
+def _save_profile(cache: Path, release: dict) -> None:
+    manifest = cache / PROFILE_MANIFEST
+    document = {'schema_version': 1, 'release': release}
+    if manifest.exists() or manifest.is_symlink():
+        if _profile_document(_read_regular(manifest, 16384)) != document:
+            raise KPMValidationError('KPM cache belongs to a different fixed payload contract')
+        return
+    temporary = cache / ('.kpm-profile-' + os.urandom(8).hex())
+    try:
+        with temporary.open('xb') as stream:
+            stream.write((json.dumps(document, sort_keys=True) + '\n').encode())
+        try:
+            os.link(temporary, manifest)
+        except FileExistsError:
+            if _profile_document(_read_regular(manifest, 16384)) != document:
+                raise KPMValidationError('KPM profile changed while preparing assets') from None
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def prepare(cache_dir: Path, github_env: Path | None = None, ksu_source: Path | None = None) -> Path:
+    release = load_release() if ksu_source is None else _allowed_release(resolve_profile(ksu_source))
     cache = _directory(cache_dir)
+    manifest = cache / PROFILE_MANIFEST
+    if (manifest.exists() or manifest.is_symlink()) and cached_release(cache) != release:
+        raise KPMValidationError('KPM cache belongs to a different fixed payload contract')
     for name, spec in release['assets'].items():
         destination = cache / name
         if destination.exists() or destination.is_symlink():
@@ -239,6 +330,7 @@ def prepare(cache_dir: Path, github_env: Path | None = None) -> Path:
                 temporary.unlink(missing_ok=True)
         if name == 'kptools-linux':
             destination.chmod(destination.stat().st_mode | stat.S_IXUSR)
+    _save_profile(cache, release)
     if github_env is not None:
         if '\n' in str(cache) or '\r' in str(cache):
             raise KPMValidationError('Invalid KPM cache path for GitHub environment')
@@ -249,6 +341,8 @@ def prepare(cache_dir: Path, github_env: Path | None = None) -> Path:
 
 def verify_patched(before: bytes, after: bytes, payload: bytes) -> dict:
     original, patched = image_entry(before), image_entry(after)
+    bridge = payload[8:12] == bytes((0, 0, 14, 0))
+    (validate_bridge_payload if bridge else validate_payload)(payload)
     offset = (len(before) + PAGE - 1) // PAGE * PAGE
     end = offset + len(payload)
     if len(after) != end + EXTRA_SIZE:
@@ -258,32 +352,45 @@ def verify_patched(before: bytes, after: bytes, payload: bytes) -> dict:
             or after[len(before):offset] != bytes(offset - len(before))
             or after[end:] != bytes(EXTRA_SIZE)):
         raise KPMValidationError('The complete fixed KPM payload was not embedded intact')
-    if patched['branch_target'] != offset + PAGE or after[8:64] != before[8:64]:
+    if (patched['branch_target'] != offset + PAGE or after[8:16] != before[8:16]
+            or after[24:64] != before[24:64]):
         raise KPMValidationError('Patched KPM entry/header does not match its real payload')
     setup = offset + 64
     (kimg_size, kpimg_size, kernel_size, page_shift, setup_offset,
      start_offset, extra_size, map_offset, map_max_size) = struct.unpack_from('<9Q', after, setup + 8)
     expected_start = (max(original['image_size'], len(after)) + PAGE - 1) // PAGE * PAGE
+    expected_image_size = ((expected_start + len(payload) + EXTRA_SIZE + PAGE - 1) // PAGE * PAGE
+                           if bridge else original['image_size'])
+    if patched['image_size'] != expected_image_size:
+        raise KPMValidationError('Patched KPM Image size header differs from its exact official payload contract')
     if (kimg_size != len(before) or kpimg_size != len(payload) or kernel_size != original['image_size']
             or setup_offset != offset or start_offset != expected_start or extra_size != EXTRA_SIZE
-            or page_shift not in (12, 14, 16) or map_offset % 16 or not 0 < map_max_size <= 0xa00
+            or page_shift not in (12, 14, 16) or map_offset % 16
+            or not 0 < map_max_size <= (0x1000 if bridge else 0xa00)
             # Official symbol.c requires a page in the original file after
             # the usable anchor; floor-aligning that anchor cannot reduce it.
             # patch.c clamps its optional doubled sync window at EOF.
             or map_offset < 64 or map_offset + PAGE > len(before)
             or after[setup + 160:setup + 168] != before[:8]):
         raise KPMValidationError('Patched KPM preset does not describe the original Image and valid layout')
-    return {'payload_offset': offset, 'payload_size': kpimg_size, 'extra_offset': end,
-            'extra_size': extra_size, 'start_offset': start_offset,
-            'map_offset': map_offset, 'map_max_size': map_max_size}
+    layout = {'payload_offset': offset, 'payload_size': kpimg_size, 'extra_offset': end,
+              'extra_size': extra_size, 'start_offset': start_offset,
+              'map_offset': map_offset, 'map_max_size': map_max_size}
+    if bridge:
+        layout['payload_contract'] = BRIDGE_CONTRACT
+    return layout
 
 
 def _original_map_extent(size: int, layout: dict) -> tuple[int, int]:
     if not isinstance(layout, dict):
         raise KPMValidationError('KPM report has no verified map layout')
+    contract = layout.get('payload_contract')
+    if contract not in (None, BRIDGE_CONTRACT):
+        raise KPMValidationError('KPM report has an unknown payload layout contract')
     offset, maximum = layout.get('map_offset'), layout.get('map_max_size')
     if (type(offset) is not int or type(maximum) is not int or offset < 64 or offset % 16
-            or not 0 < maximum <= 0xa00 or offset + PAGE > size):
+            or not 0 < maximum <= (0x1000 if contract == BRIDGE_CONTRACT else 0xa00)
+            or offset + PAGE > size):
         raise KPMValidationError('KPM report has an invalid bounded map window')
     return offset, min(2 * maximum, size - offset)
 
@@ -333,11 +440,39 @@ def reconstruct_original_image(image: bytes, report: dict) -> bytes:
         struct.pack_into('<II', before, 0, entry['code0'], entry['code1'])
     except (KeyError, TypeError, struct.error):
         raise KPMValidationError('KPM report has an invalid original ARM64 entry') from None
+    layout = report['layout']
+    bridge = layout.get('payload_contract') == BRIDGE_CONTRACT
+    if bridge:
+        # d958 kptools enlarges only image_size in the native ARM64 header.
+        # Bind its restoration to the real immutable preset and exact formula;
+        # callers still verify the complete restored Image SHA256 afterwards.
+        offset, payload_size = layout.get('payload_offset'), layout.get('payload_size')
+        original_size = entry.get('image_size')
+        if (type(offset) is not int or offset != (size + PAGE - 1) // PAGE * PAGE
+                or type(payload_size) is not int or payload_size < PAGE + 4
+                or offset + payload_size + EXTRA_SIZE != len(image)
+                or type(original_size) is not int or original_size <= 0
+                or image[offset:offset + 12] != MAGIC + bytes((0, 0, 14, 0))):
+            raise KPMValidationError('KPM bridge report has an invalid original Image size contract')
+        preset = struct.unpack_from('<9Q', image, offset + 64 + 8)
+        expected_start = (max(original_size, len(image)) + PAGE - 1) // PAGE * PAGE
+        expected_size = (expected_start + payload_size + EXTRA_SIZE + PAGE - 1) // PAGE * PAGE
+        if (preset[:3] != (size, payload_size, original_size)
+                or preset[4:7] != (offset, expected_start, EXTRA_SIZE)
+                or preset[7:] != (layout['map_offset'], layout['map_max_size'])
+                or layout.get('start_offset') != expected_start
+                or layout.get('extra_offset') != offset + payload_size
+                or layout.get('extra_size') != EXTRA_SIZE
+                or image_entry(image)['image_size'] != expected_size
+                or image[offset + 64 + 160:offset + 64 + 168] != before[:8]):
+            raise KPMValidationError('KPM bridge size restoration differs from the actual verified preset')
+        struct.pack_into('<Q', before, 16, original_size)
     previous_end, seen = 64, set()
     for window in windows:
         if (not isinstance(window, dict) or set(window) != {'offset', 'before_hex'}
                 or type(window['offset']) is not int or not isinstance(window['before_hex'], str)
-                or not re.fullmatch(r'(?:[0-9a-f]{2}){1,5120}', window['before_hex'])):
+                or not re.fullmatch(r'(?:[0-9a-f]{2}){1,' + ('8192' if bridge else '5120') + '}',
+                                    window['before_hex'])):
             raise KPMValidationError('Invalid original KPM byte window')
         start = window['offset']
         original = bytes.fromhex(window['before_hex'])
@@ -367,7 +502,7 @@ def reconstruct_original_image(image: bytes, report: dict) -> bytes:
 
 
 def patch(image: Path, cache_dir: Path, report: Path | None = None) -> dict:
-    release = checked('release-lock', load_release)
+    release = checked('release-lock', cached_release, cache_dir)
     # Bazel exposes its real build outputs through bazel-bin symlinks. Resolve
     # once, then validate and atomically replace that real output, never the link.
     image = checked('read-image', Path(image).resolve, strict=True)
@@ -416,7 +551,7 @@ def patch(image: Path, cache_dir: Path, report: Path | None = None) -> dict:
                   'release': {key: release[key] for key in ('repository', 'tag', 'commit')},
                   'tool': {key: release['assets']['kptools-linux'][key] for key in ('size', 'sha256')},
                   'payload': {**{key: release['assets']['kpimg'][key] for key in ('size', 'sha256')},
-                              **validate_payload(assets['kpimg'])},
+                              **payload_metadata(assets['kpimg'], release)},
                   'pre_entry': pre_entry, 'post_entry': checked('output-entry', image_entry, after), 'layout': layout,
                   'original_windows': checked('verify-original-kernel', capture_original_windows, before, after, layout)}
         report_bytes = (json.dumps(result, indent=2, sort_keys=True) + '\n').encode()
@@ -453,6 +588,7 @@ def main(argv: list[str] | None = None) -> int:
     ready = sub.add_parser('prepare')
     ready.add_argument('--cache-dir', required=True, type=Path)
     ready.add_argument('--github-env', type=Path)
+    ready.add_argument('--ksu-source', type=Path)
     apply = sub.add_parser('patch')
     apply.add_argument('--image', required=True, type=Path)
     apply.add_argument('--cache-dir', required=True, type=Path)
@@ -460,7 +596,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     try:
         if args.command == 'prepare':
-            checked('prepare-assets', prepare, args.cache_dir, args.github_env)
+            checked('prepare-assets', prepare, args.cache_dir, args.github_env, args.ksu_source)
             print('Verified fixed official KPM tool and Android ARM64 payload are ready.')
         else:
             result = checked('patch-setup', patch, args.image, args.cache_dir, args.report)

@@ -488,12 +488,23 @@ class OplusAssetsTests(unittest.TestCase):
             with self.subTest(variant=value), self.assertRaises(ValueError):
                 assets.variants_list(value)
 
-    def prepare_kpm(self, *, pac=False):
-        payload, tool = payload_fixture(), tool_fixture()
-        lock = {'schema_version': 1, 'repository': assets.kpm.REPOSITORY, 'tag': assets.kpm.TAG,
-                'commit': assets.kpm.COMMIT, 'assets': {}}
-        for name, value in [('kpimg', payload), ('kptools-linux', tool)]:
-            lock['assets'][name] = {'size': len(value), 'sha256': assets.digest(value)}
+    def prepare_kpm(self, *, pac=False, bridge=False):
+        if bridge:
+            artifact = ROOT.parent / '.gki-upstream-cache/kpm-bridge2-d958-build-artifacts.zip'
+            if not artifact.is_file():
+                self.skipTest('Optional audited official ABI-2 assets are not cached')
+            self.assertEqual(assets.digest(artifact.read_bytes()),
+                             'b570fedae955f8bbb5f891dd5328220f31763a5ea41d82fdafef89cd9dc81db9')
+            with zipfile.ZipFile(artifact) as archive:
+                payload = archive.read('kernel/kpimg')
+                tool = archive.read('patch/res/kptools-linux')
+            lock = assets.kpm.load_bridge_release()
+        else:
+            payload, tool = payload_fixture(), tool_fixture()
+            lock = {'schema_version': 1, 'repository': assets.kpm.REPOSITORY, 'tag': assets.kpm.TAG,
+                    'commit': assets.kpm.COMMIT, 'assets': {}}
+            for name, value in [('kpimg', payload), ('kptools-linux', tool)]:
+                lock['assets'][name] = {'size': len(value), 'sha256': assets.digest(value)}
         cache = self.directory / 'kpm-cache'
         cache.mkdir()
         cache.joinpath('kpimg').write_bytes(payload)
@@ -510,8 +521,9 @@ class OplusAssetsTests(unittest.TestCase):
         after = bytes(after)
         self.image.write_bytes(after)
         report = {'schema_version': 1, 'release': {key: lock[key] for key in ('repository', 'tag', 'commit')},
-                  'tool': dict(lock['assets']['kptools-linux']),
-                  'payload': dict(lock['assets']['kpimg']) | assets.kpm.validate_payload(payload),
+                  'tool': {key: lock['assets']['kptools-linux'][key] for key in ('size', 'sha256')},
+                  'payload': {key: lock['assets']['kpimg'][key] for key in ('size', 'sha256')}
+                             | assets.kpm.payload_metadata(payload, lock),
                   'pre_image_sha256': assets.digest(before), 'pre_image_size': len(before),
                   'post_image_sha256': assets.digest(after), 'post_image_size': len(after),
                   'pre_entry': validate_image(before), 'post_entry': validate_image(after),
@@ -519,10 +531,27 @@ class OplusAssetsTests(unittest.TestCase):
         report['original_windows'] = assets.kpm.capture_original_windows(before, after, report['layout'])
         report_path = self.workspace / 'common/out/gki-kpm-patch.json'
         report_path.write_text(json.dumps(report))
-        patch = mock.patch.object(assets.kpm, 'load_release', return_value=lock)
-        patch.start()
-        self.addCleanup(patch.stop)
+        if not bridge:
+            patch = mock.patch.object(assets.kpm, 'load_release', return_value=lock)
+            patch.start()
+            self.addCleanup(patch.stop)
         return report_path, report, payload, cache
+
+    def test_real_abi2_payload_is_verified_through_package_and_collect_when_cached(self):
+        _, report, payload, _ = self.prepare_kpm(bridge=True)
+        self.assertEqual(report['release']['tag'], '0.14.0')
+        self.assertEqual(report['payload']['bridge_abi'], 2)
+        path = self.pack()
+        metadata = assets.read_kernel(path)
+        self.assertEqual(metadata['kpm_patch'], report)
+        self.assertTrue(metadata['features']['kpm'])
+        self.assertEqual(self.gather()['count'], 1)
+        with zipfile.ZipFile(path) as archive:
+            self.assertEqual(archive.read(assets.PAYLOAD_MEMBER), payload)
+        corrupted = copy.deepcopy(report)
+        corrupted['payload']['bridge_abi'] = 1
+        with self.assertRaisesRegex(ValueError, 'payload'):
+            assets.verify_kpm(self.image.read_bytes(), corrupted, payload)
 
     def test_external_kpm_payload_is_proved_and_embedded_without_fake_native_config(self):
         _, _, payload, _ = self.prepare_kpm()

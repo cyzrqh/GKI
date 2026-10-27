@@ -203,13 +203,19 @@ flash_boot;
 
 
 def verify_kpm(image: bytes, report: dict, payload: bytes) -> None:
-    release = kpm.load_release()
+    if not isinstance(report, dict):
+        raise AssetError('KPM report must identify its fixed verified official release')
+    try:
+        release = kpm.release_for_provenance(report.get('release'))
+        payload_info = kpm.payload_metadata(payload, release)
+    except ValueError as error:
+        raise AssetError(str(error)) from None
     lock = release['assets']['kpimg']
     if (len(payload) != lock['size'] or digest(payload) != lock['sha256']
             or not isinstance(report, dict) or report.get('schema_version') != 1
             or report.get('release') != {key: release[key] for key in ('repository', 'tag', 'commit')}
             or report.get('tool') != {key: release['assets']['kptools-linux'][key] for key in ('size', 'sha256')}
-            or report.get('payload') != {key: lock[key] for key in ('size', 'sha256')} | kpm.validate_payload(payload)
+            or report.get('payload') != {key: lock[key] for key in ('size', 'sha256')} | payload_info
             or report.get('post_image_sha256') != digest(image) or report.get('post_image_size') != len(image)
             or report.get('post_entry') != validate_image(image)):
         raise AssetError('KPM Image/report/payload differs from the fixed verified official release')

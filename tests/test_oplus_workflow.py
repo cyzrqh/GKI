@@ -159,6 +159,8 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertIn('common/out/gki-kpm-patch.json', kpm['run'])
         self.assertEqual(kpm['if'], workflow.KPM_IF)
         self.assertEqual(worker['steps'][locate('apply_kpm_patch.py prepare')]['if'], workflow.KPM_IF)
+        self.assertIn('--ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"',
+                      worker['steps'][locate('apply_kpm_patch.py prepare')]['run'])
         self.assertIn("inputs.kernelsu_variant == 'SukiSU'", workflow.KPM_IF)
         self.assertIn("effective_ksu_branch == 'Stable(标准)'", workflow.KPM_IF)
         self.assertIn("effective_ksu_branch == 'Custom(自定义)'", workflow.KPM_IF)

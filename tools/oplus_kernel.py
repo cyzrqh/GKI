@@ -117,29 +117,39 @@ def patch_checked(common: Path, patch: Path):
     if patch.is_symlink() or not patch.is_file() or not 0 < patch.stat().st_size <= 16 * 1024 * 1024:
         raise ValueError('The selected compatibility patch is missing or invalid')
     data = patch.read_bytes()
-    strict_file = None
+    strict_files = ()
     if patch.name == '50_add_susfs_in_gki-android14-6.1.patch':
         from oplus_susfs_headers import adapt_namespace_header
         data = adapt_namespace_header(common, data)
-        strict_file = 'fs/namespace.c'
+        strict_files = ('fs/namespace.c',)
+    elif patch.name == '50_add_susfs_in_gki-android15-6.6.patch':
+        from oplus_susfs66 import adapt_susfs66
+        data = adapt_susfs66(common, data)
+        strict_files = ('fs/namespace.c', 'fs/proc/task_mmu.c')
     elif patch.name == '50_add_susfs_in_gki-android16-6.12.patch':
         from oplus_compat import adapt_susfs_patch
         data = adapt_susfs_patch(common, data)
-        strict_file = 'fs/proc/task_mmu.c'
+        strict_files = ('fs/proc/task_mmu.c',)
     # Never edit the immutable official SUSFS checkout. Known vendor context
     # adaptations keep all added code, and the complete resulting patch must
     # pass forward and reverse checks rather than ignoring rejected hunks.
     with temporary_directory(common.parent, '.oplus-patch-') as temporary:
         pieces = [(data, False)]
-        if strict_file is not None:
+        if strict_files:
             # Preserve the exact vendor function/header port independently of
             # unrelated include-context differences in the other official files.
-            pattern = rb'(?ms)^diff --git a/' + re.escape(strict_file.encode()) + rb' b/' + re.escape(strict_file.encode()) + rb'\n.*?(?=^diff --git |\Z)'
-            matches = list(re.finditer(pattern, data))
-            if len(matches) != 1:
-                raise ValueError('The adapted official SUSFS file must have exactly one complete patch section')
-            selected = matches[0]
-            pieces = [(selected[0], True), (data[:selected.start()] + data[selected.end():], False)]
+            pieces = []
+            remaining = data
+            for strict_file in strict_files:
+                pattern = rb'(?ms)^diff --git a/' + re.escape(strict_file.encode()) + rb' b/' + re.escape(strict_file.encode()) + rb'\n.*?(?=^diff --git |\Z)'
+                matches = list(re.finditer(pattern, remaining))
+                if len(matches) != 1:
+                    raise ValueError('The adapted official SUSFS file must have exactly one complete patch section')
+                selected = matches[0]
+                pieces.append((selected[0], True))
+                remaining = remaining[:selected.start()] + remaining[selected.end():]
+            if remaining.strip():
+                pieces.append((remaining, False))
         commands = []
         for index, (content, strict) in enumerate(pieces):
             prepared = temporary / (str(index) + '-' + patch.name)
@@ -224,10 +234,15 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
               identity['package'], os.environ['MANAGER_VERSION_CODE'])
     command([sys.executable, ROOT / '.github/scripts/ensure-ksu-compat.py', root])
     defconfig = root / 'common/arch/arm64/configs/gki_defconfig'
+    enable_kpm = bool_value(inputs['use_kpm']) and (
+        variant == 'SukiSU' or inputs['kernelsu_branch'] == '正式版')
     values = {'CONFIG_KSU': 'y', 'CONFIG_IKCONFIG': 'y', 'CONFIG_IKCONFIG_PROC': 'y',
-              'CONFIG_KPROBES': 'y', 'CONFIG_HEADERS_INSTALL': 'y', 'CONFIG_KPM': 'n'}
+              'CONFIG_KPROBES': 'y', 'CONFIG_HEADERS_INSTALL': 'y',
+              'CONFIG_KPM': 'y' if enable_kpm else 'n'}
     susfs = bool_value(inputs['enable_susfs'])
     kconfig = (root / 'KernelSU/kernel/Kconfig').read_text(encoding='utf-8')
+    if enable_kpm and not re.search(r'(?m)^config KPM\s*$', kconfig):
+        raise ValueError('Selected manager source does not expose its required native KPM bridge configuration')
     values['CONFIG_KSU_SUSFS'] = 'y' if susfs else 'n'
     if variant == 'BakaSU':
         values['CONFIG_KSU_MULTI_MANAGER_SUPPORT'] = 'y'
@@ -241,6 +256,24 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
     elif not susfs and re.search(r'(?m)^config KSU_KPROBES_HOOK\s*$', kconfig):
         values['CONFIG_KSU_KPROBES_HOOK'] = 'y'
     config_values(defconfig, values)
+    if profile['kernel_version'] == '6.12' and variant == 'SukiSU':
+        from oplus_ksu_compat import prepare_builtin_includes, prepare_kpm_members
+        prepare_builtin_includes(root, reference)
+        if enable_kpm:
+            prepare_kpm_members(root, reference)
+    if profile['kernel_version'] == '6.1':
+        from oplus_vendor_sources import restore_vendor_sources
+        from oplus_compat import prepare_vendor_dependencies
+        if provenance := restore_vendor_sources(root / 'common', profile):
+            output = root / 'common/out'
+            if output.is_symlink() or output.exists() and not output.is_dir():
+                raise ValueError('Vendor-source provenance requires an independent output directory')
+            output.mkdir(exist_ok=True)
+            report = output / 'gki-oplus-vendor-sources.json'
+            if report.is_symlink():
+                raise ValueError('Vendor-source provenance must be an independent regular report')
+            report.write_text(json.dumps(provenance, sort_keys=True) + '\n', encoding='utf-8')
+        prepare_vendor_dependencies(root / 'common')
     if bool_value(inputs['use_unicode_bypass']):
         if patches is None or patches.is_symlink():
             raise ValueError('Unicode compatibility requires its fixed reference patch checkout')

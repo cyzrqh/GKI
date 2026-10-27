@@ -52,6 +52,14 @@ class CatalogError(ValueError):
     """A source cannot be proven to match its reviewed build recipe."""
 
 
+def platform_family(platform: str) -> str:
+    """Public platform label; the exact SoC stays in internal source guards."""
+    supported = {repository.rsplit('_', 1)[-1] for repository in OFFICIAL_REPOSITORIES}
+    if not isinstance(platform, str) or platform not in supported:
+        raise CatalogError('Unsupported reviewed OPlus platform')
+    return '骁龙' if platform.startswith('sm') else '天玑'
+
+
 def unique_object(items):
     document = {}
     for key, value in items:
@@ -80,7 +88,7 @@ def load_profiles(root: Path = ROOT) -> list[dict]:
             or type(document['schema_version']) is not int or document['schema_version'] != 1
             or not isinstance(document['profiles'], list) or not 1 <= len(document['profiles']) <= 128):
         raise CatalogError('Unsupported reviewed OPlus source catalog schema')
-    profiles, ids = [], set()
+    profiles, ids, families = [], set(), set()
     for item in document['profiles']:
         if (not isinstance(item, dict) or set(item) != FIELDS
                 or any(not isinstance(item[key], str) for key in FIELDS)):
@@ -113,9 +121,13 @@ def load_profiles(root: Path = ROOT) -> list[dict]:
             if (not 1 <= len(item[field]) <= maximum
                     or any(ord(char) < 32 or ord(char) == 127 for char in item[field])):
                 raise CatalogError('Invalid OPlus system or compatibility description')
+        family_version = platform_family(item['platform']), item['kernel']
+        if family_version in families:
+            raise CatalogError('Reviewed OPlus catalog duplicates a platform-family kernel version')
+        families.add(family_version)
         ids.add(item['id'])
         profiles.append(dict(item))
-    return profiles
+    return sorted(profiles, key=order)
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -243,7 +255,8 @@ def resolve_profile(profile: dict, reader) -> dict:
 
 
 def order(row: dict):
-    return tuple(map(int, row['kernel'].split('.'))), row['platform'], row['id']
+    family = platform_family(row['platform'])
+    return tuple(map(int, row['kernel'].split('.'))), {'骁龙': 0, '天玑': 1}[family], row['id']
 
 
 def discover_matrix(root: Path = ROOT, reader=None) -> dict:
@@ -252,12 +265,10 @@ def discover_matrix(root: Path = ROOT, reader=None) -> dict:
     selected = {}
     for profile in profiles:
         row = resolve_profile(profile, reader)
-        key = row['platform'], row['kernel']
-        previous = selected.get(key)
-        if previous is None or (datetime.fromisoformat(row['source_committed_at'].replace('Z', '+00:00')),
-                                row['kernel_ref']) > (datetime.fromisoformat(previous['source_committed_at'].replace('Z', '+00:00')),
-                                                     previous['kernel_ref']):
-            selected[key] = row
+        key = platform_family(row['platform']), row['kernel']
+        if key in selected:
+            raise CatalogError('Resolved OPlus matrix duplicates a platform-family kernel version')
+        selected[key] = row
     return {'include': sorted(selected.values(), key=order)}
 
 
@@ -282,7 +293,7 @@ def main(argv=None) -> int:
                 summary.write('官方分支已升级时，本版本使用已审核的官方历史提交；不会把新版内核冒充旧版本。\n\n')
                 summary.write('| 平台 | 内核 | 官方源码 | 适用系统依据 |\n|---|---|---|---|\n')
                 for row in matrix['include']:
-                    platform = ('天玑 ' if row['platform'].startswith('mt') else '骁龙 ') + row['platform']
+                    platform = platform_family(row['platform'])
                     summary.write('| ' + platform + ' | ' + row['kernel'] + ' | '
                                   + row['kernel_repo'] + ' @ `' + row['kernel_ref'][:12] + '` | '
                                   + row['system'].replace('|', '\\|') + ' |\n')

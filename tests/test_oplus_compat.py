@@ -118,6 +118,131 @@ class OplusCompatibilityTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             compat.prepare_rust_bitcode(self.common)
 
+    def rust_driver_fixture(self):
+        return ('cmd_cc_o_c = $(CC) $(KBUILD_CFLAGS) -Werror -c $< -o $@\n\n'
+                'quiet_cmd_rustc_o_rs = RUSTC $@\n'
+                '      cmd_rustc_o_rs = $(rust_common_cmd) --emit=llvm-bc $< \\\n'
+                '\t$(if $(CONFIG_RUST_INLINE_HELPERS),;$(LLVM_LINK) --internalize --suppress-warnings '
+                '$(patsubst %.o,%.bc,$@) $(objtree)/rust/helpers/helpers.bc '
+                '-o $(patsubst %.o,%.m.bc,$@); \\\n'
+                + compat.BITCODE_COMMAND + ' \\\n\t$(cmd_objtool)\n\n'
+                'define rule_rustc_o_rs\n\t$(call cmd_and_fixdep,rustc_o_rs)\nendef\n')
+
+    def test_rust_driver_bitcode_conversion_is_fixed_without_touching_native_c_flags(self):
+        source = self.rust_driver_fixture()
+        path = self.write('scripts/Makefile.build', source)
+        self.write('rust/Makefile', 'native_rust_library_without_inline_helpers = unchanged\n')
+        self.assertTrue(compat.prepare_rust_bitcode(self.common))
+        self.assertFalse(compat.prepare_rust_bitcode(self.common))
+        self.assertEqual(path.read_text(), source.replace(compat.BITCODE_COMMAND, compat.BITCODE_FIXED))
+        self.assertIn('cmd_cc_o_c = $(CC) $(KBUILD_CFLAGS) -Werror -c $< -o $@', path.read_text())
+        self.assertIn('$(LLVM_LINK) --internalize --suppress-warnings', path.read_text())
+
+    def test_rust_command_validation_is_transactional_across_library_and_driver_rules(self):
+        library = 'cmd_rustc_library = $(if $(link_helper),llvm-link helpers.bc;) \\\n' + compat.BITCODE_COMMAND + '\n'
+        self.write('rust/Makefile', library)
+        unknown = self.rust_driver_fixture().replace('cmd_rustc_o_rs =', 'cmd_unreviewed_rust =')
+        self.write('scripts/Makefile.build', unknown)
+        with self.assertRaisesRegex(ValueError, 'Rust driver'):
+            compat.prepare_rust_bitcode(self.common)
+        self.assertEqual((self.common / 'rust/Makefile').read_text(), library)
+        self.assertEqual((self.common / 'scripts/Makefile.build').read_text(), unknown)
+
+    def vendor_fixture(self, config='CONFIG_64BIT=y\n'):
+        self.write('Makefile', 'VERSION = 6\nPATCHLEVEL = 1\nSUBLEVEL = 141\n')
+        self.write('arch/arm64/configs/gki_defconfig', config)
+        sources = {
+            'drivers/soc/Kconfig': 'menu "SOC drivers"\nsource "drivers/soc/qcom/Kconfig"\n'
+                'source "drivers/soc/oplus/oplus_resctrl/Kconfig"\n'
+                'source "drivers/soc/oplus/storage/Kconfig"\nendmenu\n',
+            'drivers/soc/Makefile': 'obj-y += qcom/\nobj-y += oplus/oplus_resctrl/\n'
+                'obj-y\t\t\t\t+= oplus/storage/\n',
+            'init/Kconfig': 'source "kernel/Kconfig.hz"\nsource "kernel/oplus_cpu/sched/Kconfig"\n',
+            'kernel/Makefile': 'obj-y += fork.o\n#ifdef CONFIG_OPLUS_SCHED_TUNE\n'
+                'obj-$(CONFIG_OPLUS_SCHED_TUNE) += oplus_cpu/sched/sched_tune/\n'
+                '#endif /* CONFIG_OPLUS_SCHED_TUNE */\n',
+        }
+        for relative, text in sources.items():
+            self.write(relative, text)
+        return sources
+
+    def test_only_absent_unselected_vendor_extensions_have_paired_references_removed(self):
+        sources = self.vendor_fixture()
+        config = (self.common / 'arch/arm64/configs/gki_defconfig').read_bytes()
+        self.assertTrue(compat.prepare_vendor_dependencies(self.common))
+        self.assertFalse(compat.prepare_vendor_dependencies(self.common))
+        for relative, text in sources.items():
+            result = (self.common / relative).read_text()
+            expected = ''.join(line for line in text.splitlines(keepends=True)
+                               if not line.startswith('source "drivers/soc/oplus/')
+                               and not line.startswith('source "kernel/oplus_cpu/')
+                               and '+= oplus/' not in line and '+= oplus_cpu/' not in line)
+            self.assertEqual(result, expected)
+        self.assertEqual((self.common / 'arch/arm64/configs/gki_defconfig').read_bytes(), config)
+        self.assertFalse((self.common / 'drivers/soc/oplus/storage/Kconfig').exists())
+
+    def test_selected_vendor_feature_is_never_disabled_and_no_partial_patch_is_applied(self):
+        for selected in ('CONFIG_OPLUS_SCHED_TUNE=y\n', 'CONFIG_OPLUS_RESCTRL=m\n',
+                         'CONFIG_OPLUS_FEATURE_STORAGE_IO_METRICS=y\n'):
+            sources = self.vendor_fixture(selected)
+            with self.subTest(selected=selected), self.assertRaisesRegex(ValueError, 'Selected vendor feature'):
+                compat.prepare_vendor_dependencies(self.common)
+            for relative, text in sources.items():
+                self.assertEqual((self.common / relative).read_text(), text)
+
+    def test_existing_out_config_selecting_vendor_feature_is_respected(self):
+        sources = self.vendor_fixture()
+        self.write('out/.config', 'CONFIG_OPLUS_RESCTRL=y\n')
+        with self.assertRaisesRegex(ValueError, 'Selected vendor feature'):
+            compat.prepare_vendor_dependencies(self.common)
+        self.assertEqual((self.common / 'drivers/soc/Kconfig').read_text(), sources['drivers/soc/Kconfig'])
+
+    def test_complete_existing_vendor_directories_and_their_references_are_preserved(self):
+        sources = self.vendor_fixture()
+        for relative, *_unused in compat.VENDOR_FEATURES:
+            self.write(relative + '/Kconfig', '# real vendor code remains intact\n')
+        self.assertFalse(compat.prepare_vendor_dependencies(self.common))
+        for relative, text in sources.items():
+            self.assertEqual((self.common / relative).read_text(), text)
+
+    def test_partially_present_vendor_directory_or_changed_reference_fails_before_any_patch(self):
+        sources = self.vendor_fixture()
+        partial = self.common / 'drivers/soc/oplus/storage'
+        partial.mkdir(parents=True)
+        with self.assertRaisesRegex(ValueError, 'Partially present'):
+            compat.prepare_vendor_dependencies(self.common)
+        partial.rmdir()
+        for changed in ('obj-y += oplus/storage/ unexpected.o\n', 'obj-y += oplus/storage/\n' * 2):
+            self.write('drivers/soc/Makefile', sources['drivers/soc/Makefile'].replace(
+                'obj-y\t\t\t\t+= oplus/storage/\n', changed))
+            with self.subTest(changed=changed), self.assertRaisesRegex(ValueError, 'paired'):
+                compat.prepare_vendor_dependencies(self.common)
+            self.assertEqual((self.common / 'drivers/soc/Kconfig').read_text(), sources['drivers/soc/Kconfig'])
+
+    def test_absent_inactive_mtk_scheduler_reference_is_left_untouched(self):
+        sources = self.vendor_fixture()
+        original = sources['init/Kconfig'].replace('source "kernel/oplus_cpu/sched/Kconfig"\n', '')
+        self.write('init/Kconfig', original)
+        self.assertTrue(compat.prepare_vendor_dependencies(self.common))
+        self.assertEqual((self.common / 'kernel/Makefile').read_text(), sources['kernel/Makefile'])
+
+    def test_only_reviewed_broken_vendor_symlink_targets_are_eligible(self):
+        anchor = self.common / 'drivers/soc/oplus/storage'
+        expected = compat.VENDOR_FEATURES[1][-1]
+        # The Windows runner may forbid creating symlinks. Mock only lstat's
+        # symlink result/readlink; all source checks and Git patches stay real.
+        real_is_symlink = Path.is_symlink
+        def is_symlink(path):
+            return path == anchor or real_is_symlink(path)
+        with mock.patch.object(Path, 'is_symlink', is_symlink), \
+                mock.patch.object(compat.os, 'readlink', return_value=expected[0]):
+            self.assertTrue(compat._vendor_tree_missing(self.common,
+                'drivers/soc/oplus/storage', expected))
+        with mock.patch.object(Path, 'is_symlink', is_symlink), \
+                mock.patch.object(compat.os, 'readlink', return_value='../../../../unreviewed/driver'), \
+                self.assertRaisesRegex(ValueError, 'changed official vendor symlink'):
+            compat._vendor_tree_missing(self.common, 'drivers/soc/oplus/storage', expected)
+
     @unittest.skipUnless(shutil.which('clang'), 'Clang is required for the native C/LLVM-bitcode reproduction')
     def test_real_clang_bitcode_retains_debug_mapping_without_unused_preprocessor_flags(self):
         compiler = shutil.which('clang')

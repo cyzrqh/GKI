@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Narrow source adaptations for reviewed official OPlus 6.12 layouts."""
+"""Narrow source adaptations for reviewed official OPlus dependency layouts."""
 from __future__ import annotations
 
 import argparse
@@ -18,6 +18,19 @@ RTMUTEX_PATCH_SHA256 = '2dc6572a936f1acba139ccdb6daff6cacf709fcfc36f465f9e2b59f5
 BITCODE_COMMAND = '\t\t$(CC) $(CLANG_FLAGS) $(KBUILD_CFLAGS) -c $(patsubst %.o,%.m.bc,$@) -o $@)'
 BITCODE_FIXED = BITCODE_COMMAND.replace('$(KBUILD_CFLAGS)',
     '$(filter-out -fmacro-prefix-map=% -ffile-prefix-map=%,$(KBUILD_CFLAGS))')
+VENDOR_FEATURES = (
+    ('drivers/soc/oplus/oplus_resctrl', 'drivers/soc/Kconfig', 'drivers/soc/Makefile',
+     'oplus/oplus_resctrl/', 'obj-y', ('OPLUS_RESCTRL',),
+     ('../../../../../vendor/oplus/kernel/oplus_performance_5.10/oplus_resctrl',
+      '../../../../vendor/oplus/kernel/oplus_performance/oplus_resctrl')),
+    ('drivers/soc/oplus/storage', 'drivers/soc/Kconfig', 'drivers/soc/Makefile',
+     'oplus/storage/', 'obj-y', ('OPLUS_FEATURE_STORAGE', 'OPLUS_STORAGE'),
+     ('../../../../../vendor/oplus/kernel/storage', '../../../../vendor/oplus/kernel/storage')),
+    ('kernel/oplus_cpu/sched', 'init/Kconfig', 'kernel/Makefile',
+     'oplus_cpu/sched/sched_tune/', 'obj-$(CONFIG_OPLUS_SCHED_TUNE)',
+     ('OPLUS_', 'LOCKING_PROTECT', 'PCPU_RWSEM_LOCKING_PROTECT'),
+     ('../../vendor/oplus/kernel/cpu', '../../../vendor/oplus/kernel/cpu')),
+)
 
 
 def native_git(common: Path, *arguments: str) -> str:
@@ -212,7 +225,9 @@ def apply_checked_updates(common: Path, updates: dict[str, tuple[str, str]]) -> 
     """Validate every file and exact diff before changing any source file."""
     changes = []
     for relative, (before, after) in updates.items():
-        if relative not in ('kernel/locking/rtmutex.c', 'kernel/locking/rtmutex_api.c', 'rust/Makefile'):
+        if relative not in ('kernel/locking/rtmutex.c', 'kernel/locking/rtmutex_api.c', 'rust/Makefile',
+                            'scripts/Makefile.build', 'drivers/soc/Kconfig', 'drivers/soc/Makefile',
+                            'init/Kconfig', 'kernel/Makefile'):
             raise ValueError('Unreviewed compatibility output path')
         if read_source(common / relative) != before:
             raise ValueError('Official source changed while preparing compatibility updates')
@@ -284,18 +299,102 @@ def apply_rtmutex_patch(common: Path, patch: Path) -> bool:
 
 
 def prepare_rust_bitcode(common: Path) -> bool:
-    path = common / 'rust/Makefile'
-    before = read_source(path)
-    if '$(if $(link_helper)' not in before:
+    updates = {}
+    for relative, marker in (('rust/Makefile', '$(if $(link_helper)'),
+                             ('scripts/Makefile.build', '$(if $(CONFIG_RUST_INLINE_HELPERS)')):
+        path = common / relative
+        if not path.exists():
+            continue
+        before = read_source(path)
+        if marker not in before:
+            continue
+        already = before.count(BITCODE_FIXED) == 1 and BITCODE_COMMAND not in before
+        expected = BITCODE_FIXED if already else BITCODE_COMMAND
+        if before.count(expected) != 1:
+            raise ValueError('Review the official Rust inline-helper bitcode command before compiling')
+        if relative == 'scripts/Makefile.build':
+            # ashmem_rust.o and other native Rust drivers use this second
+            # command, independently of the rust/kernel.o library command.
+            matches = list(re.finditer(r'(?m)^\s*cmd_rustc_o_rs\s*=', before))
+            if len(matches) != 1:
+                raise ValueError('Review the native Rust driver bitcode command before compiling')
+            start = matches[0].start()
+            end = before.find('\n\n', start)
+            block = before[start:] if end < 0 else before[start:end]
+            if block.count(expected) != 1 or marker not in block:
+                raise ValueError('Rust bitcode conversion escaped the reviewed Rust driver command')
+        if already:
+            continue
+        # These flags concern source preprocessing. Keep the source C command,
+        # debug maps, LLVM helper linking, ABI flags and -Werror unchanged.
+        updates[relative] = (before, before.replace(BITCODE_COMMAND, BITCODE_FIXED, 1))
+    return apply_checked_updates(common, updates)
+
+
+def _vendor_tree_missing(common: Path, relative: str, reviewed_targets: tuple[str, ...]) -> bool:
+    feature = common / relative
+    anchor = common / ('kernel/oplus_cpu' if relative.startswith('kernel/') else relative)
+    if anchor.is_symlink():
+        if os.readlink(anchor) not in reviewed_targets:
+            raise ValueError('Review the changed official vendor symlink before configuring: ' + relative)
+        if not anchor.exists():
+            return True
+    else:
+        for parent in anchor.parents:
+            if parent == common:
+                break
+            if parent.is_symlink():
+                raise ValueError('Unreviewed parent symlink in optional vendor dependency: ' + relative)
+        if not anchor.exists():
+            return True
+    if not feature.is_dir() or not (feature / 'Kconfig').is_file():
+        raise ValueError('Partially present vendor feature requires its complete official source: ' + relative)
+    return False
+
+
+def prepare_vendor_dependencies(common: Path) -> bool:
+    """Remove only unselected, unavailable OEM performance/IO extensions.
+
+    Official common trees retain links into a separately published vendor
+    checkout. CCTV's fork materializes these directories instead. This narrow
+    standalone-GKI adaptation must never impersonate the missing code with an
+    empty Kconfig, disable a selected feature, or remove a platform driver.
+    """
+    make = read_source(common / 'Makefile')
+    if (re.findall(r'(?m)^VERSION = ([0-9]+)$', make) != ['6']
+            or re.findall(r'(?m)^PATCHLEVEL = ([0-9]+)$', make) != ['1']):
         return False
-    if before.count(BITCODE_FIXED) == 1 and BITCODE_COMMAND not in before:
-        return False
-    if before.count(BITCODE_COMMAND) != 1:
-        raise ValueError('Review the official Rust inline-helper bitcode command before compiling')
-    # Macro/file prefix maps apply to source preprocessing, not precompiled
-    # LLVM bitcode. Preserve debug prefix maps and every source C ABI flag.
-    after = before.replace(BITCODE_COMMAND, BITCODE_FIXED, 1)
-    return apply_checked_updates(common, {'rust/Makefile': (before, after)})
+    configs = [read_source(common / 'arch/arm64/configs/gki_defconfig')]
+    if (common / 'out/.config').exists():
+        configs.append(read_source(common / 'out/.config'))
+    paths = {'drivers/soc/Kconfig', 'drivers/soc/Makefile', 'init/Kconfig', 'kernel/Makefile'}
+    originals = {relative: read_source(common / relative) for relative in paths}
+    changed = dict(originals)
+    for relative, kconfig, makefile, object_path, object_var, symbols, targets in VENDOR_FEATURES:
+        source_line = 'source "' + relative + '/Kconfig"\n'
+        candidates = [line for line in changed[kconfig].splitlines(keepends=True)
+                      if relative + '/Kconfig' in line and not line.lstrip().startswith('#')]
+        if not candidates:
+            continue  # Includes old MTK's inactive, gated scheduler Kbuild line.
+        if candidates != [source_line]:
+            raise ValueError('Review the changed optional vendor Kconfig reference: ' + relative)
+        if not _vendor_tree_missing(common, relative, targets):
+            continue
+        enabled = [line.split('=', 1)[0] for text in configs for line in text.splitlines()
+                   if re.fullmatch(r'CONFIG_[A-Z0-9_]+=(?:y|m)', line)
+                   and any(line.startswith('CONFIG_' + symbol) for symbol in symbols)]
+        if enabled:
+            raise ValueError('Selected vendor feature requires its complete official source: '
+                             + relative + ' (' + ', '.join(sorted(set(enabled))) + ')')
+        make_lines = [line for line in changed[makefile].splitlines(keepends=True)
+                      if object_path in line and not line.lstrip().startswith('#')]
+        pattern = re.escape(object_var) + r'[ \t]+\+=[ \t]+' + re.escape(object_path) + r'\n'
+        if len(make_lines) != 1 or re.fullmatch(pattern, make_lines[0]) is None:
+            raise ValueError('Review the paired optional vendor Kbuild reference: ' + relative)
+        changed[kconfig] = changed[kconfig].replace(source_line, '', 1)
+        changed[makefile] = changed[makefile].replace(make_lines[0], '', 1)
+    updates = {relative: (originals[relative], text) for relative, text in changed.items()}
+    return apply_checked_updates(common, updates)
 
 
 def main(argv=None) -> int:

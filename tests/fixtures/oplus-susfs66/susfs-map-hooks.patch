@@ -1,0 +1,76 @@
+diff --git a/fs/namespace.c b/fs/namespace.c
+index 97fc42277..51b85060f 100644
+--- a/fs/namespace.c
++++ b/fs/namespace.c
+@@ -32,12 +32,22 @@
+ #include <linux/fs_context.h>
+ #include <linux/shmem_fs.h>
+ #include <linux/mnt_idmapping.h>
++#ifdef CONFIG_KSU_SUSFS
++#include <linux/susfs_def.h>
++#endif // #ifdef CONFIG_KSU_SUSFS
+ 
+ #include "pnode.h"
+ #include "internal.h"
+ #include <trace/hooks/blk.h>
+ #include <trace/hooks/fs.h>
+ 
++#ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++extern bool susfs_is_current_ksu_domain(void);
++extern struct static_key_true susfs_is_sdcard_android_data_not_decrypted;
++
++#define CL_COPY_MNT_NS BIT(25) /* used by copy_mnt_ns() */
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MOUNT
++
+ /* Maximum number of mounts in a mount namespace */
+ static unsigned int sysctl_mount_max __read_mostly = 100000;
+ 
+diff --git a/fs/proc/task_mmu.c b/fs/proc/task_mmu.c
+index 052e6d7bc..24a441252 100644
+--- a/fs/proc/task_mmu.c
++++ b/fs/proc/task_mmu.c
+@@ -1040,6 +1079,13 @@ static int show_smap(struct seq_file *m, void *v)
+ 	struct vm_area_struct *vma = v;
+ 	struct mem_size_stats mss;
+ 
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++	if (vma->vm_file) {
++		if (SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
++			return 0;
++	}
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
++
+ 	memset(&mss, 0, sizeof(mss));
+ 
+ 	if (!vma_data_pages(vma))
+@@ -1103,7 +1149,14 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
+ 
+ 	vma_start = vma->vm_start;
+ 	do {
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++		if (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))
++			goto bypass_orig_flow;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 		smap_gather_stats(vma, &mss, 0);
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++bypass_orig_flow:
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 		last_vma_end = vma->vm_end;
+ 
+ 		/*
+@@ -1169,8 +1222,15 @@ static int show_smaps_rollup(struct seq_file *m, void *v)
+ 
+ 			/* Case 4 above */
+ 			if (vma->vm_end > last_vma_end) {
++#ifdef CONFIG_KSU_SUSFS_SUS_MAP
++				if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))) {
++					smap_gather_stats(vma, &mss, last_vma_end);
++					last_vma_end = vma->vm_end;
++				}
++#else
+ 				smap_gather_stats(vma, &mss, last_vma_end);
+ 				last_vma_end = vma->vm_end;
++#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP
+ 			}
+ 		}
+ 	} for_each_vma(vmi, vma);

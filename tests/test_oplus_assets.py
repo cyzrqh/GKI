@@ -69,9 +69,10 @@ def initialize(path, files, origin):
     return run_git(path, 'rev-parse', 'HEAD')
 
 
-def image_fixture(manager, native='6.1.57-android14-11-test', *, susfs=True, multi=True, extra_config=''):
+def image_fixture(manager, native='6.1.57-android14-11-test', *, susfs=True, multi=True, extra_config='', kpm=False):
     config = ('CONFIG_ARM64=y\nCONFIG_KSU=y\nCONFIG_LTO_CLANG_THIN=y\nCONFIG_ZRAM=y\n'
-              'CONFIG_CRYPTO_LZ4KD=y\nCONFIG_NTSYNC=m\n# CONFIG_KPM is not set\n'
+              'CONFIG_CRYPTO_LZ4KD=y\nCONFIG_NTSYNC=m\n'
+              + ('CONFIG_KPM=y\n' if kpm else '# CONFIG_KPM is not set\n')
               + ('CONFIG_KSU_SUSFS=y\n' if susfs else '# CONFIG_KSU_SUSFS is not set\n')
               + ('CONFIG_KSU_MULTI_MANAGER_SUPPORT=y\n' if multi else '') + extra_config)
     text = (b'Linux version ' + native.encode() + b'\0' + manager['package'].encode() + b'\0'
@@ -191,10 +192,11 @@ class OplusAssetsTests(unittest.TestCase):
 
     def test_package_preserves_native_release_and_paired_actual_image(self):
         path = self.pack()
-        self.assertEqual(path.name, 'Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip')
+        self.assertEqual(path.name, 'Oplus-Snapdragon-android14-6.1.57-SukiSU-AnyKernel3.zip')
         document = assets.read_kernel(path)
         self.assertEqual(document['schema'], 'gki-oplus-kernel')
         self.assertEqual(document['profile'], self.profile)
+        self.assertEqual(document['vendor_sources'], {})
         self.assertEqual(document['kernel_release'], self.native)
         self.assertEqual(document['manager_apk_sha256'], self.manager['apk_sha256'])
         self.assertEqual(document['image_entry'], validate_image(self.image.read_bytes()))
@@ -203,6 +205,7 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertEqual(document['features']['ntsync'], '模块')
         with zipfile.ZipFile(path) as archive:
             self.assertEqual(archive.read('Image'), self.image.read_bytes())
+
             self.assertEqual(archive.read('tools/ak3-core.sh'), b'# inert fixture, no boot writes\n')
             self.assertNotIn('META-INF/gki-kernel.json', archive.namelist())
             self.assertNotIn(assets.PAYLOAD_MEMBER, archive.namelist())
@@ -222,6 +225,14 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertNotIn('patch_cmdline', script)
         self.assertNotIn('replace_string', script)
 
+    def test_public_names_keep_both_families_without_cpu_codes_or_collisions(self):
+        names = [assets.filename({'platform': platform, 'android_version': 'android15',
+                                  'kernel': '6.6.118'}, 'SukiSU')
+                 for platform in ('sm8750', 'mt6991')]
+        self.assertEqual(names, ['Oplus-Snapdragon-android15-6.6.118-SukiSU-AnyKernel3.zip',
+                                 'Oplus-Dimensity-android15-6.6.118-SukiSU-AnyKernel3.zip'])
+        self.assertNotEqual(*names)
+
     def test_collect_validates_true_signed_apk_and_emits_only_reports_and_public_title(self):
         path = self.pack()
         nested = self.inputs / 'downloaded-artifact'
@@ -236,6 +247,8 @@ class OplusAssetsTests(unittest.TestCase):
         summary = self.output.joinpath('summary.md').read_text(encoding='utf-8')
         self.assertEqual(summary.count('## 构建配置'), 1)
         self.assertIn(self.native, summary)
+        self.assertIn('| 骁龙 | 6.1.57 |', summary)
+        self.assertNotIn('骁龙 sm8650', summary)
         self.assertNotIn('TCP 拥塞算法', summary)
         self.assertNotIn('构建文件', summary)
         self.assertNotIn('true', summary)
@@ -369,7 +382,8 @@ class OplusAssetsTests(unittest.TestCase):
         changes = [lambda data: data.update(Image=data['Image'] + b'changed'),
                    lambda data: data.update({'anykernel.sh': data['anykernel.sh'].replace(b'PATCH_VBMETA_FLAG=0', b'PATCH_VBMETA_FLAG=1')}),
                    lambda data: data.update({'tools/ak3-core.sh': b'changed runtime'}),
-                   lambda data: change_metadata(data, lambda doc: doc['profile'].update(kernel_branch='oneplus/sm8650_unreviewed'))]
+                   lambda data: change_metadata(data, lambda doc: doc['profile'].update(kernel_branch='oneplus/sm8650_unreviewed')),
+                   lambda data: change_metadata(data, lambda doc: doc.update(vendor_sources={'repository': 'unreviewed/vendor'}))]
         for change in changes:
             path.write_bytes(original)
             rewrite_zip(path, change=change)
@@ -386,7 +400,7 @@ class OplusAssetsTests(unittest.TestCase):
             with self.subTest(addition=addition, remove=remove), self.assertRaises(ValueError):
                 assets.read_kernel(path)
         path.write_bytes(original)
-        renamed = path.with_name(path.name.replace('sm8650', 'sm8750'))
+        renamed = path.with_name(path.name.replace('Snapdragon', 'Dimensity'))
         path.rename(renamed)
         with self.assertRaisesRegex(ValueError, 'filename'):
             assets.read_kernel(renamed)
@@ -488,7 +502,7 @@ class OplusAssetsTests(unittest.TestCase):
             with self.subTest(variant=value), self.assertRaises(ValueError):
                 assets.variants_list(value)
 
-    def prepare_kpm(self, *, pac=False, bridge=False):
+    def prepare_kpm(self, *, pac=False, bridge=False, native_bridge=True):
         if bridge:
             artifact = ROOT.parent / '.gki-upstream-cache/kpm-bridge2-d958-build-artifacts.zip'
             if not artifact.is_file():
@@ -509,7 +523,7 @@ class OplusAssetsTests(unittest.TestCase):
         cache.mkdir()
         cache.joinpath('kpimg').write_bytes(payload)
         os.environ['KPM_CACHE_DIR'] = str(cache)
-        before = self.image.read_bytes()
+        before = image_fixture(self.manager, self.native, kpm=native_bridge)
         if pac:
             modified = bytearray(before)
             struct.pack_into('<II', modified, 128, 0xd503233f, 0xd50323bf)
@@ -553,16 +567,21 @@ class OplusAssetsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'payload'):
             assets.verify_kpm(self.image.read_bytes(), corrupted, payload)
 
-    def test_external_kpm_payload_is_proved_and_embedded_without_fake_native_config(self):
+    def test_external_kpm_payload_is_proved_and_embedded_with_its_native_control_bridge(self):
         _, _, payload, _ = self.prepare_kpm()
         path = self.pack()
         document = assets.read_kernel(path)
         self.assertTrue(document['features']['kpm'])
-        self.assertFalse(document['features']['kpm_native_config'])
+        self.assertTrue(document['features']['kpm_native_config'])
         with zipfile.ZipFile(path) as archive:
             self.assertEqual(archive.read(assets.PAYLOAD_MEMBER), payload)
         self.assertEqual(self.gather()['count'], 1)
         self.assertNotIn('kpimg', {item.name for item in self.inputs.iterdir()})
+
+    def test_payload_without_the_native_kpm_control_bridge_cannot_be_published(self):
+        self.prepare_kpm(native_bridge=False)
+        with self.assertRaisesRegex(ValueError, 'enabled native KPM control bridge'):
+            self.pack()
 
     def test_kpm_report_cannot_claim_unrelated_image_payload_or_layout(self):
         report_path, report, payload, cache = self.prepare_kpm()

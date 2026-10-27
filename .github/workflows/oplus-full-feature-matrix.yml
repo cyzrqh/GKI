@@ -791,8 +791,7 @@ jobs:
           !manager-source/target/**/release/deps/ksuinit-*
         key: ${{ steps.manager-cargo-cache.outputs.cache-primary-key }}
   build-oplus-kernel:
-    name: ${{ startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.platform }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant
-      }}
+    name: ${{ startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}
     if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && needs.prepare-matrix.result == 'success' &&
       needs.build-sukisu-manager.result == 'success'
     needs:

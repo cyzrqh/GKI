@@ -207,7 +207,7 @@ ccache --set-config=compiler_check=content
          'with': {'path': '${{ env.CCACHE_DIR }}', 'key': '${{ steps.oplus-ccache.outputs.cache-primary-key }}'}},
     ]
     return {
-        'name': "${{ startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.platform }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}",
+        'name': "${{ startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}",
         'if': "always() && !cancelled() && " + DISPATCH + " && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'",
         'needs': ['prepare-matrix', 'build-sukisu-manager'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 120,
         'permissions': {'contents': 'read', 'actions': 'read'},

@@ -1,9 +1,8 @@
-"""Retain the complete SUSFS namespace hook when OKI lacks a GKI trace header.
+"""Retain SUSFS namespace hooks when OKI lacks a reviewed trace include.
 
-The official android14-6.1 patch at b57ed199 adds no use of trace/hooks/blk.h;
-that existing include is only context. The five selected OnePlus 6.1 trees
-share the same surrounding namespace declarations but lack that include.
-Adapt only this proven context difference, retaining every SUSFS added line.
+The official 6.1 and 6.6 patch header hunks add no use of their existing blk.h
+or fs.h context includes. Adapt only a selected, proven missing-context line
+with unique native surroundings, retaining every SUSFS added line.
 """
 from __future__ import annotations
 
@@ -11,7 +10,10 @@ from pathlib import Path
 import re
 
 
-def adapt_namespace_header(common: Path, patch_bytes: bytes) -> bytes:
+def adapt_namespace_header(common: Path, patch_bytes: bytes,
+                           missing_header: str = 'trace/hooks/blk.h') -> bytes:
+    if missing_header not in ('trace/hooks/blk.h', 'trace/hooks/fs.h'):
+        raise ValueError('Unreviewed optional namespace trace header')
     text = patch_bytes.decode('utf-8')
     section = re.search(r'(?ms)^diff --git a/fs/namespace\.c b/fs/namespace\.c\n.*?(?=^diff --git |\Z)', text)
     if section is None:
@@ -22,7 +24,7 @@ def adapt_namespace_header(common: Path, patch_bytes: bytes) -> bytes:
     first = hunks[0]
     end = hunks[1].start() if len(hunks) > 1 else len(section[0])
     hunk = section[0][first.end():end]
-    trace_context = ' #include <trace/hooks/blk.h>\n'
+    trace_context = ' #include <' + missing_header + '>\n'
     if trace_context not in hunk:
         return patch_bytes
     if (hunk.count(trace_context) != 1 or any(line.startswith('-') for line in hunk.splitlines())

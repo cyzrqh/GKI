@@ -1,0 +1,19 @@
+{
+  "repository": "SukiSU-Ultra/SukiSU-Ultra",
+  "formal_commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
+  "latest_commit": "96ceb4a42c50e27199a094264f62cfbafee77fa0",
+  "source_path": "kernel/extension/kpm/super_access.c",
+  "netlink_repository": "OnePlusOSS/android_kernel_common_oneplus_sm8845",
+  "netlink_commit": "c1102892bf2eb5806e135f5169b3dcfd72f96c47",
+  "note": "Unmodified complete native netlink member blocks, target struct, and latest Kbuild detection snippet.",
+  "original_sha256": {
+    "super_access-formal.c": "6ca2dfb7885805e369d3dcbab6ff59001194443247328a06b5d05b68d04030b6",
+    "super_access-latest.c": "9750c24278b1ca93614a331d31c1825eca5853a0fb3ddc55ecd6ceed343d2a9d"
+  },
+  "sha256": {
+    "Kbuild-netlink.inc": "bdd423233a2bd6ce933eb2ce90bf20ba1b2d0acff223141bfe7dc6d3c0cd6d58",
+    "netlink-6.12.h": "9243c763eb335f67ad0607d8ca161a76b7e9ef3a25ba1648b736c900b7591a78",
+    "netlink-members-formal.c": "bb80d10832234cc20293c02d9babf80c8f9a54bfa4b1489d5ba15e8458519faa",
+    "netlink-members-latest.c": "7d8360ae41a4618786ac884b407d9d68a2f992e10ec722585ad950ae8e3062ba"
+  }
+}

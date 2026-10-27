@@ -1,0 +1,11 @@
+{
+  "repository": "SukiSU-Ultra/SukiSU-Ultra",
+  "commit": "96ceb4a42c50e27199a094264f62cfbafee77fa0",
+  "note": "Unmodified native Kbuild include-root section and original tracked headers; kernel/include/uapi is the official ../../uapi symlink.",
+  "source_kbuild_blob": "d0a0e14f4ae218916fb6cc9618e4aaa60606cfdc",
+  "sha256": {
+    "app_profile.h": "dffad173122bb7bb183a61b5c24269e3cb36e3d4f22598cd34c0130945bed615",
+    "Kbuild-include.inc": "d8b3b0d439b6a9fe83aa9b4fb4ac2f6730c0403d3d804f6a1630f7ac07a0a54c",
+    "klog.h": "032b31b94edbb66a133846611378a09d0f3aa2b01cab2671dd2b00198883807c"
+  }
+}

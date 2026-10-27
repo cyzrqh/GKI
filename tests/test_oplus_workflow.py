@@ -137,6 +137,7 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(worker['strategy']['matrix'], '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}')
         self.assertFalse(worker['strategy']['fail-fast'])
         self.assertIn("startsWith(matrix.platform, 'mt') && '天玑' || '骁龙'", worker['name'])
+        self.assertNotIn('matrix.platform }}', worker['name'])
         self.assertEqual(worker['strategy']['max-parallel'], 20)
 
     def test_worker_orders_real_native_phases_then_verified_payload_package_upload(self):
@@ -272,12 +273,12 @@ class OplusWorkflowTests(unittest.TestCase):
             self.assertEqual({path.name for path in reports.iterdir()}, {'SHA256SUMS.txt', 'summary.md', 'title.txt'})
             checksums = (reports / 'SHA256SUMS.txt').read_text()
             self.assertIn(fixture.manager['file'], checksums)
-            self.assertIn('Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip', checksums)
+            self.assertIn('Oplus-Snapdragon-android14-6.1.57-SukiSU-AnyKernel3.zip', checksums)
             self.assertFalse((fixture.directory / 'oplus-verified-assets').exists())
             from transfer_ksu_snapshot import native_assets
             staged = native_assets((fixture.directory / 'oplus-publish/assets').resolve())
             self.assertEqual(set(staged), {fixture.manager['file'], 'SHA256SUMS.txt',
-                                          'Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip'})
+                                          'Oplus-Snapdragon-android14-6.1.57-SukiSU-AnyKernel3.zip'})
             self.assertNotIn('title.txt', staged)
             self.assertNotIn('summary.md', staged)
         finally:

@@ -23,6 +23,7 @@ from embedded_build_metadata import metadata_json, read_manager_apk, read_member
 from manager_variants import MANAGERS, manager_profile, valid_manager_apk_filename
 from prepare_release import release_title
 import oplus_catalog as catalog
+from oplus_vendor_sources import validate_vendor_provenance, verify_vendor_report
 from validate_arm64_image import validate_image
 
 
@@ -148,7 +149,8 @@ def provenance() -> dict:
 def filename(profile: dict, variant: str) -> str:
     if variant not in MANAGERS:
         raise AssetError('Only the paired SukiSU and BakaSU managers are supported')
-    return f"Oplus-{profile['platform']}-{profile['android_version']}-{profile['kernel']}-{variant}-AnyKernel3.zip"
+    family = {'骁龙': 'Snapdragon', '天玑': 'Dimensity'}[catalog.platform_family(profile['platform'])]
+    return f"Oplus-{family}-{profile['android_version']}-{profile['kernel']}-{variant}-AnyKernel3.zip"
 
 
 def release_prefix(release: str, profile: dict) -> str:
@@ -169,7 +171,7 @@ def anykernel_script(profile: dict, variant: str, prefix: str) -> bytes:
     # boot images; platform/KMI guards run before either operation.
     return f'''#!/system/bin/sh
 properties() {{ '
-kernel.string=Oplus {profile['platform']} {profile['kernel']} {variant}
+kernel.string=Oplus {catalog.platform_family(profile['platform'])} {profile['kernel']} {variant}
 do.devicecheck=0
 do.modules=0
 do.systemless=0
@@ -196,7 +198,7 @@ case "$oplus_running_release" in
   {prefix}|{prefix}-*) ;;
   *) abort "Oplus kernel/Android/KMI mismatch: requires {prefix}" ;;
 esac;
-ui_print "Verified Oplus platform and full kernel/KMI prefix: {profile['platform']} {prefix}";
+ui_print "Verified Oplus platform and full kernel/KMI prefix: {catalog.platform_family(profile['platform'])} {prefix}";
 split_boot;
 flash_boot;
 '''.encode('utf-8')
@@ -301,6 +303,10 @@ def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, 
         raise AssetError('Actual SUSFS configuration differs from the menu selection')
     metadata.update(schema=SCHEMA, schema_version=1, profile=profile, kernel_release=native,
                     compatibility_prefix=prefix, **provenance())
+    vendor_report_path = common / 'out/gki-oplus-vendor-sources.json'
+    vendor_report = (metadata_json(regular(vendor_report_path, 65536))
+                     if vendor_report_path.exists() or vendor_report_path.is_symlink() else {})
+    metadata['vendor_sources'] = verify_vendor_report(common, profile, vendor_report)
     for field in MANAGER_BINDINGS:
         metadata[field] = os.environ.get(field.upper(), '')
     runtime, ak3_ref = template_files(template)
@@ -356,6 +362,10 @@ def validate_document(document: dict) -> None:
             or type(document.get('schema_version')) is not int or document['schema_version'] != 1):
         raise AssetError('Invalid independent OPlus asset schema')
     profile = profile_identity(document.get('profile'))
+    try:
+        validate_vendor_provenance(profile, document.get('vendor_sources', {}))
+    except ValueError as error:
+        raise AssetError(str(error)) from None
     variant = document.get('ksu_variant')
     if document.get('file') != filename(profile, variant):
         raise AssetError('OPlus artifact filename does not match its platform, version and variant')
@@ -407,6 +417,10 @@ def verify_image(document: dict, image: bytes, payload: bytes | None) -> None:
     if digest(image) != document['image_sha256'] or validate_image(image) != document.get('image_entry'):
         raise AssetError('OPlus Image bytes or ARM64 entry differ from the embedded identity')
     config, origin, checksum = bounded_config(image)
+    if payload is not None and config.get('CONFIG_KPM') != 'y':
+        raise AssetError('External KPM payload requires its enabled native KPM control bridge')
+    if document.get('vendor_sources') and config.get('CONFIG_OPLUS_SCHED_TUNE') != 'y':
+        raise AssetError('Restored official scheduler must remain enabled in the actual Image')
     if checksum != document['config_sha256'] or origin != document['config_source']:
         raise AssetError('OPlus actual IKCONFIG differs from its embedded configuration')
     if (config.get('CONFIG_KSU') != 'y' or document['ksu_variant'] == 'BakaSU' and
@@ -562,7 +576,7 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
     lines += ['', '## 适用构建范围', '', '| 平台 | 完整内核 | 原生 release | 系统源码依据 |', '|---|---|---|---|']
     for row in sorted(records, key=lambda item: (catalog.order(item['profile']), item['ksu_variant'])):
         profile = row['profile']
-        platform = ('天玑 ' if profile['platform'].startswith('mt') else '骁龙 ') + profile['platform']
+        platform = catalog.platform_family(profile['platform'])
         lines.append('| ' + platform + ' | ' + profile['kernel'] + ' | `' + row['kernel_release']
                      + '` | ' + profile['system'].replace('|', '\\|') + ' |')
     lines += ['', '仅证明产物及编译配置配套；同内核版本不代表所有机型或固件均可通刷。', '']

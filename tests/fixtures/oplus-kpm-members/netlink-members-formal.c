@@ -1,0 +1,11 @@
+DYNAMIC_STRUCT_BEGIN(netlink_kernel_cfg)
+DEFINE_MEMBER(netlink_kernel_cfg, groups)
+DEFINE_MEMBER(netlink_kernel_cfg, flags)
+DEFINE_MEMBER(netlink_kernel_cfg, input)
+DEFINE_MEMBER(netlink_kernel_cfg, cb_mutex)
+DEFINE_MEMBER(netlink_kernel_cfg, bind)
+DEFINE_MEMBER(netlink_kernel_cfg, unbind)
+#if LINUX_VERSION_CODE < KERNEL_VERSION(6, 1, 0)
+DEFINE_MEMBER(netlink_kernel_cfg, compare)
+#endif
+DYNAMIC_STRUCT_END(netlink_kernel_cfg)

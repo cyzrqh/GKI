@@ -7,3 +7,5 @@ tests/fixtures/historical-rekernel/**/*.c -whitespace
 # Exact vendor source prefixes and unified-diff context are checksum fixtures.
 tests/fixtures/oplus-susfs61/*.c -whitespace
 tests/fixtures/oplus-susfs61/*.patch -whitespace
+tests/fixtures/oplus-susfs66/*.patch -whitespace
+tests/fixtures/oplus-susfs66/namespace-header.c -whitespace

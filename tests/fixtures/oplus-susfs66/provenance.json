@@ -1,0 +1,18 @@
+{
+  "license": "GPL-2.0-only",
+  "profile": "sm8750-6.6.30",
+  "source_repository": "OnePlusOSS/android_kernel_common_oneplus_sm8750",
+  "source_ref": "f9c1a38fe1bf6bf39f25e4167e8322813c7707b9",
+  "patch_repository": "simonpunk/susfs4ksu",
+  "patch_ref": "4a4cb1be85a4694372d3efb9420de69982eac29a",
+  "source_note": "Unmodified namespace prefix and complete native show_smap/show_smaps_rollup functions. Patch contains the exact corresponding official SUSFS header and map hunks.",
+  "source_sha256": {
+    "fs/namespace.c": "9123bad8b98f25cc4589ff3f94b9e488fdaec19609b221b4f2692d4e746539c8",
+    "fs/proc/task_mmu.c": "a3fc8c335430d1d88c9c8009738964cf720218e369d7f3ee824cb7cd51ca129f"
+  },
+  "sha256": {
+    "namespace-header.c": "8c2651dec558df7172e2b5bf3cad88809d7c493749f2a6e5f8a0515ff875cecc",
+    "task-mmu-functions.c": "69dc44f3afe39645740919b6b2e785cc7d5d593eada263f9f351342a7faa71d8",
+    "susfs-map-hooks.patch": "0d655be358b5294416bbe3e789daef21ae0d7ab9bdb5fd9cb5c62a50bdd86e85"
+  }
+}

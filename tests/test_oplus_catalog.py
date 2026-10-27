@@ -4,11 +4,14 @@ import copy
 import hashlib
 import io
 import json
+import os
 from pathlib import Path
+import shutil
 import sys
 import unittest
 from unittest import mock
 from urllib.error import HTTPError, URLError
+import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -78,8 +81,9 @@ class CatalogTests(unittest.TestCase):
             return catalog.load_profiles(Path('fixture'))
 
     def test_checked_in_profiles_have_only_reviewed_official_oki_sources(self):
-        self.assertEqual(26, len(self.profiles))
-        self.assertEqual(26, len({(row['platform'], row['kernel']) for row in self.profiles}))
+        self.assertEqual(22, len(self.profiles))
+        self.assertEqual(22, len({(catalog.platform_family(row['platform']), row['kernel'])
+                                  for row in self.profiles}))
         self.assertEqual({'sm8650', 'sm8750', 'sm8845', 'sm8850', 'mt6897', 'mt6989', 'mt6991', 'mt6993'},
                          {row['platform'] for row in self.profiles})
         for row in self.profiles:
@@ -88,9 +92,49 @@ class CatalogTests(unittest.TestCase):
             self.assertIn('不承诺', row['compatibility'])
         self.assertEqual(20, len({(row['recipe_repository'], row['recipe_workflow']) for row in self.profiles}))
         identities = {row['id'] for row in self.profiles}
-        self.assertTrue({'sm8750-6.6.118', 'mt6991-6.6.118', 'sm8850-6.12.38',
+        self.assertTrue({'sm8750-6.6.118', 'mt6991-6.6.118',
                          'sm8845-6.12.38', 'sm8750-6.6.30', 'mt6991-6.6.50',
-                         'mt6989-6.1.134', 'mt6897-6.1.75', 'mt6989-6.1.75'} <= identities)
+                         'mt6989-6.1.115', 'mt6989-6.1.134', 'mt6897-6.1.75'} <= identities)
+        self.assertFalse({'mt6989-6.1.75', 'mt6897-6.1.115', 'mt6897-6.1.134',
+                          'sm8850-6.12.38'} & identities)
+
+    def test_public_platform_labels_do_not_expose_soc_codes(self):
+        for platform in ('sm8650', 'sm8750', 'sm8845', 'sm8850'):
+            self.assertEqual('骁龙', catalog.platform_family(platform))
+        for platform in ('mt6897', 'mt6989', 'mt6991', 'mt6993'):
+            self.assertEqual('天玑', catalog.platform_family(platform))
+        for platform in (None, [], 'sm0000', 'mt0000', 'SM8650', 'sm8650\n'):
+            with self.subTest(platform=platform), self.assertRaises(catalog.CatalogError):
+                catalog.platform_family(platform)
+
+    def test_same_full_version_keeps_both_families_and_preserves_source_pins(self):
+        both = [row for row in self.profiles if row['kernel'] == '6.6.118']
+        loaded = self.load_document({'schema_version': 1, 'profiles': both[::-1]})
+        self.assertEqual(['骁龙', '天玑'], [catalog.platform_family(row['platform']) for row in loaded])
+        self.assertEqual({row['id']: row['verified_kernel_ref'] for row in both},
+                         {row['id']: row['verified_kernel_ref'] for row in loaded})
+
+    def test_same_family_version_cannot_be_reintroduced_with_a_different_soc(self):
+        original = next(row for row in self.profiles if row['id'] == 'sm8845-6.12.38')
+        duplicate = {**original, 'id': 'sm8850-6.12.38', 'platform': 'sm8850',
+                     'kernel_repo': 'OnePlusOSS/android_kernel_common_oneplus_sm8850',
+                     'kernel_branch': 'oneplus/sm8850_b_16.0_oneplus_15t'}
+        with self.assertRaisesRegex(catalog.CatalogError, 'duplicates a platform-family'):
+            self.load_document({'schema_version': 1, 'profiles': [original, duplicate]})
+        original = next(row for row in self.profiles if row['id'] == 'mt6989-6.1.115')
+        duplicate = {**original, 'id': 'mt6897-6.1.115', 'platform': 'mt6897',
+                     'kernel_repo': 'OnePlusOSS/android_kernel_oneplus_mt6897',
+                     'kernel_branch': 'oneplus/mt6897_v_15.0.2_nord_ce5'}
+        with self.assertRaisesRegex(catalog.CatalogError, 'duplicates a platform-family'):
+            self.load_document({'schema_version': 1, 'profiles': [original, duplicate]})
+
+    def test_catalog_is_sorted_by_complete_numeric_version_not_profile_string(self):
+        shuffled = [row for row in self.profiles if row['kernel'] in ('6.1.75', '6.1.118', '6.12.58')][::-1]
+        loaded = self.load_document({'schema_version': 1, 'profiles': shuffled})
+        actual = [tuple(map(int, row['kernel'].split('.'))) for row in loaded]
+        self.assertEqual(sorted(actual), actual)
+        self.assertEqual(['骁龙', '天玑'], [catalog.platform_family(row['platform'])
+                                            for row in loaded if row['kernel'] == '6.1.75'])
 
     def test_recipe_mirrors_wrong_soc_unpinned_refs_and_gki_are_rejected(self):
         mutations = {'kernel_repo': 'cctv18/android_kernel_common_oneplus_sm8650',
@@ -179,6 +223,29 @@ class CatalogTests(unittest.TestCase):
             matrix = catalog.discover_matrix(ROOT, Combined())
         self.assertEqual(['6.1.57', '6.12.58'], [row['kernel'] for row in matrix['include']])
         self.assertTrue(all(row['kernel_repo'] in catalog.OFFICIAL_REPOSITORIES for row in matrix['include']))
+
+    def test_discovery_refuses_duplicate_family_after_resolution_instead_of_silently_picking_one(self):
+        row = catalog.resolve_profile(self.profile, Reader(self.profile))
+        duplicate = {**row, 'platform': 'sm8750', 'id': 'sm8750-' + row['kernel']}
+        with mock.patch.object(catalog, 'load_profiles', return_value=[self.profile, self.profile]), \
+                mock.patch.object(catalog, 'resolve_profile', side_effect=[row, duplicate]), \
+                self.assertRaisesRegex(catalog.CatalogError, 'duplicates a platform-family'):
+            catalog.discover_matrix(ROOT, mock.Mock())
+
+    def test_cli_summary_uses_only_family_label_and_preserves_official_source_identity(self):
+        directory = ROOT.parent / '.gki-upstream-cache' / ('oplus-summary-' + uuid.uuid4().hex)
+        directory.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, directory)
+        summary = directory / 'summary.md'
+        row = catalog.resolve_profile(self.profile, Reader(self.profile))
+        with mock.patch.object(catalog, 'discover_matrix', return_value={'include': [row]}), \
+                mock.patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(summary)}), \
+                mock.patch('sys.stdout', new=io.StringIO()):
+            self.assertEqual(0, catalog.main(['--summary']))
+        text = summary.read_text(encoding='utf-8')
+        self.assertIn('| 骁龙 | 6.1.57 |', text)
+        self.assertNotIn('| 骁龙 sm8650 |', text)
+        self.assertIn(row['kernel_repo'], text)
 
 
 class ReaderTests(unittest.TestCase):

@@ -30,7 +30,7 @@ class OPlusKernelTests(unittest.TestCase):
         self.ksu = self.root / 'KernelSU/kernel'
         self.ksu.mkdir(parents=True)
         (self.root / 'KernelSU/.git').mkdir()
-        (self.ksu / 'Kconfig').write_text('config KSU\nconfig KSU_KPROBES_HOOK\nconfig KSU_TRACEPOINT_HOOK\n')
+        (self.ksu / 'Kconfig').write_text('config KSU\nconfig KPM\nconfig KSU_KPROBES_HOOK\nconfig KSU_TRACEPOINT_HOOK\n')
         self.reference = 'a' * 40
         self.profile = {
             'id': 'sm8650-6.1.141', 'platform': 'sm8650', 'kernel': '6.1.141',
@@ -58,6 +58,10 @@ class OPlusKernelTests(unittest.TestCase):
         stack.enter_context(mock.patch.object(kernel, 'source_git', side_effect=lambda _path, *args:
             str(self.root / 'KernelSU') if args == ('rev-parse', '--show-toplevel') else self.reference))
         signature = stack.enter_context(mock.patch.object(kernel, 'configure'))
+        stack.enter_context(mock.patch('oplus_compat.prepare_vendor_dependencies', create=True))
+        stack.enter_context(mock.patch('oplus_vendor_sources.restore_vendor_sources', return_value={}))
+        stack.enter_context(mock.patch('oplus_ksu_compat.prepare_builtin_includes'))
+        stack.enter_context(mock.patch('oplus_ksu_compat.prepare_kpm_members'))
         stack.enter_context(mock.patch('ensure_bakasu_symbol_lookup.validate_native_symbol_lookup', return_value=True))
         return signature
 
@@ -120,6 +124,77 @@ class OPlusKernelTests(unittest.TestCase):
             self.assertEqual([key + '=y'], re.findall(r'^' + key + '=.*$', text, re.M))
         for key in ('CONFIG_KPM', 'CONFIG_KSU_SUSFS'):
             self.assertEqual([key + '=n'], re.findall(r'^' + key + '=.*$', text, re.M))
+
+    def test_vendor_dependencies_are_checked_after_configuration_before_hook_validation(self):
+        self.finalize_mocks()
+        with mock.patch('oplus_vendor_sources.restore_vendor_sources') as restore, \
+                mock.patch('oplus_compat.prepare_vendor_dependencies', create=True) as prepare, \
+                mock.patch.object(kernel, 'validate_hooks', return_value=SimpleNamespace(calls=1, ok=True)) as hooks:
+            order = []
+            provenance = {'schema_version': 1, 'files': {'native.c': {'sha256': 'f' * 64}}}
+            restore.side_effect = lambda common, profile: (order.append(('restore', common)) or provenance)
+            prepare.side_effect = lambda common: order.append(('vendor', common))
+            hooks.side_effect = lambda *args, **kwargs: (order.append(('hooks', None)) or SimpleNamespace(calls=1, ok=True))
+            self.finalize(inputs={**self.inputs, 'enable_susfs': True})
+            self.assertEqual([('restore', self.root / 'common'), ('vendor', self.root / 'common'), ('hooks', None)], order)
+            self.assertEqual(provenance, json.loads((self.root / 'common/out/gki-oplus-vendor-sources.json').read_text()))
+            prepare.assert_called_once_with(self.root / 'common')
+
+    def test_kpm_native_bridge_follows_the_same_menu_policy_as_the_external_payload(self):
+        for variant in ('SukiSU', 'BakaSU'):
+            for tier in ('正式版', '最新版'):
+                for requested in (True, False):
+                    with self.subTest(variant=variant, tier=tier, requested=requested):
+                        self.finalize_mocks(variant)
+                        self.finalize(inputs={**self.inputs, 'kernelsu_variant': variant,
+                                              'kernelsu_branch': tier, 'use_kpm': requested}, variant=variant)
+                        expected = 'y' if requested and (variant == 'SukiSU' or tier == '正式版') else 'n'
+                        self.assertEqual(['CONFIG_KPM=' + expected],
+                                         re.findall(r'^CONFIG_KPM=.*$', self.config.read_text(), re.M))
+
+    def test_enabled_kpm_cannot_silently_ignore_a_missing_native_bridge_symbol(self):
+        self.finalize_mocks()
+        path = self.ksu / 'Kconfig'
+        path.write_text(path.read_text().replace('config KPM\n', ''))
+        with self.assertRaisesRegex(ValueError, 'native KPM bridge configuration'):
+            self.finalize(inputs={**self.inputs, 'use_kpm': True})
+
+    def test_include_root_adaptation_is_only_for_oplus_sukisu_612(self):
+        for version, variant in (('6.1', 'SukiSU'), ('6.6', 'SukiSU'), ('6.12', 'SukiSU'), ('6.12', 'BakaSU')):
+            with self.subTest(version=version, variant=variant):
+                self.finalize_mocks(variant)
+                with mock.patch.object(kernel, 'validate_profile', side_effect=lambda profile: profile), \
+                        mock.patch.object(kernel, 'native_inputs'), \
+                        mock.patch('oplus_ksu_compat.prepare_builtin_includes') as includes:
+                    old = self.profile
+                    self.profile = {**old, 'kernel_version': version}
+                    try:
+                        self.finalize(variant=variant)
+                    finally:
+                        self.profile = old
+                    if version == '6.12' and variant == 'SukiSU':
+                        includes.assert_called_once_with(self.root, self.reference)
+                    else:
+                        includes.assert_not_called()
+
+    def test_kpm_member_adaptation_only_runs_for_enabled_sukisu_612(self):
+        for version, variant, enabled in (('6.12', 'SukiSU', True), ('6.12', 'SukiSU', False),
+                                          ('6.6', 'SukiSU', True), ('6.12', 'BakaSU', True)):
+            with self.subTest(version=version, variant=variant, enabled=enabled):
+                self.finalize_mocks(variant)
+                with mock.patch.object(kernel, 'validate_profile', side_effect=lambda profile: profile), \
+                        mock.patch.object(kernel, 'native_inputs'), \
+                        mock.patch('oplus_ksu_compat.prepare_kpm_members') as members:
+                    old = self.profile
+                    self.profile = {**old, 'kernel_version': version}
+                    try:
+                        self.finalize(inputs={**self.inputs, 'kernelsu_variant': variant, 'use_kpm': enabled}, variant=variant)
+                    finally:
+                        self.profile = old
+                    if version == '6.12' and variant == 'SukiSU' and enabled:
+                        members.assert_called_once_with(self.root, self.reference)
+                    else:
+                        members.assert_not_called()
 
     def test_patch_rejects_after_failed_dry_run_without_applying(self):
         patch = self.workspace / 'test.patch'
@@ -230,6 +305,40 @@ class OPlusKernelTests(unittest.TestCase):
         integrate.assert_called_once_with(self.root, self.reference)
         for ignored in (restore, sources, patch, port):
             ignored.assert_not_called()
+
+    def test_both_native_66_hook_files_are_strict_and_preflighted_before_any_apply(self):
+        sections = [f'diff --git a/{name} b/{name}\n--- a/{name}\n+++ b/{name}\n'
+                    '@@ -1 +1 @@\n-before\n+after\n'
+                    for name in ('fs/namespace.c', 'fs/proc/task_mmu.c', 'fs/example.c')]
+        original = ''.join(sections).encode()
+        patch = self.workspace / '50_add_susfs_in_gki-android15-6.6.patch'
+        patch.write_bytes(original)
+        calls = []
+        def execute(arguments, *, cwd):
+            content = Path(arguments[arguments.index('-i') + 1]).read_bytes()
+            calls.append((arguments, content))
+            return ''
+        with mock.patch('oplus_susfs66.adapt_susfs66', return_value=original), \
+                mock.patch.object(kernel, 'command', side_effect=execute):
+            kernel.patch_checked(self.root / 'common', patch)
+        self.assertEqual(9, len(calls))
+        self.assertTrue(all('--dry-run' in command for command, _ in calls[:3]))
+        self.assertTrue(all('--dry-run' not in command for command, _ in calls[3:6]))
+        self.assertTrue(all('--reverse' in command for command, _ in calls[6:]))
+        for index, (command, content) in enumerate(calls):
+            self.assertEqual(sections[index % 3].encode(), content)
+            self.assertIn('--fuzz=0' if index % 3 < 2 else '--fuzz=3', command)
+        calls.clear()
+        def rejected(arguments, *, cwd):
+            execute(arguments, cwd=cwd)
+            if len(calls) == 3:
+                raise ValueError('unrelated third file failed its dry-run')
+        with mock.patch('oplus_susfs66.adapt_susfs66', return_value=original), \
+                mock.patch.object(kernel, 'command', side_effect=rejected), self.assertRaisesRegex(ValueError, 'third file'):
+            kernel.patch_checked(self.root / 'common', patch)
+        self.assertEqual(3, len(calls))
+        self.assertTrue(all('--dry-run' in command for command, _ in calls))
+        self.assertEqual(original, patch.read_bytes())
 
     def test_enabled_susfs_uses_prepared_official_target_and_only_ports_sukisu(self):
         sources = {'android14-6.1': {'ref': 'f' * 40, 'version': 'v2.3.0'}}

@@ -554,7 +554,7 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
         records.append(kernel)
     if seen != {(*key, variant) for key in identities for variant in expected_variants}:
         raise AssetError('OPlus native outputs do not cover the complete prepared build matrix')
-    title = ' / '.join(release_title(managers[variant]) for variant in sorted(managers))
+    title = ' / '.join(release_title(managers[variant], platform='OnePlus') for variant in sorted(managers))
     output.mkdir(parents=True, exist_ok=True)
     if any(output.iterdir()):
         raise AssetError('OPlus report output must be empty; existing files are preserved')

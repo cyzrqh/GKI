@@ -140,7 +140,7 @@ class DirectReleasePreparationTests(unittest.TestCase):
         document.update(ksu_branch='Stable(标准)')
         (directory / 'manager.json').write_text(json.dumps(document), encoding='utf-8')
         prepare_release.prepare(self.source, self.output)
-        self.assertEqual('SukiSU 41030 正式版', (self.output / 'title.txt').read_text(encoding='utf-8'))
+        self.assertEqual('Android · SukiSU 41030 正式版', (self.output / 'title.txt').read_text(encoding='utf-8'))
 
     def test_public_title_without_a_numeric_manager_code_does_not_fall_back_to_semver(self):
         directory, document = self.manager(flat=True)
@@ -162,7 +162,7 @@ class DirectReleasePreparationTests(unittest.TestCase):
                 (directory / 'manager.json').write_text(json.dumps(document), encoding='utf-8')
                 output = self.root / f'public-{index}'
                 prepare_release.prepare(self.source, output)
-                self.assertEqual(f'SukiSU 41030 {label}', (output / 'title.txt').read_text(encoding='utf-8'))
+                self.assertEqual(f'Android · SukiSU 41030 {label}', (output / 'title.txt').read_text(encoding='utf-8'))
 
     def kernel(self, *, flat=False):
         directory = self.source if flat else self.source / 'Release-SukiSU-android14-6.1-145-2025-09'
@@ -310,7 +310,7 @@ class RawReleasePreparationTests(unittest.TestCase):
                     (source / metadata['file']).write_bytes(apk)
                     output = self.root / f'public-{variant}-{label}'
                     prepare_release.prepare(source, output)
-                    self.assertEqual(f'{variant} {code} {label}',
+                    self.assertEqual(f'Android · {variant} {code} {label}',
                                      (output / 'title.txt').read_text(encoding='utf-8'))
                     self.assertEqual(apk, (output / 'assets' / metadata['file']).read_bytes())
 

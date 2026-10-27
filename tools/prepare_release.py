@@ -99,10 +99,12 @@ def validate_bindings(manager: dict | None, kernels: list[tuple[dict, bool]], *,
                 raise ValueError('The release kernel does not match the signed manager APK: ' + key)
 
 
-def release_title(manager: dict | None) -> str:
+def release_title(manager: dict | None, *, platform: str = 'Android') -> str:
     """Name the release from its actual manager version code and resolved tier."""
+    if platform not in ('Android', 'OnePlus'):
+        raise ValueError('Release platform must be Android or OnePlus')
     if manager is None:
-        return 'GKI Kernel Release'
+        return platform + ' Kernel Release'
     variant = manager.get('ksu_variant', 'SukiSU')
     version = manager.get('ksu_version_code')
     if (type(version) not in (str, int) or not re.fullmatch(r'[1-9][0-9]*', str(version))
@@ -111,7 +113,7 @@ def release_title(manager: dict | None) -> str:
     branch = manager.get('ksu_branch') or '版本类型未知'
     label = {'Stable(标准)': '正式版', 'Latest(最新)': '最新测试版',
              'Dev(开发)': '开发版', 'Custom(自定义)': '自定义版'}.get(branch, branch)
-    return f'{variant} {version} {label}'
+    return f'{platform} · {variant} {version} {label}'
 
 
 def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = None,

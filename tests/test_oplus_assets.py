@@ -256,7 +256,7 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertNotIn('null', summary)
         self.assertIn('| SUSFS | 开启 |', summary)
         self.assertIn('| KPM | 关闭 |', summary)
-        self.assertEqual('SukiSU 40922 开发版', (self.output / 'title.txt').read_text())
+        self.assertEqual('OnePlus · SukiSU 40922 开发版', (self.output / 'title.txt').read_text())
         self.assertNotIn('title.txt', hashes)
         self.assertNotIn('summary.md', hashes)
 
@@ -270,7 +270,8 @@ class OplusAssetsTests(unittest.TestCase):
                 path = self.pack()
                 with mock.patch.dict(os.environ, {'MANAGER_VERSION_CODE': '999999', 'KSU_BRANCH': 'Custom(自定义)'}):
                     self.gather(variants=variant)
-                self.assertEqual(variant + ' ' + code + ' ' + label, (self.output / 'title.txt').read_text())
+                self.assertEqual('OnePlus · ' + variant + ' ' + code + ' ' + label,
+                                 (self.output / 'title.txt').read_text())
                 self.assertNotIn('999999', (self.output / 'title.txt').read_text())
                 path.unlink()
                 shutil.rmtree(self.output)

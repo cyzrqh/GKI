@@ -78,6 +78,12 @@ java -version
 rustc +nightly --version
 cargo +nightly --version
 
+# Verify the restored manager sources before the build-only ABI/signing edits.
+(
+cd "$manager_dir"
+bash ./gradlew --no-daemon --stacktrace --build-cache spotlessCheck -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"
+)
+
 # Keep the APK and its included daemon on the same ABI. The source patch is
 # intentionally limited to the official abiFilters list and rejects layout drift.
 python3 - "$manager_dir/app/build.gradle.kts" <<'PY'

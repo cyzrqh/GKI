@@ -10,10 +10,7 @@ from workflow_jobs import release_publish_steps
 
 OUTPUT = Path('.github/workflows/oplus-full-feature-matrix.yml')
 DISPATCH = "github.event_name == 'workflow_dispatch'"
-KPM_IF = ("inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || "
-          "(inputs.kernelsu_variant == 'BakaSU' && "
-          "(needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || "
-          "needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)')))")
+KPM_IF = "inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')"
 INPUTS = {
     'kernelsu_variant': {'description': 'KernelSU 变体', 'required': True, 'type': 'choice',
                         'options': ['SukiSU', 'BakaSU'], 'default': 'SukiSU'},

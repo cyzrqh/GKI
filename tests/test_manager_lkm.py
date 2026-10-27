@@ -1,4 +1,5 @@
 import contextlib
+import copy
 import hashlib
 import io
 import json
@@ -280,6 +281,12 @@ class ManagerLkmTests(unittest.TestCase):
         self.assertEqual(self.stage()['modules'], [metadata])
 
     def bakasu_source(self):
+        # This fixture tests LKM transport/provenance, not the independently
+        # tested real port applier. Its tiny Git tree is not official BakaSU.
+        verifier = mock.patch('restore_bakasu_kpm.verify_bakasu_kpm_port',
+                              return_value={'port_sha256': 'd' * 64})
+        self.port_verifier = verifier.start()
+        self.addCleanup(verifier.stop)
         (self.source / 'kernel/Kbuild').write_text(
             'kernelsu-objs := original.o\n'
             'KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)\n'
@@ -292,6 +299,12 @@ class ManagerLkmTests(unittest.TestCase):
         self.identity_file.write_text(json.dumps(self.identity), encoding='utf-8')
         self.compiler_record.write_text('cmd_core/init.o := clang -DCONFIG_KSU=1 -DKSU_VERSION='
                                        + str(self.version) + ' -c core/init.c\n', encoding='utf-8')
+        (self.source / 'kernel/kpm').mkdir()
+        self.kpm_record = self.source / 'kernel/kpm/.kpm.o.cmd'
+        self.kpm_command = ('clang -DCONFIG_KSU=1 -DCONFIG_KPM=1 -DKSU_VERSION='
+                            + str(self.version) + ' -c -o /source/kernel/kpm/kpm.o /source/kernel/kpm/kpm.c')
+        self.kpm_record.write_text('cmd_/source/kernel/kpm/kpm.o := ' + self.kpm_command
+                                   + '\nsource_/source/kernel/kpm/kpm.o := /source/kernel/kpm/kpm.c\n', encoding='utf-8')
 
     def test_bakasu_source_history_and_repository_bind_native_module_records(self):
         self.bakasu_source()
@@ -300,10 +313,96 @@ class ManagerLkmTests(unittest.TestCase):
             staged = self.stage()
             self.assertEqual('Baka-SU/BakaSU', record['repository'])
             self.assertEqual(self.version, record['ksu_version_code'])
+            self.assertEqual('d' * 64, record['bakasu_kpm_port_sha256'])
+            self.assertEqual(self.kpm_command, record['kpm_compiler_proof']['command'])
+            self.assertEqual('kernel/kpm/.kpm.o.cmd', record['kpm_compiler_proof']['record_file'])
+            self.port_verifier.assert_called_with(self.source, self.reference,
+                scope=('kernel', 'uapi', 'userspace/ksud/src/assets.rs'))
             self.assertEqual(record, staged['modules'][0])
             self.assertEqual('com.resukisu.resukisu', staged['manager_package'])
         with mock.patch.dict(os.environ, {'KSU_VARIANT': 'SukiSU'}), self.assertRaisesRegex(lkm.LkmError, 'formula changed'):
             lkm.selected_source(self.source, self.reference)
+
+    def test_bakasu_requires_the_actual_kpm_translation_unit_not_an_input_flag(self):
+        self.bakasu_source()
+        original = self.kpm_record.read_text(encoding='utf-8')
+        invalid = (
+            None,
+            'cmd_core/init.o := ' + self.kpm_command,
+            original.replace('-DCONFIG_KPM=1', '-DCONFIG_KPM=0'),
+            original.replace('-DCONFIG_KPM=1', ''),
+            original.replace('-DCONFIG_KPM=1', '-DCONFIG_KPM=1 -UCONFIG_KPM'),
+            original.replace('-DKSU_VERSION=' + str(self.version), '-DKSU_VERSION=35251'),
+            original.replace('-c -o /source/kernel/kpm/kpm.o /source/kernel/kpm/kpm.c',
+                             '-c -o /source/kernel/core/init.o /source/kernel/core/init.c'),
+            original + original,
+        )
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+            for command in invalid:
+                if command is None:
+                    self.kpm_record.unlink()
+                else:
+                    self.kpm_record.write_text(command, encoding='utf-8')
+                with self.subTest(command=command), self.assertRaisesRegex(lkm.LkmError, '(KPM|compiler version)'):
+                    self.record()
+                self.assertEqual([], list(self.artifacts.iterdir()))
+
+    def test_bakasu_cache_rejects_missing_old_or_unbound_port_compiler_proof(self):
+        self.bakasu_source()
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+            metadata = self.record()
+            path = self.artifacts / 'android13-5.15/module.json'
+            broken = []
+            for field in ('bakasu_kpm_port_sha256', 'kpm_compiler_proof'):
+                stale = copy.deepcopy(metadata)
+                del stale[field]
+                broken.append(stale)
+            broken.append({**metadata, 'bakasu_kpm_port_sha256': 'e' * 64})
+            for field, value in (('schema_version', True), ('record_file', 'kernel/core/.init.o.cmd'),
+                                 ('record_sha256', 'bad'), ('binding_sha256', '0' * 64),
+                                 ('command', self.kpm_command.replace('-DCONFIG_KPM=1', '-DCONFIG_KPM=0')),
+                                 ('command', self.kpm_command.replace(str(self.version), '35251'))):
+                stale = copy.deepcopy(metadata)
+                stale['kpm_compiler_proof'][field] = value
+                # Even a structurally rehashed claim must prove real KPM
+                # compilation; a build flag or unrelated C object is insufficient.
+                if field == 'command':
+                    core = {key: item for key, item in stale['kpm_compiler_proof'].items() if key != 'binding_sha256'}
+                    stale['kpm_compiler_proof']['binding_sha256'] = lkm.kpm_proof_binding(core, stale)
+                broken.append(stale)
+            for stale in broken:
+                path.write_text(json.dumps(stale), encoding='utf-8')
+                with self.subTest(metadata=stale), self.assertRaises(lkm.LkmError):
+                    self.stage()
+                self.assertFalse(list(self.assets.glob('*.ko')))
+                self.assertFalse(self.report.exists())
+            # A genuine cache hit has no compiler tree. The bounded recorded
+            # recipe, pinned source/port and actual ELF binding still validate.
+            path.write_text(json.dumps(metadata), encoding='utf-8')
+            self.kpm_record.unlink()
+            self.compiler_record.unlink()
+            self.assertEqual([metadata], self.stage()['modules'])
+
+    def test_bakasu_compiler_proof_cannot_be_replayed_for_another_elf(self):
+        self.bakasu_source()
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+            metadata = self.record()
+            directory = self.artifacts / 'android13-5.15'
+            module = directory / metadata['file']
+            module.write_bytes(module.read_bytes() + b'another build of the same source')
+            changed = lkm.inspect_module(module, 'android13-5.15', self.identity, self.reference)
+            (directory / 'module.json').write_text(json.dumps({**metadata, **changed}), encoding='utf-8')
+            with self.assertRaisesRegex(lkm.LkmError, 'evidence does not match'):
+                self.stage()
+            self.assertFalse(list(self.assets.glob('*.ko')))
+
+    def test_bakasu_savedcmd_and_continued_actual_recipe_are_supported(self):
+        self.bakasu_source()
+        self.kpm_record.write_text('savedcmd_/source/kernel/kpm/kpm.o := '
+            + self.kpm_command.replace(' -c ', ' \\\n -c ') + ' ; objtool --module /source/kernel/kpm/kpm.o\n', encoding='utf-8')
+        with mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+            self.assertEqual(2, self.record()['compiler_records'])
+            self.assertEqual(['android13-5.15'], self.stage()['supported_kmis'])
 
     def test_bakasu_version_formula_drift_and_cross_manager_package_are_refused(self):
         self.bakasu_source()

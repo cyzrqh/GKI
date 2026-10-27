@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import struct
 import sys
@@ -29,6 +30,10 @@ MAX_MODULE = 64 * 1024 * 1024
 MAX_JSON = 64 * 1024
 ROOT = Path(__file__).resolve().parents[1]
 _UNSPECIFIED_IMAGE = object()
+KPM_RECORD = 'kernel/kpm/.kpm.o.cmd'
+MAX_KPM_COMMAND = 32 * 1024
+KPM_MODULE_BINDINGS = ('ksu_ref', 'ksu_version_code', 'bakasu_kpm_port_sha256', 'sha256', 'size',
+                       'kmi', 'ddk_image', 'manager_package', 'manager_cert_size', 'manager_cert_sha256')
 
 
 class LkmError(ValueError):
@@ -75,9 +80,18 @@ def selected_source(source: Path, reference: str) -> dict:
     variant = selected_variant()
     reference = expected_commit(reference)
     metadata = source_identity(source, reference)
-    # An LKM uses upstream's original native hooks. The inline SUSFS integration
-    # deliberately edits these files and must never be fed to this DDK build.
-    git(source, "diff", "--quiet", "HEAD", "--", "kernel", "uapi", "userspace/ksud/src/assets.rs")
+    # The restored BakaSU KPM bridge is a verified additive source port. Inline
+    # SUSFS or any unrelated native-source change must still be rejected.
+    if variant == 'BakaSU':
+        from restore_bakasu_kpm import verify_bakasu_kpm_port
+        try:
+            port = verify_bakasu_kpm_port(source, reference,
+                                         scope=('kernel', 'uapi', 'userspace/ksud/src/assets.rs'))
+        except ValueError as error:
+            raise LkmError('BakaSU LKM source port verification failed: ' + str(error)) from None
+        metadata['bakasu_kpm_port_sha256'] = port['port_sha256']
+    else:
+        git(source, "diff", "--quiet", "HEAD", "--", "kernel", "uapi", "userspace/ksud/src/assets.rs")
     version = native_version_code(source, metadata["git_count"], variant=variant)
     return {"repository": manager_profile(variant)['repository'], "ksu_ref": reference,
             "ksu_version_code": version, **metadata}
@@ -147,6 +161,75 @@ def compile_version_proof(source: Path, version: int) -> dict:
         raise LkmError("Native module is missing actual compiler version evidence")
     return {"compiler_records": len(evidence),
             "compiler_records_sha256": hashlib.sha256(json.dumps(evidence, sort_keys=True).encode()).hexdigest()}
+
+
+def validate_kpm_command(command: str, version: int) -> None:
+    """Require the real KPM translation unit, rather than an unrelated -D flag."""
+    if (not isinstance(command, str) or not 0 < len(command.encode('utf-8')) <= MAX_KPM_COMMAND
+            or any(character in command for character in ('\0', '\n', '\r'))):
+        raise LkmError('BakaSU LKM KPM compiler command is missing or unsafe')
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|')
+        lexer.whitespace_split, lexer.commenters = True, ''
+        tokens = list(lexer)
+    except ValueError as error:
+        raise LkmError('BakaSU LKM KPM compiler command is invalid') from error
+    # Kbuild may append an objtool command after the actual C compilation.
+    end = next((index for index, token in enumerate(tokens) if token in (';', '&&', '||', '|', '&')), len(tokens))
+    compile_tokens = tokens[:end]
+    definitions = [token for token in compile_tokens if token.startswith(('-DCONFIG_KPM', '-UCONFIG_KPM'))]
+    versions = [token for token in compile_tokens if token.startswith(('-DKSU_VERSION', '-UKSU_VERSION'))]
+    outputs = [compile_tokens[index + 1] for index, token in enumerate(compile_tokens[:-1]) if token == '-o']
+    sources = [token for token in compile_tokens if token == 'kpm/kpm.c' or token.endswith('/kpm/kpm.c')]
+    if (definitions != ['-DCONFIG_KPM=1'] or versions != ['-DKSU_VERSION=' + str(version)]
+            or compile_tokens.count('-c') != 1 or len(outputs) != 1
+            or not (outputs[0] == 'kpm/kpm.o' or outputs[0].endswith('/kpm/kpm.o'))
+            or len(sources) != 1):
+        raise LkmError('BakaSU LKM requires actual KPM C compilation with CONFIG_KPM=1 and its pinned version')
+
+
+def kpm_proof_binding(proof: dict, metadata: dict) -> str:
+    body = {'proof': proof, 'module': {key: metadata[key] for key in KPM_MODULE_BINDINGS}}
+    return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
+
+
+def compiled_kpm_proof(source: Path, metadata: dict) -> dict:
+    """Transport the bounded actual Kbuild recipe with its module/port binding.
+
+    A cache consumer has no compiler worktree. It revalidates this command and
+    binding before accepting the recorded ELF, rather than trusting a build
+    input flag or a boolean capability claim. Runtime capability is still
+    determined by the real ABI-2 payload probe on the device.
+    """
+    path = source / KPM_RECORD
+    if (any(parent.is_symlink() for parent in (path, *path.parents) if parent.is_relative_to(source))
+            or not path.is_file() or not 0 < path.stat().st_size <= 8 * 1024 * 1024):
+        raise LkmError('BakaSU LKM is missing its actual native KPM compiler record')
+    raw = path.read_bytes()
+    text = re.sub(r'\\\r?\n', ' ', raw.decode('utf-8'))
+    commands = re.findall(r'^(?:savedcmd|cmd)_[^\r\n]*kpm/kpm\.o[ \t]*:=[ \t]*(.+)$', text, re.M)
+    if len(commands) != 1:
+        raise LkmError('BakaSU LKM requires exactly one native KPM compiler command')
+    command = commands[0].strip()
+    validate_kpm_command(command, metadata['ksu_version_code'])
+    proof = {'schema_version': 1, 'record_file': KPM_RECORD,
+             'record_sha256': hashlib.sha256(raw).hexdigest(), 'command': command}
+    return {**proof, 'binding_sha256': kpm_proof_binding(proof, metadata)}
+
+
+def validate_compiled_kpm_proof(metadata: dict) -> None:
+    proof = metadata.get('kpm_compiler_proof')
+    if (not isinstance(proof, dict)
+            or set(proof) != {'schema_version', 'record_file', 'record_sha256', 'command', 'binding_sha256'}
+            or type(proof['schema_version']) is not int or proof['schema_version'] != 1
+            or proof['record_file'] != KPM_RECORD
+            or any(not isinstance(proof[field], str) or not re.fullmatch(r'[0-9a-f]{64}', proof[field])
+                   for field in ('record_sha256', 'binding_sha256'))):
+        raise LkmError('BakaSU LKM cache lacks verified native KPM compiler evidence; rebuild this module')
+    validate_kpm_command(proof['command'], metadata['ksu_version_code'])
+    core = {key: value for key, value in proof.items() if key != 'binding_sha256'}
+    if proof['binding_sha256'] != kpm_proof_binding(core, metadata):
+        raise LkmError('BakaSU LKM KPM compiler evidence does not match its module and reviewed port')
 
 
 def inspect_module(path: Path, kmi: str, identity: dict, reference: str) -> dict:
@@ -242,12 +325,17 @@ def record(source: Path, module: Path, kmi: str, identity_file: Path, reference:
     inspected = inspect_module(module, kmi, identity, provenance["ksu_ref"])
     version_proof = compile_version_proof(source, provenance["ksu_version_code"])
     filename = kmi + "_kernelsu.ko"
+    metadata = {"schema_version": 1, "arch": "aarch64", "kmi": kmi, "file": filename,
+                "ddk_image": ddk_image, **provenance, **identity, **inspected, **version_proof}
+    if selected_variant() == 'BakaSU':
+        metadata['kpm_compiler_proof'] = compiled_kpm_proof(source, metadata)
+        validate_compiled_kpm_proof(metadata)
+        if len(json.dumps(metadata, ensure_ascii=True, indent=2).encode('utf-8')) + 1 > MAX_JSON:
+            raise LkmError('BakaSU LKM compiler evidence exceeds its bounded cache metadata')
     output = output.absolute()
     output.mkdir(parents=True, exist_ok=True)
     if output.is_symlink() or (output / filename).exists() or (output / "module.json").exists():
         raise LkmError("LKM artifact output already exists or is symlinked")
-    metadata = {"schema_version": 1, "arch": "aarch64", "kmi": kmi, "file": filename,
-                "ddk_image": ddk_image, **provenance, **identity, **inspected, **version_proof}
     shutil.copyfile(module, output / filename)
     if hashlib.sha256((output / filename).read_bytes()).hexdigest() != inspected["sha256"]:
         raise LkmError("LKM changed while recording its artifact")
@@ -286,6 +374,8 @@ def stage(source: Path, artifacts: Path, identity_file: Path, reference: str,
                 or not isinstance(metadata.get("compiler_records_sha256"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", metadata["compiler_records_sha256"])):
             raise LkmError("LKM artifact lacks verified native compiler version evidence")
+        if selected_variant() == 'BakaSU':
+            validate_compiled_kpm_proof(metadata)
         actual = inspect_module(module, kmi, identity, provenance["ksu_ref"])
         if any(metadata.get(key) != value for key, value in actual.items()):
             raise LkmError("LKM artifact digest or ELF identity changed after compilation")

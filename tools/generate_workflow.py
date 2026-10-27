@@ -383,8 +383,8 @@ def create_workflow(root):
         'ksu_branch': 'needs.prepare-matrix.outputs.effective_ksu_branch', 'upload_aux_artifacts': 'false',
         'custom_ref': 'vars.KSU_CUSTOM_REF',
         'virtualization_support': "(inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version == '6.12' && 'on' || (inputs.virtualization_support == 'on' && '678' || inputs.virtualization_support)))",
-        'use_kpm': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)'))))",
-        'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || (inputs.kernelsu_variant == 'BakaSU' && (needs.prepare-matrix.outputs.effective_ksu_branch == 'Stable(标准)' || needs.prepare-matrix.outputs.effective_ksu_branch == 'Custom(自定义)'))) && inputs.kpm_password || '')",
+        'use_kpm': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'))",
+        'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && inputs.kpm_password || '')",
     })
     # Required values are supplied by the matrix / renamed inputs above.
     job = copy.deepcopy(source['job'])
@@ -724,6 +724,13 @@ python3 -m unittest discover -s tests -p 'test_official_susfs_archive.py'
 python3 -m unittest discover -s tests -p 'test_shared_susfs_archive_integration.py'
 python3 -m unittest discover -s tests -p 'test_git_diagnostics.py'
 python3 -m unittest discover -s tests -p 'test_bakasu_symbol_lookup.py'
+'''},
+            {'name': '验证 BakaSU KPM 原生接口与补丁',
+             'if': PREPARE_IF + " && inputs.kernelsu_variant == 'BakaSU'",
+             'run': '''set -euo pipefail
+command -v cc >/dev/null
+python3 -m unittest discover -s tests -p 'test_bakasu_kpm_backend.py'
+python3 -m unittest discover -s tests -p 'test_bakasu_kpm_port.py'
 '''},
             {'name': '固定本次 KernelSU 与管理器源码', 'id': 'sources',
              'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}',

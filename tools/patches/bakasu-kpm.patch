@@ -1,0 +1,1882 @@
+diff --git a/kernel/Kbuild b/kernel/Kbuild
+index ef9b137..d7f4883 100644
+--- a/kernel/Kbuild
++++ b/kernel/Kbuild
+@@ -2,6 +2,14 @@ kernelsu-objs := core/init.o
+ kernelsu-objs += policy/allowlist.o
+ kernelsu-objs += policy/app_profile.o
+ kernelsu-objs += policy/feature.o
++# GKI_BAKASU_KPM_PORT_V1: the bridge uses BakaSU's native symbol resolver.
++ifeq ($(CONFIG_KPM),y)
++kernelsu-objs += kpm/kpm.o
++ifdef KBUILD_EXTMOD
++ccflags-y += -DCONFIG_KPM=1
++endif
++endif
++
+ kernelsu-objs += feature/sucompat.o
+ kernelsu-objs += feature/kernel_umount.o
+ kernelsu-objs += feature/sulog.o
+diff --git a/kernel/Kconfig b/kernel/Kconfig
+index 79bc79e..9d003e4 100644
+--- a/kernel/Kconfig
++++ b/kernel/Kconfig
+@@ -8,6 +8,17 @@ config KSU
+ 		Enable kernel-level root privileges on Android System.
+ 		Choose "m" here to build KernelSU as LKM
+ 
++config KPM
++    bool "BakaSU KPM (official KernelPatch ABI-2 bridge)"
++    depends on KSU && ARM64 && 64BIT
++    default n
++    select KALLSYMS
++    select KALLSYMS_ALL
++    help
++      Enable the manager/root-authorized KPM control interface. A matching
++      audited KernelPatch ABI-2 payload must also be embedded in the kernel.
++      Runtime capability is verified by the bridge, never assumed enabled.
++
+ config KSU_DEBUG
+ 	  bool "KernelSU debug mode"
+ 	  depends on KSU
+diff --git a/kernel/core/init.c b/kernel/core/init.c
+index 65f40a4..9480ece 100644
+--- a/kernel/core/init.c
++++ b/kernel/core/init.c
+@@ -17,6 +17,7 @@
+ #include "policy/allowlist.h"
+ #include "policy/app_profile.h"
+ #include "policy/feature.h"
++#include "kpm/kpm.h"
+ #include "klog.h" // IWYU pragma: keep
+ #include "manager/manager_observer.h"
+ #include "manager/throne_tracker.h"
+@@ -237,6 +238,7 @@ int __init kernelsu_init(void)
+     ksu_init_symbol_resolver();
+     ksu_selinux_init();
+     ksu_feature_init();
++    ksu_kpm_init();
+     ksu_sulog_init();
+     ksu_adb_root_init();
+     ksu_selinux_hide_init();
+@@ -330,6 +332,7 @@ void __exit kernelsu_exit(void)
+     ksu_selinux_hide_exit();
+     ksu_adb_root_exit();
+     ksu_sulog_exit();
++    ksu_kpm_exit();
+     ksu_feature_exit();
+     ksu_module_blacklist_exit();
+ 
+diff --git a/kernel/kpm/bridge.h b/kernel/kpm/bridge.h
+new file mode 100644
+index 0000000..d948005
+--- /dev/null
++++ b/kernel/kpm/bridge.h
+@@ -0,0 +1,27 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef _SUKISU_KPM_BRIDGE_H_
++#define _SUKISU_KPM_BRIDGE_H_
++
++/* Kernel-only ABI v2, mirrored in KernelPatch patch/sukisu/supercall.h.
++ * op 1..7 are the existing SUKISU_KPM_* extension operations. Op 8 is an
++ * optional event-aware file load for boot-stage modules.
++ * LOAD(path,args,user_reserved), UNLOAD(name,user_reserved), NUM(),
++ * LIST(kernel_buf,size), INFO(name,kernel_buf,size),
++ * CONTROL(name,args,user_output,size), VERSION(kernel_buf,size).
++ */
++/* Public framing tags: ALL must match. These are not authentication. */
++#define SUKISU_KPM_SUPERCALL_MAGIC 0x53554b504d000002UL
++#define SUKISU_KPM_SUPERCALL_MAGIC2 0x4b504d4252494447UL
++#define SUKISU_KPM_SUPERCALL_MAGIC3 0x53554b494e544552UL
++/* x6=magic2, x7=magic3, x8=ABI version; x9..x30 reserved (zero).
++ * Internal synthetic pt_regs only; the userspace extension ABI is unchanged.
++ * Event-aware loading is optional so newer ksud can fall back to LOAD on
++ * older KernelPatch builds that return -EOPNOTSUPP for op 8.
++ */
++#define SUKISU_KPM_ABI_VERSION 2
++#define SUKISU_KPM_PROBE 0
++#define SUKISU_KPM_OUTPUT_MAX 4096
++
++long sukisu_kpm_bridge(unsigned long op, unsigned long a1, unsigned long a2,
++                       unsigned long a3, unsigned long a4);
++#endif
+diff --git a/kernel/kpm/kpm.c b/kernel/kpm/kpm.c
+new file mode 100644
+index 0000000..9d7b6b7
+--- /dev/null
++++ b/kernel/kpm/kpm.c
+@@ -0,0 +1,213 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++/* Both built-in and LKM modes use the same KernelPatch kernel-only bridge.
++ * The public extension ioctl and ksu_kpm_cmd layout are unchanged.
++ */
++#include <linux/errno.h>
++#include <linux/slab.h>
++#include <linux/string.h>
++#include <linux/uaccess.h>
++#include <linux/kernel.h>
++#ifdef CONFIG_ARM64
++#include <asm/ptrace.h>
++#endif
++#include "infra/symbol_resolver.h"
++#include "kpm.h"
++#include "bridge.h"
++#include "policy/feature.h"
++
++#define KPM_NAME_LEN 32
++#define KPM_ARGS_LEN 1024
++#define KPM_PATH_LEN 1024
++#define KPM_EVENT_LEN 64
++/* Legacy INFO has no capacity argument. Existing ksud allocates 256 bytes. */
++#define KPM_INFO_LEN 256
++
++long __nocfi sukisu_kpm_bridge(unsigned long op, unsigned long a1, unsigned long a2,
++                              unsigned long a3, unsigned long a4)
++{
++#ifdef CONFIG_ARM64
++    typedef long (*handler_t)(const struct pt_regs *);
++    static handler_t handler;
++    struct pt_regs regs = { 0 };
++    handler_t fn = READ_ONCE(handler);
++
++    if (!fn) {
++        fn = (handler_t)find_kernel_symbol_exact("__arm64_sys_truncate");
++        if (!fn) fn = (handler_t)find_kernel_symbol_exact("__arm64_sys_truncate.cfi_jt");
++        if (!fn) fn = (handler_t)find_kernel_symbol_exact("__arm64_sys_truncate.cfi");
++        if (!fn) return -EOPNOTSUPP;
++        WRITE_ONCE(handler, fn);
++    }
++    regs.pstate = PSR_MODE_EL1h;
++    regs.regs[0] = SUKISU_KPM_SUPERCALL_MAGIC;
++    regs.regs[6] = SUKISU_KPM_SUPERCALL_MAGIC2;
++    regs.regs[7] = SUKISU_KPM_SUPERCALL_MAGIC3;
++    regs.regs[8] = SUKISU_KPM_ABI_VERSION;
++    regs.regs[1] = SUKISU_KPM_PROBE;
++    /* Without KP this is a real truncate handler: the magic is a non-userspace
++     * address and yields an error, not a function pointer. */
++    if (fn(&regs) != SUKISU_KPM_ABI_VERSION) return -EOPNOTSUPP;
++    regs.regs[1] = op;
++    regs.regs[2] = a1;
++    regs.regs[3] = a2;
++    regs.regs[4] = a3;
++    regs.regs[5] = a4;
++    return fn(&regs);
++#else
++    return -EOPNOTSUPP;
++#endif
++}
++
++static int copy_string(char *buf, const char __user *src, size_t size, bool optional)
++{
++    long len;
++    buf[0] = '\0';
++    if (!src) return optional ? 0 : -EINVAL;
++    len = strncpy_from_user(buf, src, size);
++    if (len < 0) return len;
++    if (len >= size) return -ENAMETOOLONG;
++    if (!optional && !len) return -EINVAL;
++    return 0;
++}
++
++static int copy_output(void __user *out, const char *buf, long len, size_t size)
++{
++    if (len < 0) return len;
++    if (len >= size) return -ENOBUFS;
++    return copy_to_user(out, buf, len + 1) ? -EFAULT : 0;
++}
++
++static int handle_kpm_load_event(const struct ksu_kpm_cmd *cmd)
++{
++    struct ksu_kpm_load_event_cmd load;
++    char *path, *args, *event;
++    int rc;
++
++    if (copy_from_user(&load, u64_to_user_ptr(cmd->arg2), sizeof(load))) return -EFAULT;
++
++    path = kzalloc(KPM_PATH_LEN, GFP_KERNEL);
++    args = kzalloc(KPM_ARGS_LEN, GFP_KERNEL);
++    event = kzalloc(KPM_EVENT_LEN, GFP_KERNEL);
++    if (!path || !args || !event) {
++        rc = -ENOMEM;
++        goto out;
++    }
++
++    rc = copy_string(path, u64_to_user_ptr(cmd->arg1), KPM_PATH_LEN, false);
++    if (!rc) rc = copy_string(args, u64_to_user_ptr(load.args), KPM_ARGS_LEN, true);
++    if (!rc) rc = copy_string(event, u64_to_user_ptr(load.event), KPM_EVENT_LEN, false);
++    if (!rc) {
++        rc = sukisu_kpm_bridge(SUKISU_KPM_LOAD_EVENT, (unsigned long)path,
++                               (unsigned long)args, (unsigned long)event, 0);
++    }
++
++out:
++    kfree(event);
++    kfree(args);
++    kfree(path);
++    return rc;
++}
++
++static int handle_kpm(const struct ksu_kpm_cmd *cmd)
++{
++    const char __user *arg1 = u64_to_user_ptr(cmd->arg1);
++    const char __user *arg2 = u64_to_user_ptr(cmd->arg2);
++    char *buf, *name, *args;
++    long rc;
++    size_t size;
++
++    if (cmd->control_code == SUKISU_KPM_NUM)
++        return sukisu_kpm_bridge(SUKISU_KPM_NUM, 0, 0, 0, 0);
++
++    if (cmd->control_code == SUKISU_KPM_LOAD_EVENT)
++        return handle_kpm_load_event(cmd);
++
++    if (cmd->control_code == SUKISU_KPM_LOAD ||
++        cmd->control_code == SUKISU_KPM_CONTROL) {
++        size = cmd->control_code == SUKISU_KPM_LOAD ? KPM_PATH_LEN : KPM_NAME_LEN;
++        buf = kzalloc(size + KPM_ARGS_LEN, GFP_KERNEL);
++        if (!buf) return -ENOMEM;
++        args = buf + size;
++        rc = copy_string(buf, arg1, size, false);
++        if (!rc) rc = copy_string(args, arg2, KPM_ARGS_LEN,
++                                  cmd->control_code == SUKISU_KPM_LOAD);
++        if (!rc) rc = sukisu_kpm_bridge(cmd->control_code, (unsigned long)buf,
++                                        (unsigned long)args, 0, 0);
++        kfree(buf);
++        return rc;
++    }
++    if (cmd->control_code == SUKISU_KPM_UNLOAD) {
++        name = kmalloc(KPM_NAME_LEN, GFP_KERNEL);
++        if (!name) return -ENOMEM;
++        rc = copy_string(name, arg1, KPM_NAME_LEN, false);
++        if (!rc) rc = sukisu_kpm_bridge(SUKISU_KPM_UNLOAD, (unsigned long)name, 0, 0, 0);
++        kfree(name);
++        return rc;
++    }
++    if (cmd->control_code == SUKISU_KPM_INFO) {
++        name = kmalloc(KPM_NAME_LEN + KPM_INFO_LEN, GFP_KERNEL);
++        if (!name) return -ENOMEM;
++        buf = name + KPM_NAME_LEN;
++        rc = copy_string(name, arg1, KPM_NAME_LEN, false);
++        if (!rc) {
++            rc = sukisu_kpm_bridge(SUKISU_KPM_INFO, (unsigned long)name,
++                                    (unsigned long)buf, KPM_INFO_LEN, 0);
++            rc = copy_output((void __user *)arg2, buf, rc, KPM_INFO_LEN);
++        }
++        kfree(name);
++        return rc;
++    }
++    if (cmd->control_code != SUKISU_KPM_LIST &&
++        cmd->control_code != SUKISU_KPM_VERSION) return -EOPNOTSUPP;
++    if (!cmd->arg2 || cmd->arg2 > SUKISU_KPM_OUTPUT_MAX) return -EINVAL;
++    size = cmd->arg2;
++    buf = kzalloc(size, GFP_KERNEL);
++    if (!buf) return -ENOMEM;
++    rc = sukisu_kpm_bridge(cmd->control_code, (unsigned long)buf, size, 0, 0);
++    if (rc >= 0) {
++        long length = rc;
++        rc = copy_output((void __user *)arg1, buf, length, size);
++        /* LIST historically returns its length; VERSION returns status. */
++        if (!rc && cmd->control_code == SUKISU_KPM_LIST) rc = length;
++    }
++    kfree(buf);
++    return rc;
++}
++
++int do_kpm(void __user *arg)
++{
++    struct ksu_kpm_cmd cmd;
++    int result;
++    /* Called only through the manager_or_root-authorized extension ioctl. */
++    if (copy_from_user(&cmd, arg, sizeof(cmd))) return -EFAULT;
++    if (!access_ok(u64_to_user_ptr(cmd.result_code), sizeof(result))) return -EFAULT;
++    result = handle_kpm(&cmd);
++    return copy_to_user(u64_to_user_ptr(cmd.result_code), &result, sizeof(result)) ? -EFAULT : 0;
++}
++
++/* GKI_BAKASU_KPM_PORT_V1: capability is a real live ABI-2 probe, not a
++ * mutable enable bit. In particular feature 3 remains adb_root.
++ */
++static int ksu_kpm_feature_get(u64 *value)
++{
++    *value = sukisu_kpm_bridge(SUKISU_KPM_PROBE, 0, 0, 0, 0) == SUKISU_KPM_ABI_VERSION;
++    return 0;
++}
++
++static const struct ksu_feature_handler ksu_kpm_feature_handler = {
++    .feature_id = KSU_FEATURE_KPM,
++    .name = "kpm",
++    .get_handler = ksu_kpm_feature_get,
++    .set_handler = NULL,
++};
++
++void __init ksu_kpm_init(void)
++{
++    if (ksu_register_feature_handler(&ksu_kpm_feature_handler))
++        pr_err("kpm: cannot register the read-only KPM capability\n");
++}
++
++void __exit ksu_kpm_exit(void)
++{
++    ksu_unregister_feature_handler(KSU_FEATURE_KPM);
++}
+diff --git a/kernel/kpm/kpm.h b/kernel/kpm/kpm.h
+new file mode 100644
+index 0000000..60341a6
+--- /dev/null
++++ b/kernel/kpm/kpm.h
+@@ -0,0 +1,23 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __KSU_H_KPM_PORT
++#define __KSU_H_KPM_PORT
++
++#include <linux/types.h>
++#include <linux/init.h>
++#include <linux/errno.h>
++#include "uapi/kpm.h"
++
++#ifdef CONFIG_KPM
++int do_kpm(void __user *arg);
++void __init ksu_kpm_init(void);
++void __exit ksu_kpm_exit(void);
++#else
++static inline int do_kpm(void __user *arg)
++{
++    (void)arg;
++    return -EOPNOTSUPP;
++}
++static inline void ksu_kpm_init(void) {}
++static inline void ksu_kpm_exit(void) {}
++#endif
++#endif
+diff --git a/kernel/policy/feature.c b/kernel/policy/feature.c
+index 6d61650..a38829f 100644
+--- a/kernel/policy/feature.c
++++ b/kernel/policy/feature.c
+@@ -20,6 +20,7 @@ static const char *const feature_names[KSU_FEATURE_MAX] = {
+     [KSU_FEATURE_SULOG] = "sulog",
+     [KSU_FEATURE_ADB_ROOT] = "adb_root",
+     [KSU_FEATURE_SELINUX_HIDE] = "selinux_hide",
++    [KSU_FEATURE_KPM] = "kpm",
+     [KSU_FEATURE_SHELL_SU_ADB_ONLY] = "shell_su_adb_only",
+ };
+ 
+diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
+index c23a7cb..7a178f6 100644
+--- a/kernel/supercall/dispatch.c
++++ b/kernel/supercall/dispatch.c
+@@ -19,6 +19,7 @@
+ #include "arch.h"
+ #include "policy/allowlist.h"
+ #include "policy/feature.h"
++#include "kpm/kpm.h"
+ #include "klog.h" // IWYU pragma: keep
+ #include "runtime/ksud.h"
+ #include "feature/kernel_umount.h"
+@@ -1464,6 +1465,12 @@ static const struct ksu_ioctl_cmd_map ksu_ioctl_handlers[] = {
+         .perm_check = only_root
+     },
+     // downstream begin
++    {
++        .cmd = KSU_IOCTL_KPM,
++        .name = "KPM",
++        .handler = do_kpm,
++        .perm_check = manager_or_root
++    },
+     { 
+         .cmd = KSU_IOCTL_GET_FULL_VERSION,
+         .name = "GET_FULL_VERSION",
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmProtocol.kt b/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmProtocol.kt
+new file mode 100644
+index 0000000..932a267
+--- /dev/null
++++ b/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmProtocol.kt
+@@ -0,0 +1,50 @@
++package org.bakasu.bakasu.data.kpm
++
++import java.io.DataInputStream
++import java.io.File
++import java.io.IOException
++import org.bakasu.bakasu.domain.model.KpmInputException
++import org.bakasu.bakasu.domain.model.KpmInvalidModuleException
++
++internal object KpmProtocol {
++    const val MAX_ARGUMENT_BYTES = 1023
++    private const val MAX_NAME_BYTES = 31
++
++    fun validateElf(file: File) {
++        val header = ByteArray(20)
++        try {
++            DataInputStream(file.inputStream()).use { it.readFully(header) }
++        } catch (error: IOException) {
++            throw KpmInvalidModuleException()
++        }
++        if (!header.copyOfRange(0, 4).contentEquals(byteArrayOf(0x7f, 0x45, 0x4c, 0x46)) ||
++            header[4].toInt() != 2 || header[5].toInt() != 1 || header[6].toInt() != 1 ||
++            header[16].toInt() != 1 || header[17].toInt() != 0 ||
++            header[18].toUByte().toInt() != 183 || header[19].toInt() != 0
++        ) {
++            throw KpmInvalidModuleException()
++        }
++    }
++
++    fun shellQuote(value: String): String {
++        if ('\u0000' in value) throw KpmInputException()
++        return "'${value.replace("'", "'\"'\"'")}'"
++    }
++
++    fun validateName(value: String) {
++        if (value.toByteArray(Charsets.UTF_8).size !in 1..MAX_NAME_BYTES ||
++            value == "." || value == ".." ||
++            value.any { it == '/' || it == '\\' || it.isISOControl() }
++        ) {
++            throw KpmInputException()
++        }
++    }
++
++    fun validateArgs(value: String, allowEmpty: Boolean) {
++        if ('\u0000' in value || value.toByteArray(Charsets.UTF_8).size > MAX_ARGUMENT_BYTES ||
++            !allowEmpty && value.isEmpty()
++        ) {
++            throw KpmInputException()
++        }
++    }
++}
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt b/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt
+new file mode 100644
+index 0000000..4d224b0
+--- /dev/null
++++ b/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt
+@@ -0,0 +1,191 @@
++package org.bakasu.bakasu.data.kpm
++
++import android.app.Application
++import android.net.Uri
++import java.io.File
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.Dispatchers
++import kotlinx.coroutines.currentCoroutineContext
++import kotlinx.coroutines.ensureActive
++import kotlinx.coroutines.sync.Mutex
++import kotlinx.coroutines.sync.withLock
++import kotlinx.coroutines.withContext
++import org.bakasu.bakasu.Natives
++import org.bakasu.bakasu.data.kpm.KpmProtocol.MAX_ARGUMENT_BYTES
++import org.bakasu.bakasu.data.kpm.KpmProtocol.shellQuote
++import org.bakasu.bakasu.data.kpm.KpmProtocol.validateArgs
++import org.bakasu.bakasu.data.kpm.KpmProtocol.validateElf
++import org.bakasu.bakasu.data.kpm.KpmProtocol.validateName
++import org.bakasu.bakasu.data.shell.KsuCliRepository
++import org.bakasu.bakasu.domain.model.KpmAuthorizationException
++import org.bakasu.bakasu.domain.model.KpmCommandException
++import org.bakasu.bakasu.domain.model.KpmImportLimitException
++import org.bakasu.bakasu.domain.model.KpmInputException
++import org.bakasu.bakasu.domain.model.KpmInvalidModuleException
++import org.bakasu.bakasu.domain.model.KpmModule
++import org.bakasu.bakasu.domain.model.KpmProbeException
++import org.bakasu.bakasu.domain.model.KpmProtocolException
++import org.bakasu.bakasu.domain.model.KpmSnapshot
++import org.bakasu.bakasu.domain.model.KpmUnsupportedException
++import org.json.JSONArray
++import org.json.JSONException
++import org.json.JSONObject
++
++class KpmRepository(
++    private val application: Application,
++    private val ksuCliRepository: KsuCliRepository,
++) {
++    private val operations = Mutex()
++
++    suspend fun refresh(): Result<KpmSnapshot> = operation {
++        val version = requireReady()
++        val names = parse { JSONArray(command("list", "--json")) }
++        val ids = (0 until names.length()).map { index ->
++            parse { names.getString(index) }.also(::validateName)
++        }.distinct().sorted()
++        KpmSnapshot(version, ids.map(::readInfo))
++    }
++
++    suspend fun info(moduleId: String): Result<KpmModule> = operation {
++        requireReady()
++        validateName(moduleId)
++        readInfo(moduleId)
++    }
++
++    suspend fun load(uri: String, args: String): Result<Unit> = operation {
++        requireReady()
++        validateArgs(args, allowEmpty = true)
++        val staged = File.createTempFile("kpm-", ".kpm", application.cacheDir)
++        try {
++            val input = application.contentResolver.openInputStream(Uri.parse(uri))
++                ?: throw KpmInvalidModuleException()
++            input.use { source ->
++                staged.outputStream().use { target ->
++                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
++                    var total = 0L
++                    while (true) {
++                        currentCoroutineContext().ensureActive()
++                        val count = source.read(buffer)
++                        if (count < 0) break
++                        total += count
++                        if (total > MAX_IMPORT_BYTES) throw KpmImportLimitException()
++                        target.write(buffer, 0, count)
++                    }
++                }
++            }
++            validateElf(staged)
++            if (staged.absolutePath.toByteArray(Charsets.UTF_8).size > MAX_ARGUMENT_BYTES) {
++                throw KpmInputException()
++            }
++            requireAuthorization()
++            if (args.isEmpty()) {
++                command("load", "--", staged.absolutePath)
++            } else {
++                command("load", "--", staged.absolutePath, args)
++            }
++        } finally {
++            // libsu exec is blocking; this runs only after the loader has
++            // finished reading, including when the calling coroutine cancels.
++            staged.delete()
++        }
++        Unit
++    }
++
++    suspend fun unload(moduleId: String): Result<Unit> = operation {
++        requireReady()
++        validateName(moduleId)
++        command("unload", "--", moduleId)
++        Unit
++    }
++
++    suspend fun control(moduleId: String, args: String): Result<Int> = operation {
++        requireReady()
++        validateName(moduleId)
++        validateArgs(args, allowEmpty = false)
++        val output = command("control", "--", moduleId, args).trim()
++        val result = output.toIntOrNull() ?: throw KpmProtocolException()
++        if (result < 0) throw KpmCommandException(output)
++        result
++    }
++
++    private suspend fun <T> operation(block: suspend () -> T): Result<T> = operations.withLock {
++        withContext(Dispatchers.IO) {
++            try {
++                Result.success(block())
++            } catch (error: CancellationException) {
++                throw error
++            } catch (error: Exception) {
++                Result.failure(error)
++            }
++        }
++    }
++
++    private fun requireAuthorization() {
++        val authorized = runCatching {
++            Natives.isManager && Natives.isFullFeatured() && ksuCliRepository.rootAvailable()
++        }.getOrDefault(false)
++        if (!authorized) throw KpmAuthorizationException()
++    }
++
++    private fun requireReady(): String {
++        requireAuthorization()
++        return try {
++            val supported = parse { JSONObject(command("supported", "--json")) }
++            if (parse { supported.getInt("abi") } != KPM_ABI) throw KpmProtocolException()
++            if (!parse { supported.getBoolean("supported") }) throw KpmUnsupportedException()
++            val version = parse { JSONObject(command("version", "--json")) }
++            if (parse { version.getInt("abi") } != KPM_ABI) throw KpmProtocolException()
++            parse { version.getString("version") }.trim().takeIf(String::isNotEmpty)
++                ?: throw KpmProtocolException()
++        } catch (error: CancellationException) {
++            throw error
++        } catch (error: KpmUnsupportedException) {
++            throw error
++        } catch (error: KpmProtocolException) {
++            throw error
++        } catch (error: Exception) {
++            throw KpmProbeException(error)
++        }
++    }
++
++    private fun readInfo(moduleId: String): KpmModule {
++        val json = parse { JSONObject(command("info", "--json", "--", moduleId)) }
++        if (parse { json.getString("name") } != moduleId) throw KpmProtocolException()
++        val fields = parse { json.getJSONObject("fields") }
++        return KpmModule(
++            id = moduleId,
++            name = fields.optString("name").ifBlank { moduleId },
++            version = fields.optString("version"),
++            author = fields.optString("author"),
++            description = fields.optString("description"),
++            rawInfo = parse { json.getString("raw") },
++        )
++    }
++
++    private fun command(vararg arguments: String): String {
++        val command = (listOf(ksuCliRepository.getKsuDaemonPath(), "kpm") + arguments)
++            .joinToString(" ", transform = ::shellQuote)
++        val result = ksuCliRepository.getRootShell().newJob()
++            .add(command)
++            .to(ArrayList<String>(), ArrayList<String>())
++            .exec()
++        if (!result.isSuccess) {
++            throw KpmCommandException(result.err.joinToString("\n").take(MAX_DIAGNOSTICS))
++        }
++        return result.out.joinToString("\n")
++    }
++
++    private fun <T> parse(block: () -> T): T = try {
++        block()
++    } catch (error: JSONException) {
++        throw KpmProtocolException()
++    }
++
++    companion object {
++        private const val KPM_ABI = 2
++
++        // Application staging budget, not a claim about the kernel ABI limit.
++        private const val MAX_IMPORT_BYTES = 32L * 1024 * 1024
++        private const val MAX_DIAGNOSTICS = 4096
++    }
++}
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/di/AppModules.kt b/manager/app/src/main/java/org/bakasu/bakasu/di/AppModules.kt
+index abadb98..4c61f5e 100644
+--- a/manager/app/src/main/java/org/bakasu/bakasu/di/AppModules.kt
++++ b/manager/app/src/main/java/org/bakasu/bakasu/di/AppModules.kt
+@@ -21,6 +21,7 @@ import org.bakasu.bakasu.data.file.ModuleFileRepository
+ import org.bakasu.bakasu.data.flash.FlashRepository
+ import org.bakasu.bakasu.data.kernel.KernelRepository
+ import org.bakasu.bakasu.data.kernel.UmountRepository
++import org.bakasu.bakasu.data.kpm.KpmRepository
+ import org.bakasu.bakasu.data.logging.BugreportRepository
+ import org.bakasu.bakasu.data.logging.SulogRepository
+ import org.bakasu.bakasu.data.module.ModuleActionRepository
+@@ -70,6 +71,7 @@ import org.bakasu.bakasu.domain.usecase.CleanSulogUseCase
+ import org.bakasu.bakasu.domain.usecase.ClearDynamicManagerUseCase
+ import org.bakasu.bakasu.domain.usecase.ConfigureSuLogUseCase
+ import org.bakasu.bakasu.domain.usecase.ControlAppUseCase
++import org.bakasu.bakasu.domain.usecase.ControlKpmUseCase
+ import org.bakasu.bakasu.domain.usecase.DeleteProfileTemplateUseCase
+ import org.bakasu.bakasu.domain.usecase.EnableSulogUseCase
+ import org.bakasu.bakasu.domain.usecase.EnqueueDownloadUseCase
+@@ -112,6 +114,7 @@ import org.bakasu.bakasu.domain.usecase.IsNetworkAvailableUseCase
+ import org.bakasu.bakasu.domain.usecase.IsSoftRebootPreferredUseCase
+ import org.bakasu.bakasu.domain.usecase.IsSystemLanguageSettingsUseCase
+ import org.bakasu.bakasu.domain.usecase.LaunchSystemLanguageSettingsUseCase
++import org.bakasu.bakasu.domain.usecase.LoadKpmUseCase
+ import org.bakasu.bakasu.domain.usecase.LoadModuleIconUseCase
+ import org.bakasu.bakasu.domain.usecase.LoadSettingsPlatformUseCase
+ import org.bakasu.bakasu.domain.usecase.ObserveAssetDownloadUseCase
+@@ -131,9 +134,11 @@ import org.bakasu.bakasu.domain.usecase.ObserveSuperUserStateUseCase
+ import org.bakasu.bakasu.domain.usecase.ObserveUmountStateUseCase
+ import org.bakasu.bakasu.domain.usecase.PeekOneshotScriptUseCase
+ import org.bakasu.bakasu.domain.usecase.PrepareScriptUseCase
++import org.bakasu.bakasu.domain.usecase.ReadKpmInfoUseCase
+ import org.bakasu.bakasu.domain.usecase.RebootUseCase
+ import org.bakasu.bakasu.domain.usecase.RefreshDynamicManagerUseCase
+ import org.bakasu.bakasu.domain.usecase.RefreshInstalledModulesUseCase
++import org.bakasu.bakasu.domain.usecase.RefreshKpmUseCase
+ import org.bakasu.bakasu.domain.usecase.RefreshModuleCatalogUseCase
+ import org.bakasu.bakasu.domain.usecase.RefreshProfileTemplatesUseCase
+ import org.bakasu.bakasu.domain.usecase.RefreshSulogUseCase
+@@ -166,6 +171,7 @@ import org.bakasu.bakasu.domain.usecase.StartKernelFlashUseCase
+ import org.bakasu.bakasu.domain.usecase.SuSFSConfigUseCase
+ import org.bakasu.bakasu.domain.usecase.TakeModuleUriPermissionUseCase
+ import org.bakasu.bakasu.domain.usecase.TransliterateTextUseCase
++import org.bakasu.bakasu.domain.usecase.UnloadKpmUseCase
+ import org.bakasu.bakasu.domain.usecase.UpdateAppearanceUseCase
+ import org.bakasu.bakasu.domain.usecase.UpdateCachedModuleEnabledUseCase
+ import org.bakasu.bakasu.domain.usecase.UpdatePlatformSettingUseCase
+@@ -183,6 +189,7 @@ import org.bakasu.bakasu.ui.viewmodel.FlashViewModel
+ import org.bakasu.bakasu.ui.viewmodel.HomeViewModel
+ import org.bakasu.bakasu.ui.viewmodel.InstallViewModel
+ import org.bakasu.bakasu.ui.viewmodel.KernelFlashViewModel
++import org.bakasu.bakasu.ui.viewmodel.KpmViewModel
+ import org.bakasu.bakasu.ui.viewmodel.MainIntentViewModel
+ import org.bakasu.bakasu.ui.viewmodel.ModuleDetailViewModel
+ import org.bakasu.bakasu.ui.viewmodel.ModuleRepoViewModel
+@@ -277,6 +284,7 @@ val repositoryModule = module {
+     singleOf(::DownloadRepository)
+     single { FlashRepository(get(), get(applicationScopeQualifier), get(), get()) }
+     singleOf(::KernelRepository)
++    singleOf(::KpmRepository)
+     singleOf(::HomeRuntimeRepository)
+     singleOf(::HomeStateRepository)
+     singleOf(::NetworkStatusRepository)
+@@ -337,6 +345,11 @@ val useCaseModule = module {
+     factoryOf(::ObserveDownloadUseCase)
+     factoryOf(::ObserveAssetDownloadUseCase)
+     factoryOf(::GetKernelStatusUseCase)
++    factoryOf(::ControlKpmUseCase)
++    factoryOf(::LoadKpmUseCase)
++    factoryOf(::ReadKpmInfoUseCase)
++    factoryOf(::RefreshKpmUseCase)
++    factoryOf(::UnloadKpmUseCase)
+     factoryOf(::GetInstallEnvironmentUseCase)
+     factoryOf(::ExecuteFlashOperationUseCase)
+     factoryOf(::CheckFlashModuleMountUseCase)
+@@ -451,6 +464,7 @@ val viewModelModule = module {
+         )
+     }
+     viewModelOf(::HomeViewModel)
++    viewModelOf(::KpmViewModel)
+     viewModelOf(::InstallViewModel)
+     viewModelOf(::MainIntentViewModel)
+     viewModelOf(::KernelFlashViewModel)
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt b/manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt
+new file mode 100644
+index 0000000..61e2c01
+--- /dev/null
++++ b/manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt
+@@ -0,0 +1,26 @@
++package org.bakasu.bakasu.domain.model
++
++import java.io.IOException
++
++data class KpmModule(
++    val id: String,
++    val name: String,
++    val version: String,
++    val author: String,
++    val description: String,
++    val rawInfo: String,
++)
++
++data class KpmSnapshot(
++    val version: String,
++    val modules: List<KpmModule>,
++)
++
++class KpmAuthorizationException : IOException()
++class KpmUnsupportedException : IOException()
++class KpmProtocolException : IOException()
++class KpmInputException : IOException()
++class KpmInvalidModuleException : IOException()
++class KpmImportLimitException : IOException()
++class KpmCommandException(val diagnostics: String) : IOException()
++class KpmProbeException(cause: Throwable) : IOException(cause)
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt b/manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt
+new file mode 100644
+index 0000000..eac95e6
+--- /dev/null
++++ b/manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt
+@@ -0,0 +1,23 @@
++package org.bakasu.bakasu.domain.usecase
++
++import org.bakasu.bakasu.data.kpm.KpmRepository
++
++class RefreshKpmUseCase(private val repository: KpmRepository) {
++    suspend operator fun invoke() = repository.refresh()
++}
++
++class ReadKpmInfoUseCase(private val repository: KpmRepository) {
++    suspend operator fun invoke(moduleId: String) = repository.info(moduleId)
++}
++
++class LoadKpmUseCase(private val repository: KpmRepository) {
++    suspend operator fun invoke(uri: String, args: String) = repository.load(uri, args)
++}
++
++class UnloadKpmUseCase(private val repository: KpmRepository) {
++    suspend operator fun invoke(moduleId: String) = repository.unload(moduleId)
++}
++
++class ControlKpmUseCase(private val repository: KpmRepository) {
++    suspend operator fun invoke(moduleId: String, args: String) = repository.control(moduleId, args)
++}
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt
+index 8608e4d..7332f92 100644
+--- a/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt
+@@ -90,6 +90,7 @@ import org.bakasu.bakasu.ui.screen.UmountManagerScreen
+ import org.bakasu.bakasu.ui.screen.about.AboutScreen
+ import org.bakasu.bakasu.ui.screen.about.OpenSourceLicenseScreen
+ import org.bakasu.bakasu.ui.screen.kernelFlash.KernelFlashScreen
++import org.bakasu.bakasu.ui.screen.kpm.KpmScreen
+ import org.bakasu.bakasu.ui.screen.main.MainScreen
+ import org.bakasu.bakasu.ui.screen.moduleRepo.AddRepositoryScreen
+ import org.bakasu.bakasu.ui.screen.moduleRepo.ModuleRepoScreen
+@@ -566,6 +567,17 @@ fun NavContainer(
+                     SuSFSConfigScreen()
+                 }
+             }
++            entry<Route.Kpm>(swipeDismiss = swipeBackDirection) {
++                ManagerNavEntry(
++                    interceptPredictiveBack = interceptPredictiveBack,
++                    onBack = onBack,
++                    themeConfig = themeConfig,
++                    backgroundRenderState = backgroundRenderState,
++                    useBlur = useBlur,
++                ) {
++                    KpmScreen()
++                }
++            }
+             entry<Route.UmountManager>(swipeDismiss = swipeBackDirection) {
+                 ManagerNavEntry(
+                     interceptPredictiveBack = interceptPredictiveBack,
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt
+index 7493628..72a4282 100644
+--- a/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt
+@@ -163,6 +163,10 @@ sealed interface Route :
+     @Serializable
+     data object UmountManager : Route
+ 
++    @Parcelize
++    @Serializable
++    data object Kpm : Route
++
+     @Parcelize
+     @Serializable
+     data object DynamicManager : Route
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt
+new file mode 100644
+index 0000000..9193e51
+--- /dev/null
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt
+@@ -0,0 +1,270 @@
++package org.bakasu.bakasu.ui.screen.kpm
++
++import androidx.activity.compose.rememberLauncherForActivityResult
++import androidx.activity.result.contract.ActivityResultContracts
++import androidx.compose.foundation.layout.Column
++import androidx.compose.foundation.layout.PaddingValues
++import androidx.compose.foundation.layout.fillMaxSize
++import androidx.compose.foundation.layout.fillMaxWidth
++import androidx.compose.foundation.layout.heightIn
++import androidx.compose.foundation.layout.padding
++import androidx.compose.foundation.lazy.LazyColumn
++import androidx.compose.foundation.rememberScrollState
++import androidx.compose.foundation.verticalScroll
++import androidx.compose.material.icons.Icons
++import androidx.compose.material.icons.twotone.Add
++import androidx.compose.material.icons.twotone.Refresh
++import androidx.compose.material3.AlertDialog
++import androidx.compose.material3.ExperimentalMaterial3Api
++import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
++import androidx.compose.material3.FloatingActionButton
++import androidx.compose.material3.Icon
++import androidx.compose.material3.IconButton
++import androidx.compose.material3.LargeFlexibleTopAppBar
++import androidx.compose.material3.LinearProgressIndicator
++import androidx.compose.material3.MaterialTheme
++import androidx.compose.material3.OutlinedTextField
++import androidx.compose.material3.Scaffold
++import androidx.compose.material3.Text
++import androidx.compose.material3.TextButton
++import androidx.compose.runtime.Composable
++import androidx.compose.runtime.LaunchedEffect
++import androidx.compose.runtime.getValue
++import androidx.compose.runtime.mutableStateOf
++import androidx.compose.runtime.remember
++import androidx.compose.runtime.rememberCoroutineScope
++import androidx.compose.runtime.setValue
++import androidx.compose.ui.Modifier
++import androidx.compose.ui.graphics.Color
++import androidx.compose.ui.platform.LocalContext
++import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.unit.dp
++import androidx.lifecycle.compose.collectAsStateWithLifecycle
++import kotlinx.coroutines.launch
++import org.bakasu.bakasu.R
++import org.bakasu.bakasu.ui.component.ConfirmResult
++import org.bakasu.bakasu.ui.component.SwipeableSnackbarHost
++import org.bakasu.bakasu.ui.component.rememberConfirmDialog
++import org.bakasu.bakasu.ui.component.rememberCustomDialog
++import org.bakasu.bakasu.ui.component.settings.AppBackButton
++import org.bakasu.bakasu.ui.component.settings.SegmentedColumn
++import org.bakasu.bakasu.ui.component.settings.SettingsBaseWidget
++import org.bakasu.bakasu.ui.component.settings.lazySegmentColumn
++import org.bakasu.bakasu.ui.navigation.LocalNavigator
++import org.bakasu.bakasu.ui.theme.blurSource
++import org.bakasu.bakasu.ui.util.ActivityResumeEffect
++import org.bakasu.bakasu.ui.util.LocalSnackbarHost
++import org.bakasu.bakasu.ui.util.adaptiveScaffoldWindowInsets
++import org.bakasu.bakasu.ui.util.showReplacingSnackbar
++import org.bakasu.bakasu.ui.viewmodel.KpmViewModel
++import org.koin.compose.viewmodel.koinViewModel
++
++@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
++@Composable
++fun KpmScreen() {
++    val viewModel = koinViewModel<KpmViewModel>()
++    val state by viewModel.state.collectAsStateWithLifecycle()
++    val context = LocalContext.current
++    val navigator = LocalNavigator.current
++    val snackbar = LocalSnackbarHost.current
++    val scope = rememberCoroutineScope()
++    val confirmDialog = rememberConfirmDialog()
++    var importUri by remember { mutableStateOf<String?>(null) }
++    var loadArgs by remember { mutableStateOf("") }
++    var controlArgs by remember { mutableStateOf("") }
++    var pickingFile by remember { mutableStateOf(false) }
++    var confirmingUnload by remember { mutableStateOf(false) }
++
++    val importDialog = rememberCustomDialog { dismiss ->
++        AlertDialog(
++            onDismissRequest = {
++                importUri = null
++                loadArgs = ""
++                dismiss()
++            },
++            title = { Text(stringResource(R.string.kpm_load)) },
++            text = {
++                OutlinedTextField(
++                    value = loadArgs,
++                    onValueChange = { loadArgs = it },
++                    label = { Text(stringResource(R.string.kpm_args)) },
++                    supportingText = { Text(stringResource(R.string.kpm_load_args_hint)) },
++                    maxLines = 4,
++                )
++            },
++            confirmButton = {
++                TextButton(
++                    enabled = state.available && !state.busy && importUri != null,
++                    onClick = {
++                        importUri?.let { viewModel.load(it, loadArgs) }
++                        importUri = null
++                        loadArgs = ""
++                        dismiss()
++                    },
++                ) { Text(stringResource(R.string.kpm_load)) }
++            },
++            dismissButton = {
++                TextButton(onClick = {
++                    importUri = null
++                    loadArgs = ""
++                    dismiss()
++                }) { Text(stringResource(R.string.cancel)) }
++            },
++        )
++    }
++
++    val detailDialog = rememberCustomDialog { dismiss ->
++        state.selectedModule?.let { module ->
++            AlertDialog(
++                onDismissRequest = {
++                    viewModel.dismissDetails()
++                    controlArgs = ""
++                    dismiss()
++                },
++                title = { Text(module.name) },
++                text = {
++                    Column(Modifier.heightIn(max = 360.dp).verticalScroll(rememberScrollState())) {
++                        Text(module.rawInfo.ifBlank { module.id }, style = MaterialTheme.typography.bodySmall)
++                        OutlinedTextField(
++                            modifier = Modifier.padding(top = 12.dp),
++                            value = controlArgs,
++                            onValueChange = { controlArgs = it },
++                            enabled = !state.busy,
++                            label = { Text(stringResource(R.string.kpm_args)) },
++                            supportingText = { Text(stringResource(R.string.kpm_control_args_hint)) },
++                            maxLines = 4,
++                        )
++                        TextButton(
++                            enabled = state.available && !state.busy && controlArgs.isNotEmpty(),
++                            onClick = { viewModel.control(module.id, controlArgs) },
++                        ) { Text(stringResource(R.string.kpm_control)) }
++                        TextButton(
++                            enabled = state.available && !state.busy && !confirmingUnload,
++                            onClick = {
++                                confirmingUnload = true
++                                scope.launch {
++                                    try {
++                                        val answer = confirmDialog.awaitConfirm(
++                                            title = context.getString(R.string.kpm_unload),
++                                            content = context.getString(R.string.kpm_unload_confirm, module.name),
++                                            confirm = context.getString(R.string.kpm_unload),
++                                            dismiss = context.getString(R.string.cancel),
++                                        )
++                                        if (answer == ConfirmResult.Confirmed) viewModel.unload(module.id)
++                                    } finally {
++                                        confirmingUnload = false
++                                    }
++                                }
++                            },
++                        ) { Text(stringResource(R.string.kpm_unload)) }
++                    }
++                },
++                confirmButton = {
++                    TextButton(onClick = {
++                        viewModel.dismissDetails()
++                        controlArgs = ""
++                        dismiss()
++                    }) { Text(stringResource(R.string.close)) }
++                },
++            )
++        }
++    }
++
++    val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
++        pickingFile = false
++        if (uri != null && state.available && !state.busy) {
++            importUri = uri.toString()
++            loadArgs = ""
++            importDialog.show()
++        }
++    }
++
++    ActivityResumeEffect { viewModel.refresh() }
++    LaunchedEffect(viewModel) {
++        viewModel.events.collect { message -> snackbar.showReplacingSnackbar(message) }
++    }
++    LaunchedEffect(state.selectedModule) {
++        if (state.selectedModule == null) detailDialog.hide()
++    }
++
++    Scaffold(
++        contentWindowInsets = adaptiveScaffoldWindowInsets(),
++        containerColor = Color.Transparent,
++        topBar = {
++            LargeFlexibleTopAppBar(
++                title = { Text(stringResource(R.string.kpm_title)) },
++                navigationIcon = { AppBackButton(onClick = { navigator.pop() }) },
++                actions = {
++                    IconButton(enabled = !state.busy, onClick = viewModel::refresh) {
++                        Icon(Icons.TwoTone.Refresh, contentDescription = stringResource(R.string.kpm_refresh))
++                    }
++                },
++            )
++        },
++        snackbarHost = { SwipeableSnackbarHost(hostState = snackbar) },
++        floatingActionButton = {
++            if (state.available) {
++                FloatingActionButton(onClick = {
++                    if (!state.busy && !pickingFile) {
++                        pickingFile = true
++                        picker.launch("*/*")
++                    }
++                }) {
++                    Icon(Icons.TwoTone.Add, contentDescription = stringResource(R.string.kpm_load))
++                }
++            }
++        },
++    ) { padding ->
++        LazyColumn(
++            modifier = Modifier.fillMaxSize().blurSource(),
++            contentPadding = PaddingValues(
++                top = padding.calculateTopPadding() + 8.dp,
++                bottom = padding.calculateBottomPadding() + 88.dp,
++            ),
++        ) {
++            item {
++                SegmentedColumn(content = {
++                    item {
++                        SettingsBaseWidget(
++                            title = if (state.available) {
++                                stringResource(R.string.kpm_version, state.version)
++                            } else {
++                                stringResource(R.string.kpm_title)
++                            },
++                            description = state.error ?: if (state.available) {
++                                stringResource(R.string.kpm_manual_only)
++                            } else if (!state.loaded) {
++                                stringResource(R.string.kpm_checking)
++                            } else {
++                                stringResource(R.string.kpm_unsupported)
++                            },
++                            isError = state.error != null,
++                        )
++                    }
++                })
++                if (state.busy) LinearProgressIndicator(Modifier.fillMaxWidth().padding(horizontal = 16.dp))
++            }
++            if (state.available && state.modules.isEmpty()) {
++                item {
++                    SegmentedColumn(content = {
++                        item {
++                            SettingsBaseWidget(title = stringResource(R.string.kpm_empty), description = null)
++                        }
++                    })
++                }
++            }
++            lazySegmentColumn(items = state.modules, key = { _, module -> module.id }) { _, module ->
++                SettingsBaseWidget(
++                    title = module.name,
++                    description = module.description.ifBlank { module.id },
++                    enabled = state.available && !state.busy,
++                    onClick = {
++                        controlArgs = ""
++                        viewModel.inspect(module)
++                        detailDialog.show()
++                    },
++                )
++            }
++        }
++    }
++}
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt
+index 845acac..1b3f603 100644
+--- a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt
+@@ -193,6 +193,14 @@ fun SettingsPage(bottomPadding: Dp) {
+                     SegmentedColumn(
+                         title = stringResource(R.string.configuration),
+                         content = {
++                            item {
++                                SettingsJumpPageWidget(
++                                    icon = Icons.TwoTone.Settings,
++                                    title = stringResource(R.string.kpm_title),
++                                    description = stringResource(R.string.kpm_entry_summary),
++                                    onClick = { navigator.push(Route.Kpm) },
++                                )
++                            }
+                             item {
+                                 // 配置文件模板入口
+                                 SettingsJumpPageWidget(
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt
+new file mode 100644
+index 0000000..b28c2cf
+--- /dev/null
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt
+@@ -0,0 +1,156 @@
++package org.bakasu.bakasu.ui.viewmodel
++
++import android.content.Context
++import androidx.lifecycle.ViewModel
++import androidx.lifecycle.viewModelScope
++import kotlinx.coroutines.CancellationException
++import kotlinx.coroutines.flow.MutableSharedFlow
++import kotlinx.coroutines.flow.MutableStateFlow
++import kotlinx.coroutines.flow.asSharedFlow
++import kotlinx.coroutines.flow.asStateFlow
++import kotlinx.coroutines.flow.update
++import kotlinx.coroutines.launch
++import org.bakasu.bakasu.R
++import org.bakasu.bakasu.domain.model.KpmAuthorizationException
++import org.bakasu.bakasu.domain.model.KpmCommandException
++import org.bakasu.bakasu.domain.model.KpmImportLimitException
++import org.bakasu.bakasu.domain.model.KpmInputException
++import org.bakasu.bakasu.domain.model.KpmInvalidModuleException
++import org.bakasu.bakasu.domain.model.KpmModule
++import org.bakasu.bakasu.domain.model.KpmProbeException
++import org.bakasu.bakasu.domain.model.KpmProtocolException
++import org.bakasu.bakasu.domain.model.KpmUnsupportedException
++import org.bakasu.bakasu.domain.usecase.ControlKpmUseCase
++import org.bakasu.bakasu.domain.usecase.LoadKpmUseCase
++import org.bakasu.bakasu.domain.usecase.ReadKpmInfoUseCase
++import org.bakasu.bakasu.domain.usecase.RefreshKpmUseCase
++import org.bakasu.bakasu.domain.usecase.UnloadKpmUseCase
++
++data class KpmUiState(
++    val loaded: Boolean = false,
++    val busy: Boolean = false,
++    val available: Boolean = false,
++    val version: String = "",
++    val modules: List<KpmModule> = emptyList(),
++    val selectedModule: KpmModule? = null,
++    val error: String? = null,
++)
++
++class KpmViewModel(
++    private val context: Context,
++    private val refreshKpm: RefreshKpmUseCase,
++    private val readInfo: ReadKpmInfoUseCase,
++    private val loadKpm: LoadKpmUseCase,
++    private val unloadKpm: UnloadKpmUseCase,
++    private val controlKpm: ControlKpmUseCase,
++) : ViewModel() {
++    private val mutableState = MutableStateFlow(KpmUiState())
++    val state = mutableState.asStateFlow()
++    private val mutableEvents = MutableSharedFlow<String>(extraBufferCapacity = 1)
++    val events = mutableEvents.asSharedFlow()
++
++    fun refresh() = operation { reload() }
++
++    fun load(uri: String, args: String) = operation {
++        loadKpm(uri, args).onSuccess {
++            mutableEvents.emit(context.getString(R.string.kpm_loaded))
++            reload()
++        }.onFailure { failed(it) }
++    }
++
++    fun inspect(module: KpmModule) {
++        if (mutableState.value.busy) return
++        mutableState.update { it.copy(selectedModule = module) }
++        operation {
++            readInfo(module.id).onSuccess { updated ->
++                mutableState.update { it.copy(selectedModule = updated) }
++            }.onFailure { failed(it) }
++        }
++    }
++
++    fun unload(moduleId: String) = operation {
++        unloadKpm(moduleId).onSuccess {
++            mutableState.update { it.copy(selectedModule = null) }
++            mutableEvents.emit(context.getString(R.string.kpm_unloaded))
++            reload()
++        }.onFailure { failed(it) }
++    }
++
++    fun control(moduleId: String, args: String) = operation {
++        controlKpm(moduleId, args).onSuccess { value ->
++            mutableEvents.emit(context.getString(R.string.kpm_control_result, value))
++            reload()
++        }.onFailure { failed(it) }
++    }
++
++    fun dismissDetails() {
++        mutableState.update { it.copy(selectedModule = null) }
++    }
++
++    private fun operation(block: suspend () -> Unit) {
++        // Reserve before launch so repeated taps cannot start concurrent work.
++        if (mutableState.value.busy) return
++        mutableState.update { it.copy(busy = true, error = null) }
++        viewModelScope.launch {
++            try {
++                block()
++            } catch (error: CancellationException) {
++                throw error
++            } catch (error: Exception) {
++                failed(error)
++            } finally {
++                mutableState.update { it.copy(busy = false) }
++            }
++        }
++    }
++
++    private suspend fun reload() {
++        refreshKpm().onSuccess { snapshot ->
++            mutableState.update { current ->
++                current.copy(
++                    loaded = true,
++                    available = true,
++                    version = snapshot.version,
++                    modules = snapshot.modules,
++                    selectedModule = current.selectedModule?.let { selected -> snapshot.modules.find { it.id == selected.id } },
++                    error = null,
++                )
++            }
++        }.onFailure {
++            mutableState.update { current -> current.copy(loaded = true, available = false, modules = emptyList()) }
++            failed(it)
++        }
++    }
++
++    private suspend fun failed(error: Throwable) {
++        if (error is CancellationException) throw error
++        val actual = if (error is KpmProbeException) error.cause ?: error else error
++        val message = when (actual) {
++            is KpmAuthorizationException -> context.getString(R.string.kpm_authorization_required)
++
++            is KpmUnsupportedException -> context.getString(R.string.kpm_unsupported)
++
++            is KpmProtocolException -> context.getString(R.string.kpm_protocol_error)
++
++            is KpmInputException -> context.getString(R.string.kpm_invalid_input)
++
++            is KpmInvalidModuleException -> context.getString(R.string.kpm_invalid_module)
++
++            is KpmImportLimitException -> context.getString(R.string.kpm_import_limit)
++
++            is KpmCommandException -> actual.diagnostics.takeIf(String::isNotBlank)?.let {
++                context.getString(R.string.kpm_command_failed_detail, it)
++            } ?: context.getString(R.string.kpm_command_failed)
++
++            else -> context.getString(R.string.kpm_command_failed)
++        }
++        mutableState.update {
++            it.copy(
++                error = message,
++                available = it.available && actual !is KpmAuthorizationException && actual !is KpmUnsupportedException &&
++                    actual !is KpmProtocolException && error !is KpmProbeException,
++            )
++        }
++        mutableEvents.emit(message)
++    }
++}
+diff --git a/manager/app/src/main/res/values-zh-rCN/strings.xml b/manager/app/src/main/res/values-zh-rCN/strings.xml
+index 0efeaed..9f5cddf 100644
+--- a/manager/app/src/main/res/values-zh-rCN/strings.xml
++++ b/manager/app/src/main/res/values-zh-rCN/strings.xml
+@@ -671,4 +671,31 @@
+     <string name="superuser_root_access_required">加载应用列表需要 Root 权限。</string>
+     <string name="superuser_service_start_failed">RootService 启动失败，请重试以加载应用列表。</string>
+     <string name="superuser_packages_load_failed">从 RootService 加载应用列表失败，请重试。</string>
++
++    <!-- Manual KPM management; capability is probed from the paired runtime. -->
++    <string name="kpm_title">KPM 管理</string>
++    <string name="kpm_entry_summary">加载、查看、控制和卸载内核模块</string>
++    <string name="kpm_version">KPM %1$s</string>
++    <string name="kpm_manual_only">此处仅手动加载模块，重启后不会自动加载。</string>
++    <string name="kpm_checking">正在检查配套内核与 KPM 运行状态…</string>
++    <string name="kpm_refresh">刷新 KPM 状态</string>
++    <string name="kpm_load">加载模块</string>
++    <string name="kpm_unload">卸载模块</string>
++    <string name="kpm_unload_confirm">要从当前运行的内核中卸载 %1$s 吗？</string>
++    <string name="kpm_control">发送控制命令</string>
++    <string name="kpm_args">参数</string>
++    <string name="kpm_load_args_hint">可留空，最多 1023 个 UTF-8 字节。</string>
++    <string name="kpm_control_args_hint">不能为空，最多 1023 个 UTF-8 字节。</string>
++    <string name="kpm_empty">当前没有已加载的 KPM 模块</string>
++    <string name="kpm_loaded">模块已加载</string>
++    <string name="kpm_unloaded">模块已卸载</string>
++    <string name="kpm_control_result">控制返回值：%1$d</string>
++    <string name="kpm_authorization_required">KPM 需要配套 BakaSU 内核认可当前管理器，并提供 root 权限。</string>
++    <string name="kpm_unsupported">当前运行的内核或 KPM 载荷未提供所需的 KPM 接口。</string>
++    <string name="kpm_protocol_error">配套 KPM 后台返回了不兼容的响应。</string>
++    <string name="kpm_invalid_input">模块名称、路径或参数无效。参数不能包含 NUL，且不能超过 1023 个 UTF-8 字节。</string>
++    <string name="kpm_invalid_module">请选择有效的 ARM64 可重定位 ELF 内核模块。</string>
++    <string name="kpm_import_limit">此应用最多导入 32 MiB 的 KPM 文件，所选文件超出导入限制。</string>
++    <string name="kpm_command_failed">KPM 操作失败。</string>
++    <string name="kpm_command_failed_detail">KPM 操作失败：%1$s</string>
+ </resources>
+diff --git a/manager/app/src/main/res/values/strings.xml b/manager/app/src/main/res/values/strings.xml
+index 76c96a9..c33d861 100644
+--- a/manager/app/src/main/res/values/strings.xml
++++ b/manager/app/src/main/res/values/strings.xml
+@@ -675,4 +675,31 @@
+     <string name="superuser_root_access_required">Root access is required to load applications.</string>
+     <string name="superuser_service_start_failed">RootService failed to start. Retry to load applications.</string>
+     <string name="superuser_packages_load_failed">Failed to load applications from RootService. Please retry.</string>
++
++    <!-- Manual KPM management; capability is probed from the paired runtime. -->
++    <string name="kpm_title">KPM management</string>
++    <string name="kpm_entry_summary">Load, inspect, control and unload kernel modules</string>
++    <string name="kpm_version">KPM %1$s</string>
++    <string name="kpm_manual_only">Modules loaded here are temporary and are not automatically loaded after reboot.</string>
++    <string name="kpm_checking">Checking the paired kernel and KPM runtime…</string>
++    <string name="kpm_refresh">Refresh KPM status</string>
++    <string name="kpm_load">Load module</string>
++    <string name="kpm_unload">Unload module</string>
++    <string name="kpm_unload_confirm">Unload %1$s from the running kernel?</string>
++    <string name="kpm_control">Send control command</string>
++    <string name="kpm_args">Arguments</string>
++    <string name="kpm_load_args_hint">Optional; up to 1023 UTF-8 bytes.</string>
++    <string name="kpm_control_args_hint">Required; up to 1023 UTF-8 bytes.</string>
++    <string name="kpm_empty">No KPM modules are loaded</string>
++    <string name="kpm_loaded">Module loaded</string>
++    <string name="kpm_unloaded">Module unloaded</string>
++    <string name="kpm_control_result">Control return value: %1$d</string>
++    <string name="kpm_authorization_required">KPM requires this manager to be authorized by the paired BakaSU kernel with root access.</string>
++    <string name="kpm_unsupported">The running kernel or KPM payload does not provide the required KPM interface.</string>
++    <string name="kpm_protocol_error">The paired KPM backend returned an incompatible response.</string>
++    <string name="kpm_invalid_input">Invalid module name, path or arguments. Arguments must not contain NUL and must fit within 1023 UTF-8 bytes.</string>
++    <string name="kpm_invalid_module">Select a valid ARM64 relocatable ELF kernel module.</string>
++    <string name="kpm_import_limit">This app imports KPM files up to 32 MiB. The selected file exceeds that import limit.</string>
++    <string name="kpm_command_failed">The KPM operation failed.</string>
++    <string name="kpm_command_failed_detail">KPM operation failed: %1$s</string>
+ </resources>
+diff --git a/uapi/feature.h b/uapi/feature.h
+index 55d0a7c..e3b296c 100644
+--- a/uapi/feature.h
++++ b/uapi/feature.h
+@@ -10,6 +10,8 @@ enum ksu_feature_id {
+     // 5 was webview_zygote_umount (v3.3.0), keep it unused so stale configs don't apply
+     KSU_FEATURE_SHELL_SU_ADB_ONLY = 6,
+ 
++    /* GKI_BAKASU_KPM_PORT_V1: 3 stays adb_root; 5 and 6 stay reserved on older bases. */
++    KSU_FEATURE_KPM = 7,
+     KSU_FEATURE_MAX
+ };
+ 
+diff --git a/uapi/kpm.h b/uapi/kpm.h
+new file mode 100644
+index 0000000..68a6c78
+--- /dev/null
++++ b/uapi/kpm.h
+@@ -0,0 +1,34 @@
++/* SPDX-License-Identifier: GPL-2.0 */
++#ifndef __KSU_UAPI_KPM_H
++#define __KSU_UAPI_KPM_H
++
++#include <linux/types.h>
++
++/* GKI_BAKASU_KPM_PORT_V1: independent additive KPM API.
++ * Do not reuse the removed packed 25-byte ioctl 200 or feature 3 (adb_root).
++ * Operations retain the official KernelPatch bridge's public numbering.
++ */
++static const __u32 SUKISU_KPM_LOAD = 1;
++static const __u32 SUKISU_KPM_UNLOAD = 2;
++static const __u32 SUKISU_KPM_NUM = 3;
++static const __u32 SUKISU_KPM_LIST = 4;
++static const __u32 SUKISU_KPM_INFO = 5;
++static const __u32 SUKISU_KPM_CONTROL = 6;
++static const __u32 SUKISU_KPM_VERSION = 7;
++static const __u32 SUKISU_KPM_LOAD_EVENT = 8;
++
++/* 32 bytes on every userspace ABI. result_code points to a signed 32-bit
++ * operation result; ioctl's own result reports only transport errors.
++ */
++struct ksu_kpm_cmd {
++    __aligned_u64 control_code;
++    __aligned_u64 arg1;
++    __aligned_u64 arg2;
++    __aligned_u64 result_code;
++};
++
++struct ksu_kpm_load_event_cmd {
++    __aligned_u64 args;
++    __aligned_u64 event;
++};
++#endif
+diff --git a/uapi/supercall.h b/uapi/supercall.h
+index 7324a1d..a69d261 100644
+--- a/uapi/supercall.h
++++ b/uapi/supercall.h
+@@ -6,6 +6,7 @@
+ 
+ #include "uapi/app_profile.h"
+ #include "uapi/feature.h"
++#include "uapi/kpm.h"
+ #include "uapi/selinux.h"
+ 
+ #define DEFINE_KSU_UAPI_CONST(type, name, val) \
+@@ -269,5 +270,6 @@ DEFINE_KSU_UAPI_CONST(__u32, KSU_IOCTL_DYNAMIC_MANAGER, _IOC(_IOC_READ | _IOC_WR
+ DEFINE_KSU_UAPI_CONST(__u32, KSU_IOCTL_GET_MANAGERS, _IOC(_IOC_READ | _IOC_WRITE, 'K', 105, 0))
+ DEFINE_KSU_UAPI_CONST(__u32, KSU_IOCTL_GET_KERNEL_PATCH_IMPLEMENT, _IOC(_IOC_READ, 'K', 106, 0))
+ // 200 = MANAGE_KPM,deprecated
++DEFINE_KSU_UAPI_CONST(__u32, KSU_IOCTL_KPM, _IOWR('K', 201, struct ksu_kpm_cmd))
+ #undef DEFINE_KSU_UAPI_CONST
+ #endif
+diff --git a/userspace/ksud/src/android/cli.rs b/userspace/ksud/src/android/cli.rs
+index 545cbed..c178e93 100644
+--- a/userspace/ksud/src/android/cli.rs
++++ b/userspace/ksud/src/android/cli.rs
+@@ -135,6 +135,10 @@ enum Commands {
+         command: Feature,
+     },
+ 
++    /// Manage KPM modules through the independently verified ABI-2 bridge
++    #[cfg(target_arch = "aarch64")]
++    Kpm(super::kpm::KpmArgs),
++
+     /// Patch boot or init_boot images to apply KernelSU
+     BootPatch(BootPatchArgs),
+ 
+@@ -811,6 +815,9 @@ pub fn run() -> Result<()> {
+             Feature::Save => feature::save_config(),
+         },
+ 
++        #[cfg(target_arch = "aarch64")]
++        Commands::Kpm(arguments) => super::kpm::run(arguments),
++
+         Commands::Debug { command } => match command {
+             Debug::SetManager { apk } => debug::set_manager(&apk),
+             Debug::GetSign { apk } => {
+diff --git a/userspace/ksud/src/android/kpm.rs b/userspace/ksud/src/android/kpm.rs
+new file mode 100644
+index 0000000..8f006a0
+--- /dev/null
++++ b/userspace/ksud/src/android/kpm.rs
+@@ -0,0 +1,383 @@
++/*
++ * Manual KPM management, adapted from the official SukiSU 96ceb4a4 userspace
++ * implementation to BakaSU's additive, manager/root-authorized ioctl 201.
++ * No automatic loading, shell execution or persistent feature writes.
++ */
++use std::{collections::BTreeMap, ffi::CString, io, path::Path};
++
++use anyhow::{Context, Result, bail};
++use clap::{Args, Subcommand};
++
++use super::{ksucalls, uapi};
++
++const BRIDGE_ABI: u32 = 2;
++const TEXT_CAPACITY: usize = 4096;
++const INFO_CAPACITY: usize = 256;
++const NAME_CAPACITY: usize = 32;
++const ARG_CAPACITY: usize = 1024;
++const PATH_CAPACITY: usize = 1024;
++
++#[derive(Args, Debug)]
++pub struct KpmArgs {
++    #[command(subcommand)]
++    command: KpmCommand,
++}
++
++#[derive(Subcommand, Debug)]
++enum KpmCommand {
++    /// Probe the actual ABI-2 loader; unsupported kernels report false
++    Supported {
++        #[arg(long)]
++        json: bool,
++    },
++    /// Print the actual running KPM loader version
++    Version {
++        #[arg(long)]
++        json: bool,
++    },
++    /// Number of currently loaded KPM modules (zero is normal)
++    Num {
++        #[arg(long)]
++        json: bool,
++    },
++    /// List the names of currently loaded KPM modules
++    List {
++        #[arg(long)]
++        json: bool,
++    },
++    /// Read module metadata without interpreting it as executable code
++    Info {
++        name: String,
++        #[arg(long)]
++        json: bool,
++    },
++    /// Manually load one module: load <path> [args]
++    Load {
++        path: std::path::PathBuf,
++        args: Option<String>,
++    },
++    /// Unload a currently loaded module
++    Unload { name: String },
++    /// Send one uninterpreted argument string to a module
++    Control { name: String, args: String },
++}
++
++fn check_result(operation: &str, result: i32) -> Result<i32> {
++    if result < 0 {
++        let errno = result.checked_neg().filter(|value| *value <= 4095);
++        if let Some(errno) = errno {
++            return Err(io::Error::from_raw_os_error(errno))
++                .with_context(|| format!("KPM {operation} failed"));
++        }
++        bail!("KPM {operation} returned an invalid negative result");
++    }
++    Ok(result)
++}
++
++fn invoke_with<F>(operation: u32, arg1: u64, arg2: u64, transport: F) -> Result<i32>
++where
++    F: FnOnce(&mut uapi::ksu_kpm_cmd) -> Result<i32>,
++{
++    let mut result = -1i32;
++    let mut command = uapi::ksu_kpm_cmd {
++        control_code: u64::from(operation),
++        arg1,
++        arg2,
++        result_code: std::ptr::from_mut(&mut result) as u64,
++    };
++    check_result("ioctl transport", transport(&mut command)?)?;
++    check_result(&format!("operation {operation}"), result)
++}
++
++fn invoke(operation: u32, arg1: u64, arg2: u64) -> Result<i32> {
++    invoke_with(operation, arg1, arg2, ksucalls::kpm_io)
++}
++
++fn text_buffer(buffer: &[u8]) -> Result<String> {
++    let end = buffer.iter().position(|byte| *byte == 0)
++        .context("KPM output is not NUL-terminated within the requested buffer")?;
++    Ok(std::str::from_utf8(&buffer[..end])
++        .context("KPM output is not valid UTF-8")?.to_owned())
++}
++
++fn read_text_with<F>(operation: u32, capacity: usize, transport: F) -> Result<String>
++where
++    F: FnOnce(&mut uapi::ksu_kpm_cmd) -> Result<i32>,
++{
++    if capacity == 0 || capacity > TEXT_CAPACITY {
++        bail!("Invalid bounded KPM text capacity");
++    }
++    let mut buffer = vec![0u8; capacity];
++    invoke_with(operation, buffer.as_mut_ptr() as u64, capacity as u64, transport)?;
++    text_buffer(&buffer)
++}
++
++fn read_text(operation: u32, capacity: usize) -> Result<String> {
++    read_text_with(operation, capacity, ksucalls::kpm_io)
++}
++
++fn bounded_cstring(value: &[u8], capacity: usize, label: &str, optional: bool) -> Result<CString> {
++    if (!optional && value.is_empty()) || value.len() >= capacity {
++        bail!("KPM {label} must contain {}..{} bytes", if optional { 0 } else { 1 }, capacity - 1);
++    }
++    CString::new(value).with_context(|| format!("KPM {label} contains an embedded NUL byte"))
++}
++
++fn module_name(value: &str) -> Result<CString> {
++    if value == "." || value == ".." || value.contains(['/', '\\'])
++        || value.chars().any(char::is_control)
++    {
++        bail!("Invalid KPM module name");
++    }
++    bounded_cstring(value.as_bytes(), NAME_CAPACITY, "module name", false)
++}
++
++fn version() -> Result<String> {
++    let value = read_text(uapi::SUKISU_KPM_VERSION, TEXT_CAPACITY)?;
++    let value = value.trim();
++    if value.is_empty() {
++        bail!("KPM version response is empty");
++    }
++    Ok(value.to_owned())
++}
++
++fn supported_with<F>(probe_version: F) -> Result<bool>
++where
++    F: FnOnce() -> Result<String>,
++{
++    match probe_version() {
++        Ok(value) if !value.trim().is_empty() => Ok(true),
++        Ok(_) => bail!("KPM version response is empty"),
++        Err(error) => {
++            let errno = error.downcast_ref::<io::Error>().and_then(io::Error::raw_os_error);
++            match errno {
++                Some(libc::EOPNOTSUPP | libc::ENOSYS | libc::ENOTTY) => Ok(false),
++                _ => Err(error),
++            }
++        }
++    }
++}
++
++fn module_names(text: &str) -> Result<Vec<String>> {
++    let mut names = Vec::new();
++    for name in text.split('\n').filter(|name| !name.is_empty()) {
++        module_name(name)?;
++        if names.iter().any(|previous| previous == name) {
++            bail!("KPM loader returned duplicate module names");
++        }
++        names.push(name.to_owned());
++    }
++    Ok(names)
++}
++
++fn info(name: &str) -> Result<String> {
++    let name_c = module_name(name)?;
++    let mut buffer = vec![0u8; INFO_CAPACITY];
++    invoke(uapi::SUKISU_KPM_INFO, name_c.as_ptr() as u64, buffer.as_mut_ptr() as u64)?;
++    text_buffer(&buffer)
++}
++
++fn info_fields(raw: &str) -> BTreeMap<String, String> {
++    raw.lines().filter_map(|line| {
++        let (key, value) = line.split_once('=')?;
++        let key = key.trim();
++        if key.is_empty() || key.starts_with('#') {
++            None
++        } else {
++            Some((key.to_owned(), value.trim().to_owned()))
++        }
++    }).collect()
++}
++
++fn load(path: &Path, args: Option<&str>) -> Result<()> {
++    let path_c = bounded_cstring(path.as_os_str().as_encoded_bytes(), PATH_CAPACITY, "path", false)?;
++    let args_c = bounded_cstring(args.unwrap_or_default().as_bytes(), ARG_CAPACITY, "arguments", true)?;
++    let metadata = std::fs::symlink_metadata(path).context("Cannot inspect the selected KPM module")?;
++    if !metadata.file_type().is_file() {
++        bail!("KPM load requires a regular module file");
++    }
++    invoke(uapi::SUKISU_KPM_LOAD, path_c.as_ptr() as u64, args_c.as_ptr() as u64)?;
++    Ok(())
++}
++
++fn unload(name: &str) -> Result<()> {
++    let name_c = module_name(name)?;
++    invoke(uapi::SUKISU_KPM_UNLOAD, name_c.as_ptr() as u64, 0)?;
++    Ok(())
++}
++
++fn control(name: &str, args: &str) -> Result<i32> {
++    let name_c = module_name(name)?;
++    let args_c = bounded_cstring(args.as_bytes(), ARG_CAPACITY, "control arguments", false)?;
++    invoke(uapi::SUKISU_KPM_CONTROL, name_c.as_ptr() as u64, args_c.as_ptr() as u64)
++}
++
++pub fn run(arguments: KpmArgs) -> Result<()> {
++    match arguments.command {
++        KpmCommand::Supported { json } => {
++            let supported = supported_with(version)?;
++            if json {
++                println!("{}", serde_json::json!({"supported": supported, "abi": BRIDGE_ABI}));
++            } else {
++                println!("{supported}");
++            }
++        }
++        KpmCommand::Version { json } => {
++            let version = version()?;
++            if json {
++                println!("{}", serde_json::json!({"version": version, "abi": BRIDGE_ABI}));
++            } else {
++                println!("{version}");
++            }
++        }
++        KpmCommand::Num { json } => {
++            let count = invoke(uapi::SUKISU_KPM_NUM, 0, 0)?;
++            if json {
++                println!("{}", serde_json::json!({"count": count}));
++            } else {
++                println!("{count}");
++            }
++        }
++        KpmCommand::List { json } => {
++            let names = module_names(&read_text(uapi::SUKISU_KPM_LIST, TEXT_CAPACITY)?)?;
++            if json {
++                println!("{}", serde_json::to_string(&names)?);
++            } else {
++                for name in names { println!("{name}"); }
++            }
++        }
++        KpmCommand::Info { name, json } => {
++            let raw = info(&name)?;
++            if json {
++                println!("{}", serde_json::json!({"name": name, "fields": info_fields(&raw), "raw": raw}));
++            } else {
++                print!("{raw}");
++            }
++        }
++        KpmCommand::Load { path, args } => load(&path, args.as_deref())?,
++        KpmCommand::Unload { name } => unload(&name)?,
++        KpmCommand::Control { name, args } => println!("{}", control(&name, &args)?),
++    }
++    Ok(())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use clap::Parser;
++
++    #[derive(Parser)]
++    struct TestCli {
++        #[command(flatten)]
++        kpm: KpmArgs,
++    }
++
++    #[test]
++    fn ioctl_layout_and_pointed_operation_result_are_not_legacy_packed() {
++        assert_eq!(std::mem::size_of::<uapi::ksu_kpm_cmd>(), 32);
++        assert_eq!(std::mem::offset_of!(uapi::ksu_kpm_cmd, result_code), 24);
++        assert_eq!(uapi::KSU_IOCTL_KPM_RUST, 0xc0204bc9);
++        let result = invoke_with(uapi::SUKISU_KPM_NUM, 0, 0, |command| {
++            assert_eq!(command.control_code, 3);
++            unsafe { *(command.result_code as *mut i32) = 0; }
++            Ok(0)
++        }).unwrap();
++        assert_eq!(result, 0);
++    }
++
++    #[test]
++    fn transport_failure_and_negative_operation_results_are_errors() {
++        assert!(invoke_with(7, 0, 0, |_| Err(io::Error::from_raw_os_error(libc::EPERM).into())).is_err());
++        for code in [-libc::EOPNOTSUPP, -libc::ENOBUFS, i32::MIN] {
++            let result = invoke_with(7, 0, 0, |command| {
++                unsafe { *(command.result_code as *mut i32) = code; }
++                Ok(0)
++            });
++            assert!(result.is_err());
++        }
++        // A false transport success that never writes the operation result is
++        // rejected instead of inventing a successful zero value.
++        assert!(invoke_with(7, 0, 0, |_| Ok(0)).is_err());
++    }
++
++    #[test]
++    fn buffer_decoding_is_bounded_and_requires_a_real_terminator() {
++        assert_eq!(text_buffer(b"module\0ignored").unwrap(), "module");
++        assert_eq!(text_buffer(b"\0").unwrap(), "");
++        assert!(text_buffer(b"unterminated").is_err());
++        assert!(text_buffer(b"\xff\0").is_err());
++        let mut boundary = vec![b'a'; TEXT_CAPACITY];
++        boundary[TEXT_CAPACITY - 1] = 0;
++        assert_eq!(text_buffer(&boundary).unwrap().len(), TEXT_CAPACITY - 1);
++        assert!(check_result("list", -libc::ENOBUFS).is_err());
++    }
++
++    #[test]
++    fn actual_text_transport_preserves_empty_list_and_propagates_enobufs() {
++        let empty = read_text_with(uapi::SUKISU_KPM_LIST, TEXT_CAPACITY, |command| {
++            assert_eq!(command.arg2, 4096);
++            unsafe { *(command.result_code as *mut i32) = 0; }
++            Ok(0)
++        }).unwrap();
++        assert_eq!(empty, "");
++        let overflow = read_text_with(uapi::SUKISU_KPM_LIST, TEXT_CAPACITY, |command| {
++            unsafe { *(command.result_code as *mut i32) = -libc::ENOBUFS; }
++            Ok(0)
++        }).unwrap_err();
++        assert_eq!(overflow.downcast_ref::<io::Error>().unwrap().raw_os_error(), Some(libc::ENOBUFS));
++        assert!(read_text_with(7, TEXT_CAPACITY + 1, |_| panic!("must not invoke transport")).is_err());
++        assert!(read_text_with(7, 0, |_| panic!("must not invoke transport")).is_err());
++    }
++
++    #[test]
++    fn unsupported_is_distinct_from_privilege_or_transport_failure() {
++        assert!(supported_with(|| Ok("0.14.0".into())).unwrap());
++        for errno in [libc::EOPNOTSUPP, libc::ENOTTY, libc::ENOSYS] {
++            assert!(!supported_with(|| Err(io::Error::from_raw_os_error(errno).into())).unwrap());
++        }
++        assert!(supported_with(|| Ok(String::new())).is_err());
++        assert!(supported_with(|| Err(io::Error::from_raw_os_error(libc::EPERM).into())).is_err());
++        assert!(supported_with(|| Err(anyhow::anyhow!("driver unavailable"))).is_err());
++    }
++
++    #[test]
++    fn empty_list_is_valid_and_module_output_is_only_data() {
++        assert!(module_names("").unwrap().is_empty());
++        assert_eq!(module_names("first\nsecond\n").unwrap(), ["first", "second"]);
++        assert!(module_names("same\nsame\n").is_err());
++        assert!(module_names("../outside\n").is_err());
++        let fields = info_fields("name=test\nargs=$(never_execute)\n#comment=x\n");
++        assert_eq!(fields["args"], "$(never_execute)");
++        assert!(!fields.contains_key("#comment"));
++    }
++
++    #[test]
++    fn string_sizes_count_utf8_bytes_and_reject_nul() {
++        assert!(module_name(&"a".repeat(31)).is_ok());
++        assert!(module_name(&"a".repeat(32)).is_err());
++        assert!(module_name(&"中".repeat(11)).is_err());
++        assert!(bounded_cstring(b"a\0b", ARG_CAPACITY, "args", true).is_err());
++        assert!(bounded_cstring(b"", ARG_CAPACITY, "load args", true).is_ok());
++        assert!(bounded_cstring(b"", ARG_CAPACITY, "control args", false).is_err());
++        assert!(bounded_cstring(&vec![b'a'; 1023], ARG_CAPACITY, "args", false).is_ok());
++        assert!(bounded_cstring(&vec![b'a'; 1024], ARG_CAPACITY, "args", false).is_err());
++    }
++
++    #[test]
++    fn clap_preserves_arguments_as_one_value_and_supports_option_termination() {
++        let parsed = TestCli::try_parse_from(["kpm", "load", "--", "/tmp/a file.kpm", "arg;$(literal)"]).unwrap();
++        match parsed.kpm.command {
++            KpmCommand::Load { path, args } => {
++                assert_eq!(path, std::path::PathBuf::from("/tmp/a file.kpm"));
++                assert_eq!(args.as_deref(), Some("arg;$(literal)"));
++            }
++            _ => panic!("wrong command"),
++        }
++        assert!(TestCli::try_parse_from(["kpm", "list", "--json"]).is_ok());
++        assert!(TestCli::try_parse_from(["kpm", "info", "name", "--json"]).is_ok());
++        assert!(TestCli::try_parse_from(["kpm", "info", "--json", "--", "--literal-name"]).is_ok());
++        assert!(TestCli::try_parse_from(["kpm", "control", "--", "--literal-name", "-literal-args"]).is_ok());
++        assert!(TestCli::try_parse_from(["kpm", "control", "name", ""]).is_ok());
++        assert!(TestCli::try_parse_from(["kpm", "unknown"]).is_err());
++    }
++}
+diff --git a/userspace/ksud/src/android/ksucalls.rs b/userspace/ksud/src/android/ksucalls.rs
+index 8b3760e..ea93472 100644
+--- a/userspace/ksud/src/android/ksucalls.rs
++++ b/userspace/ksud/src/android/ksucalls.rs
+@@ -150,12 +150,18 @@ fn ksuctl<T>(request: u32, arg: *mut T) -> Result<i32> {
+     unsafe {
+         let ret = libc::ioctl(fd as libc::c_int, request as i32, arg);
+         if ret < 0 {
+-            bail!("ioctl failed: {}", io::Error::last_os_error());
++            return Err(anyhow::Error::new(io::Error::last_os_error()).context("ioctl failed"));
+         }
+         Ok(ret)
+     }
+ }
+ 
++/// Additive KPM API: its independent 32-byte ioctl never reuses the removed
++/// packed legacy request or the feature ID now reserved for ADB root.
++pub(super) fn kpm_io(cmd: &mut uapi::ksu_kpm_cmd) -> Result<i32> {
++    ksuctl(uapi::KSU_IOCTL_KPM_RUST, std::ptr::from_mut(cmd))
++}
++
+ // API implementations
+ pub fn get_info() -> uapi::ksu_get_info_cmd {
+     *INFO_CACHE.get_or_init(|| {
+diff --git a/userspace/ksud/src/android/mod.rs b/userspace/ksud/src/android/mod.rs
+index bd14904..9703233 100644
+--- a/userspace/ksud/src/android/mod.rs
++++ b/userspace/ksud/src/android/mod.rs
+@@ -5,6 +5,8 @@ mod feature;
+ mod hot_install;
+ mod init_event;
+ mod ksucalls;
++#[cfg(target_arch = "aarch64")]
++mod kpm;
+ mod late_load;
+ mod module;
+ mod preinit;

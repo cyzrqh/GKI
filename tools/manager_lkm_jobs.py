@@ -120,7 +120,12 @@ def lkm_cache_key(kmi_expr: str, ddk_short_expr: str) -> str:
     fields = ('runner.os', 'runner.arch', 'needs.prepare-matrix.outputs.ksu_ref',
               'needs.prepare-matrix.outputs.manager_package', 'needs.prepare-matrix.outputs.manager_cert_size',
               'needs.prepare-matrix.outputs.manager_cert_sha256', kmi_expr, ddk_short_expr)
-    return 'gki-sukisu-lkm-v2-' + '-'.join(expression(field) for field in fields)
+    key = 'gki-sukisu-lkm-v2-' + '-'.join(expression(field) for field in fields)
+    # Same upstream SHA/certificate can now have a different native BakaSU
+    # bridge. Bind both producer and consumer to the exact reviewed port;
+    # the false branch is empty so every existing SukiSU cache key is intact.
+    return key + expression("inputs.kernelsu_variant == 'BakaSU' && "
+        "format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || ''")
 
 
 def manager_lkm_job(condition: str) -> dict:
@@ -209,7 +214,7 @@ docker run --rm --network none \
     git config --global --add safe.directory "$(dirname "$PWD")"
     extra=()
     if [ "$KSU_VARIANT" = BakaSU ]; then
-      extra+=(CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y)
+      extra+=(CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y CONFIG_KPM=y)
       extra+=(KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
     fi
     CONFIG_KSU=m CC=clang make -j "$(nproc)" \

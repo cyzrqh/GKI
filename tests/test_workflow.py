@@ -69,12 +69,12 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.find('记录内核实际配置')['env']['META_KSU_BRANCH'], canonical)
         summary = self.find('构建信息摘要')['run']
         self.assertIn('effective_ksu_branch="' + canonical + '"', summary)
-        # Alias labels reach only the resolver; every template branch receives
-        # its canonical value, preserving BakaSU's Stable/Custom-only KPM rule.
+        # Both supported managers now expose the restored native KPM bridge;
+        # source tier selection must not silently disable BakaSU Latest.
         kpm = next(line for line in summary.splitlines() if 'KPM 功能' in line)
         self.assertIn("inputs.kernelsu_variant == 'BakaSU'", kpm)
-        for tier in ('Stable(标准)', 'Custom(自定义)'):
-            self.assertIn("needs.prepare-matrix.outputs.effective_ksu_branch == '" + tier + "'", kpm)
+        self.assertIn("inputs.kernelsu_variant == 'SukiSU'", kpm)
+        self.assertNotIn('effective_ksu_branch', kpm)
         self.assertNotIn("== 'Latest(最新)'", kpm)
         self.assertNotIn("== 'Dev(开发)'", kpm)
 

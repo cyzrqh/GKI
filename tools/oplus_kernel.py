@@ -234,8 +234,7 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
               identity['package'], os.environ['MANAGER_VERSION_CODE'])
     command([sys.executable, ROOT / '.github/scripts/ensure-ksu-compat.py', root])
     defconfig = root / 'common/arch/arm64/configs/gki_defconfig'
-    enable_kpm = bool_value(inputs['use_kpm']) and (
-        variant == 'SukiSU' or inputs['kernelsu_branch'] == '正式版')
+    enable_kpm = bool_value(inputs['use_kpm']) and variant in ('SukiSU', 'BakaSU')
     values = {'CONFIG_KSU': 'y', 'CONFIG_IKCONFIG': 'y', 'CONFIG_IKCONFIG_PROC': 'y',
               'CONFIG_KPROBES': 'y', 'CONFIG_HEADERS_INSTALL': 'y',
               'CONFIG_KPM': 'y' if enable_kpm else 'n'}

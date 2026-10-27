@@ -49,6 +49,12 @@ class KsuSourceSnapshotTests(unittest.TestCase):
         self.git(self.source, "commit", "--quiet", "-m", message)
 
     def create(self, **kwargs):
+        if kwargs.get('variant') == 'BakaSU':
+            # Transport fixtures intentionally contain no production manager.
+            # The actual port is covered by test_bakasu_kpm_port; here only
+            # bypass it for snapshot_source's private round-trip preflight.
+            with mock.patch('restore_bakasu_kpm.restore_bakasu_kpm'):
+                return snapshot.snapshot_source(self.source, self.output, self.reference, root=self.root, **kwargs)
         return snapshot.snapshot_source(self.source, self.output, self.reference, root=self.root, **kwargs)
 
     def manifest(self):
@@ -98,12 +104,31 @@ class KsuSourceSnapshotTests(unittest.TestCase):
         sukisu_port.assert_not_called()
         self.assertEqual(repository, manifest['repository'])
         self.assertEqual(2, manifest['git_count'])
-        restored = checkout.checkout_snapshot(self.output, self.destination, self.reference, variant='BakaSU')
+        # This fixture tests transport/history, not the separately exercised
+        # production port. Restoration must run only after official identity
+        # verification, on the private prepared checkout before it is exposed.
+        def restored_port(source, reference):
+            self.assertFalse(self.destination.exists())
+            self.assertEqual(self.reference, reference)
+            self.assertEqual(reference, self.git(source, 'rev-parse', 'HEAD'))
+            self.assertEqual(f'https://github.com/{repository}.git',
+                             self.git(source, 'remote', 'get-url', 'origin'))
+        with mock.patch('restore_bakasu_kpm.restore_bakasu_kpm', side_effect=restored_port) as port:
+            restored = checkout.checkout_snapshot(self.output, self.destination, self.reference, variant='BakaSU')
+        port.assert_called_once()
         self.assertEqual(manifest, restored)
         self.assertEqual(original, (self.source / 'kernel/Kbuild').read_bytes())
         self.assertEqual(original, (self.destination / 'kernel/Kbuild').read_bytes())
         self.assertEqual(f'https://github.com/{repository}.git',
                          self.git(self.destination, 'remote', 'get-url', 'origin'))
+
+    def test_bakasu_failed_port_never_exposes_a_partial_checkout(self):
+        self.git(self.source, 'remote', 'set-url', 'origin', 'https://github.com/Baka-SU/BakaSU.git')
+        self.create(variant='BakaSU')
+        with mock.patch('restore_bakasu_kpm.restore_bakasu_kpm', side_effect=ValueError('upstream conflict')):
+            with self.assertRaisesRegex(snapshot.SnapshotError, 'KPM restoration stopped: upstream conflict'):
+                checkout.checkout_snapshot(self.output, self.destination, self.reference, variant='BakaSU')
+        self.assertFalse(self.destination.exists())
 
     def test_selected_variant_rejects_other_official_origin_and_manifest(self):
         with self.assertRaisesRegex(snapshot.SnapshotError, 'official public repository'):

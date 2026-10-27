@@ -78,6 +78,12 @@ def checkout_snapshot(directory: Path, output: Path, reference: str, *, variant:
         # Point origin at the public repository only after fully offline restore.
         # No subsequent fetch is needed or performed by this tool.
         git(prepared, "remote", "set-url", "origin", f"https://github.com/{manifest['repository']}.git")
+        if variant == 'BakaSU':
+            from restore_bakasu_kpm import restore_bakasu_kpm
+            try:
+                restore_bakasu_kpm(prepared, reference)
+            except ValueError as error:
+                raise SnapshotError('BakaSU KPM restoration stopped: ' + str(error)) from None
         if output.exists() or output.is_symlink():
             raise SnapshotError("SukiSU checkout output appeared while preparing; refusing to overwrite it")
         prepared.rename(output)

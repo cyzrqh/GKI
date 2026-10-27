@@ -148,7 +148,7 @@ class OPlusKernelTests(unittest.TestCase):
                         self.finalize_mocks(variant)
                         self.finalize(inputs={**self.inputs, 'kernelsu_variant': variant,
                                               'kernelsu_branch': tier, 'use_kpm': requested}, variant=variant)
-                        expected = 'y' if requested and (variant == 'SukiSU' or tier == '正式版') else 'n'
+                        expected = 'y' if requested else 'n'
                         self.assertEqual(['CONFIG_KPM=' + expected],
                                          re.findall(r'^CONFIG_KPM=.*$', self.config.read_text(), re.M))
 

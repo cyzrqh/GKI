@@ -273,13 +273,6 @@ job:
         exit 1
       fi
 
-      if [ "${{ inputs.use_kpm }}" = "true" ] \
-        && [ "${{ inputs.ksu_variant }}" = "BakaSU" ] \
-        && { [ "${{ inputs.ksu_branch }}" = "Dev(开发)" ] || [ "${{ inputs.ksu_branch }}" = "Latest(最新)" ]; }; then
-        echo "::error::BakaSU 仅 Stable(标准) / Custom(自定义) 支持 KPM，请切换分支或关闭 KPM。"
-        exit 1
-      fi
-
       if [ "$sub_level" = "X" ] || [ "$os_patch_level" = "lts" ]; then
         if [ "$sub_level" = "X" ] && [ "$os_patch_level" = "lts" ]; then
           echo "LTS 构建组合校验通过: ${combo}.${sub_level}-${os_patch_level}"

@@ -158,6 +158,19 @@ class SnapshotTransferTests(unittest.TestCase):
                 'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': self.expected.head_sha,
                 'KSU_VARIANT': variant, 'GH_TOKEN': '', 'GITHUB_TOKEN': ''}
 
+    def synthetic_bakasu_port(self, source, reference):
+        # These transport fixtures intentionally contain no real BakaSU tree.
+        # Keep Git/history/origin verification real at the port boundary; the
+        # production patch's actual application has its own integration tests.
+        self.assertEqual(self.reference, reference)
+        self.assertEqual({field: self.manifest[field] for field in
+                          ('git_tree', 'git_count', 'git_describe')},
+                         snapshot.source_identity(source, reference))
+        self.assertEqual('https://github.com/Baka-SU/BakaSU.git',
+                         self.git(source, 'remote', 'get-url', 'origin'))
+        self.assertEqual('', self.git(source, 'status', '--porcelain', '--untracked-files=all'))
+        return {}
+
     def test_restore_official_cli_restores_real_same_source_without_release_api_or_token(self):
         for variant in ('SukiSU', 'BakaSU'):
             parent = self.root / variant[0]
@@ -166,18 +179,21 @@ class SnapshotTransferTests(unittest.TestCase):
             with self.subTest(variant=variant), mock.patch.dict(os.environ, self.cli_environment(variant)), \
                     mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
                     mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch) as upstream, \
+                    mock.patch('restore_bakasu_kpm.restore_bakasu_kpm',
+                               side_effect=self.synthetic_bakasu_port) as baka_port, \
                     contextlib.redirect_stdout(io.StringIO()) as stdout:
                 status = transfer.main(['restore-official', '--output', str(output),
                     '--prepared-identity', json.dumps(self.identity()), '--expected-ref', self.reference,
                     '--root', str(self.root), '--susfs', 'false', '--tier', 'Latest(最新)'])
-            self.assertEqual(status, 0)
+                self.assertEqual(status, 0)
+                restored = checkout.checkout_snapshot(output, self.root / ('verified-' + variant),
+                                                      self.reference, variant=variant)
             self.assertTrue(json.loads(stdout.getvalue())['official_fallback'])
             api.assert_not_called()
             self.assertIn(('remote', 'add', 'origin', 'https://github.com/' +
                            ('SukiSU-Ultra/SukiSU-Ultra' if variant == 'SukiSU' else 'Baka-SU/BakaSU') + '.git'),
                           [call.args[1:] for call in upstream.call_args_list])
-            restored = checkout.checkout_snapshot(output, self.root / ('verified-' + variant),
-                                                  self.reference, variant=variant)
+            self.assertEqual(2 if variant == 'BakaSU' else 0, baka_port.call_count)
             self.assertEqual(self.identity(), {field: restored[field] for field in self.identity()})
         self.assertEqual([], self.api.calls)
 
@@ -411,7 +427,10 @@ class SnapshotTransferTests(unittest.TestCase):
         self.assertEqual('BakaSU', control['manager_variant'])
         transfer.restore(901, self.output, expected, self.api)
         destination = self.root / 'baka-checkout'
-        manifest = checkout.checkout_snapshot(self.output, destination, self.reference, variant='BakaSU')
+        with mock.patch('restore_bakasu_kpm.restore_bakasu_kpm',
+                        side_effect=self.synthetic_bakasu_port) as baka_port:
+            manifest = checkout.checkout_snapshot(self.output, destination, self.reference, variant='BakaSU')
+        self.assertEqual(1, baka_port.call_count)
         self.assertEqual('Baka-SU/BakaSU', manifest['repository'])
         self.assertEqual(self.reference, self.git(destination, 'rev-parse', 'HEAD'))
         self.assertEqual('2', self.git(destination, 'rev-list', '--count', 'HEAD'))
@@ -434,11 +453,14 @@ class SnapshotTransferTests(unittest.TestCase):
     def test_bakasu_official_recovery_uses_only_bakasu_origin_and_no_sukisu_port(self):
         expected = replace(self.expected, variant='BakaSU')
         with mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch) as upstream, \
-                mock.patch.object(snapshot, 'verify_susfs_compatibility') as sukisu_port:
+                mock.patch.object(snapshot, 'verify_susfs_compatibility') as sukisu_port, \
+                mock.patch('restore_bakasu_kpm.restore_bakasu_kpm',
+                           side_effect=self.synthetic_bakasu_port) as baka_port:
             result = transfer.restore(901, self.output, expected, self.api, identity=self.identity(),
                                       root=self.root, susfs=True, tier='Latest(最新)')
         self.assertTrue(result['official_fallback'])
         sukisu_port.assert_not_called()
+        self.assertEqual(1, baka_port.call_count)
         self.assertIn(('remote', 'add', 'origin', 'https://github.com/Baka-SU/BakaSU.git'),
                       [call.args[1:] for call in upstream.call_args_list])
         self.assertEqual('Baka-SU/BakaSU', checkout.read_manifest(self.output, self.reference,

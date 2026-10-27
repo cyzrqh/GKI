@@ -163,8 +163,8 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertIn('--ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"',
                       worker['steps'][locate('apply_kpm_patch.py prepare')]['run'])
         self.assertIn("inputs.kernelsu_variant == 'SukiSU'", workflow.KPM_IF)
-        self.assertIn("effective_ksu_branch == 'Stable(标准)'", workflow.KPM_IF)
-        self.assertIn("effective_ksu_branch == 'Custom(自定义)'", workflow.KPM_IF)
+        self.assertIn("inputs.kernelsu_variant == 'BakaSU'", workflow.KPM_IF)
+        self.assertNotIn('effective_ksu_branch', workflow.KPM_IF)
         upload = next(item for item in worker['steps'] if item.get('uses') == 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)
         self.assertNotIn('name', upload['with'])

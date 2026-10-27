@@ -98,6 +98,39 @@ class KpmPayloadProfileTests(unittest.TestCase):
                          'ab020f31ca1c058603917e46d8a6691fbce0dd5cdc135a9cd8dc780e89472716')
         self.assertEqual(profiles.resolve_profile(self.kernel), release)
 
+    @unittest.skipUnless(shutil.which('git'), 'Git is required to apply the production BakaSU port')
+    def test_real_bakasu_port_selects_abi2_assets_and_rejects_changed_bridge(self):
+        import apply_kpm_patch as patcher
+        from test_bakasu_kpm_backend import extract_backend
+
+        # Apply the committed production patch with Git, rather than copying
+        # BRIDGE_SOURCE or mocking the source-contract resolver.
+        with extract_backend(ROOT / 'tools/patches/bakasu-kpm.patch') as source:
+            release = profiles.resolve_profile(source)
+            self.assertEqual(release, profiles.load_bridge_release())
+            self.assertEqual(profiles.resolve_profile(source / 'kernel'), release)
+            cache = self.directory / 'real-bakasu-assets'
+            spec = release['assets']['kpimg']
+            # Stop at the network boundary: preparation must request the
+            # ABI-2 pinned payload, without downloading or executing a tool.
+            with mock.patch.object(patcher, 'download', side_effect=RuntimeError('download boundary')) as download:
+                with self.assertRaisesRegex(RuntimeError, 'download boundary'):
+                    patcher.prepare(cache, ksu_source=source)
+            download.assert_called_once_with(spec['url'], spec['size'])
+            self.assertIn('/0.14.0/kpimg', spec['url'])
+            self.assertFalse((cache / patcher.PROFILE_MANIFEST).exists())
+
+            header = source / 'kernel/kpm/bridge.h'
+            original = header.read_text(encoding='utf-8')
+            changed = original.replace('SUKISU_KPM_ABI_VERSION 2', 'SUKISU_KPM_ABI_VERSION 1')
+            self.assertNotEqual(original, changed)
+            header.write_text(changed, encoding='utf-8')
+            with mock.patch.object(patcher, 'download') as download:
+                with self.assertRaisesRegex(ValueError, 'Unsupported KPM bridge'):
+                    patcher.prepare(self.directory / 'changed-bakasu-assets', ksu_source=source)
+            download.assert_not_called()
+            self.assertFalse((self.directory / 'changed-bakasu-assets').exists())
+
     def test_whitespace_comments_and_literal_unsigned_suffix_are_accepted(self):
         self.bridge('/* unrelated KPM comment */\n' + BRIDGE_SOURCE.replace(' = ', '\t=\t'),
                     BRIDGE_HEADER.replace('UL', 'ULL') + '// comment\n')

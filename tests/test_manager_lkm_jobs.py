@@ -1,5 +1,6 @@
 """Validate pinned DDK selection and the exact-cache producer/consumer contract."""
 import copy
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -16,16 +17,41 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import manager_lkm_jobs as jobs
 
 
-def render_key(template, **changes):
+def github_exact_file_hash(root: Path, paths: list[str]) -> str:
+    """The hashFiles algorithm for this key's two exact paths, in argument order.
+
+    @actions/glob hashes each matched file, then SHA256s those binary digests:
+    https://github.com/actions/toolkit/blob/main/packages/glob/src/internal-hash-files.ts
+    No wildcard/ancestor traversal is involved in these two production inputs.
+    """
+    combined, matches = hashlib.sha256(), 0
+    for relative in dict.fromkeys(paths):
+        path = root / relative
+        if path.is_file():
+            combined.update(hashlib.sha256(path.read_bytes()).digest())
+            matches += 1
+    return combined.hexdigest() if matches else ''
+
+
+def render_key(template, *, root=ROOT, **changes):
     values = {'runner.os': 'Linux', 'runner.arch': 'X64',
               'needs.prepare-matrix.outputs.ksu_ref': 'a' * 40,
               'needs.prepare-matrix.outputs.manager_package': 'com.sukisu.ultra',
               'needs.prepare-matrix.outputs.manager_cert_size': '730',
               'needs.prepare-matrix.outputs.manager_cert_sha256': 'b' * 64,
-              'matrix.kmi': 'android12-5.10', 'matrix.ddk_short': 'c' * 16}
+              'matrix.kmi': 'android12-5.10', 'matrix.ddk_short': 'c' * 16,
+              'inputs.kernelsu_variant': 'SukiSU'}
     values.update(changes)
     def replace(match):
         expression = match[1].strip()
+        port = re.fullmatch(r"inputs\.kernelsu_variant == 'BakaSU' && "
+                            r"format\('-kpm-\{0\}', hashFiles\((.*?)\)\) \|\| ''", expression)
+        if port:
+            paths = re.findall(r"'([^']+)'", port[1])
+            if ', '.join(repr(path) for path in paths) != port[1]:
+                raise ValueError('Unsupported hashFiles path expression in the actual cache key')
+            return ('-kpm-' + github_exact_file_hash(Path(root), paths)
+                    if values['inputs.kernelsu_variant'] == 'BakaSU' else '')
         return expression[1:-1] if expression.startswith("'") and expression.endswith("'") else values[expression]
     return re.sub(r'\$\{\{(.*?)\}\}', replace, template)
 
@@ -118,6 +144,57 @@ class ManagerLkmJobTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 jobs.lkm_cache_key(bad, 'matrix.ddk_short')
 
+    def test_sukisu_keys_remain_byte_for_byte_identical_to_the_existing_v2_identity(self):
+        template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
+        expected = ('gki-sukisu-lkm-v2-Linux-X64-' + 'a' * 40 + '-com.sukisu.ultra-730-'
+                    + 'b' * 64 + '-android12-5.10-' + 'c' * 16)
+        with patch(__name__ + '.github_exact_file_hash', side_effect=AssertionError('Suki must not hash a Baka port')):
+            self.assertEqual(expected, render_key(template))
+
+    def test_bakasu_port_bytes_invalidate_its_old_cache_without_changing_source_or_cert(self):
+        patch_file = self.directory / 'tools/patches/bakasu-kpm.patch'
+        patch_file.parent.mkdir(parents=True)
+        port_lock = self.directory / 'config/bakasu-kpm-port.json'
+        patch_file.write_bytes(b'audited-port-patch-A\n')
+        port_lock.write_bytes(b'{"reviewed_port": 1}\n')
+        identity = {'inputs.kernelsu_variant': 'BakaSU',
+                    'needs.prepare-matrix.outputs.manager_package': 'com.resukisu.resukisu'}
+        template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
+        fixed = jobs.lkm_cache_key("'android12-5.10'", "'" + 'c' * 16 + "'")
+        old = ('gki-sukisu-lkm-v2-Linux-X64-' + 'a' * 40 + '-com.resukisu.resukisu-730-'
+               + 'b' * 64 + '-android12-5.10-' + 'c' * 16)
+        digest = hashlib.sha256(hashlib.sha256(patch_file.read_bytes()).digest()
+                                + hashlib.sha256(port_lock.read_bytes()).digest()).hexdigest()
+        baseline = render_key(template, root=self.directory, **identity)
+        self.assertEqual(old + '-kpm-' + digest, baseline)
+        self.assertEqual(baseline, render_key(fixed, root=self.directory, **identity))
+        self.assertNotEqual(old, baseline)
+        for path in (patch_file, port_lock):
+            before = path.read_bytes()
+            path.write_bytes(before + b'changed')
+            with self.subTest(path=path.name):
+                self.assertNotEqual(baseline, render_key(template, root=self.directory, **identity))
+                self.assertEqual(render_key(template), render_key(template, root=self.directory))
+            path.write_bytes(before)
+
+    def test_port_key_retains_all_native_identities_and_stays_within_cache_byte_limit(self):
+        template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
+        for variant, package in (('SukiSU', 'com.sukisu.ultra'), ('BakaSU', 'com.resukisu.resukisu')):
+            identity = {'inputs.kernelsu_variant': variant,
+                        'needs.prepare-matrix.outputs.manager_package': package,
+                        'needs.prepare-matrix.outputs.manager_cert_size': '4096',
+                        'runner.os': 'Windows', 'runner.arch': 'ARM64'}
+            baseline = render_key(template, **identity)
+            for field, value in (('needs.prepare-matrix.outputs.ksu_ref', 'd' * 40),
+                                 ('needs.prepare-matrix.outputs.manager_cert_sha256', 'e' * 64),
+                                 ('needs.prepare-matrix.outputs.manager_cert_size', '730'),
+                                 ('matrix.ddk_short', 'f' * 16)):
+                with self.subTest(variant=variant, field=field):
+                    self.assertNotEqual(baseline, render_key(template, **{**identity, field: value}))
+            for kmi in jobs.KMIS:
+                value = render_key(template, **{**identity, 'matrix.kmi': kmi})
+                self.assertLessEqual(len(value.encode('utf-8')), 512)
+
     def test_exact_cache_is_strict_and_transfers_no_module_artifacts(self):
         job = jobs.manager_lkm_job('supplied-condition')
         self.assertEqual('supplied-condition', job['if'])
@@ -187,6 +264,9 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertIn('if [ "$KSU_VARIANT" = BakaSU ]; then', arguments[-1])
         self.assertIn('CONFIG_KSU_MULTI_MANAGER_SUPPORT=y', arguments[-1])
         self.assertIn('CONFIG_KSU_TRACEPOINT_HOOK=y', arguments[-1])
+        baka = arguments[-1].split('if [ "$KSU_VARIANT" = BakaSU ]; then', 1)[1].split('    fi', 1)[0]
+        self.assertIn('CONFIG_KPM=y', baka)
+        self.assertEqual(1, arguments[-1].count('CONFIG_KPM=y'))
         self.assertIn('KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE"', arguments[-1])
         self.assertIn('CONFIG_KSU=m CC=clang make -j "$(nproc)"', arguments[-1])
         self.assertIn('KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"', arguments[-1])

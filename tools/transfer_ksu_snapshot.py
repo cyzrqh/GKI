@@ -29,6 +29,7 @@ from snapshot_ksu_source import (BUNDLE_NAME, MANIFEST_NAME, MAX_BUNDLE_SIZE, MA
                                  REPOSITORY, ROOT, SnapshotError, expected_commit, file_digest,
                                  git, snapshot_source, source_identity, temporary_directory)
 from manager_variants import MANAGERS, manager_profile
+from release_tags import release_run_identity
 
 
 MARKER = '<!-- gki-internal-source:v1 -->\n'
@@ -353,6 +354,19 @@ def prepared_identity(document: dict, reference: str) -> dict:
     return dict(document)
 
 
+def verify_cache(source: Path, identity: dict, reference: str, *, variant: str = 'SukiSU') -> dict:
+    """Bind a local complete bundle to prepare without repairing corrupt hits."""
+    reference = expected_commit(reference)
+    identity = prepared_identity(identity, reference)
+    manifest, _ = snapshot_files(source, reference, variant=variant)
+    actual = {field: manifest[field] for field in ('ref', 'git_tree', 'git_count', 'git_describe')}
+    if 'susfs_sources' in manifest:
+        actual['susfs_sources'] = manifest['susfs_sources']
+    if actual != identity:
+        raise TransferError('Restored source cache identity differs from this prepare job; refusing a mixed build')
+    return {'verified': True, 'ksu_ref': reference, 'variant': variant}
+
+
 def restore_official(output: Path, expected: Expected, identity: dict, *, root: Path,
                      susfs: bool, tier: str) -> dict:
     """Rebuild an unavailable snapshot from the fixed public commit, never a branch."""
@@ -438,7 +452,9 @@ def restore_backup(release_id: int, output: Path, expected: Expected, api: GitHu
 def delete(release_id: int, published_tag: str, expected: Expected, api: GitHub) -> dict:
     expected.validate()
     release_id = integer(release_id, 'backup release ID')
-    if published_tag != f'gki-{expected.run_id}-{expected.run_attempt}':
+    if (not isinstance(published_tag, str)
+            or not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]{0,199}', published_tag)
+            or published_tag.startswith('gki-') and published_tag != f'gki-{expected.run_id}-{expected.run_attempt}'):
         raise TransferError('Source cleanup requires this attempt’s exact published build tag')
     published = api.json('/releases/tags/' + published_tag)
     if (not isinstance(published, dict) or published.get('tag_name') != published_tag
@@ -446,6 +462,14 @@ def delete(release_id: int, published_tag: str, expected: Expected, api: GitHub)
             or not published.get('published_at') or published.get('target_commitish') != expected.head_sha
             or not isinstance(published.get('assets'), list) or not published['assets']):
         raise TransferError('Refusing source cleanup before the matching final Release is published')
+    try:
+        identity = release_run_identity(published)
+    except ValueError:
+        raise TransferError('Source cleanup requires a verified published build run identity') from None
+    if (identity['run_id'] != expected.run_id or identity['run_attempt'] != expected.run_attempt
+            or identity['head_sha'] != expected.head_sha
+            or identity['repository'] is not None and identity['repository'].casefold() != expected.repository.casefold()):
+        raise TransferError('Source cleanup requires this attempt’s exact published build tag and run identity')
     # Match the existing final-file verification step's public asset contract;
     # an empty/partial or unrelated published release cannot unlock cleanup.
     validate_release(published, expected.head_sha)
@@ -570,7 +594,7 @@ def delete_actions(release_id: int, assets_directory: Path, expected: Expected, 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest='operation', required=True)
-    for name in ('create', 'restore', 'delete', 'delete-actions'):
+    for name in ('create', 'restore', 'delete', 'delete-actions', 'restore-official', 'verify-cache'):
         command = commands.add_parser(name)
         command.add_argument('--repository', default=os.environ.get('GITHUB_REPOSITORY', ''))
         command.add_argument('--run-id', default=os.environ.get('GITHUB_RUN_ID', ''))
@@ -578,16 +602,19 @@ def main(argv=None) -> int:
         command.add_argument('--head-sha', default=os.environ.get('GITHUB_SHA', ''))
         command.add_argument('--expected-ref', required=True)
         command.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
-        if name == 'create':
+        if name in ('create', 'verify-cache'):
             command.add_argument('--source', required=True, type=Path)
-        else:
+        elif name != 'restore-official':
             command.add_argument('--release-id', required=True)
-        if name == 'restore':
+        if name in ('restore', 'restore-official'):
             command.add_argument('--output', required=True, type=Path)
-            command.add_argument('--prepared-identity', help='Prepare-bound identity enabling exact official recovery')
+            command.add_argument('--prepared-identity', required=name == 'restore-official',
+                                 help='Prepare-bound identity enabling exact official recovery')
             command.add_argument('--root', type=Path, default=ROOT)
             command.add_argument('--susfs', choices=('true', 'false'), default='false')
             command.add_argument('--tier', default='Custom(自定义)')
+        if name == 'verify-cache':
+            command.add_argument('--prepared-identity', required=True)
         if name == 'delete':
             command.add_argument('--published-tag', required=True)
         if name == 'delete-actions':
@@ -598,7 +625,17 @@ def main(argv=None) -> int:
                             integer(args.run_attempt, 'workflow attempt'), args.head_sha, args.expected_ref,
                             args.variant)
         expected.validate()
-        api = GitHub(expected.repository)
+        # Cache verification and exact official recovery are fully independent
+        # of the legacy draft transport: no GitHub API client or token needed.
+        if args.operation in ('restore-official', 'verify-cache'):
+            identity = json.loads(args.prepared_identity, object_pairs_hook=unique_object)
+            if args.operation == 'restore-official':
+                result = restore_official(args.output, expected, identity, root=args.root,
+                                          susfs=args.susfs == 'true', tier=args.tier)
+            else:
+                result = verify_cache(args.source, identity, expected.ksu_ref, variant=expected.variant)
+        else:
+            api = GitHub(expected.repository)
         if args.operation == 'create':
             result = create(args.source, expected, api)
         elif args.operation == 'restore':
@@ -608,7 +645,7 @@ def main(argv=None) -> int:
                              root=args.root, susfs=args.susfs == 'true', tier=args.tier)
         elif args.operation == 'delete':
             result = delete(args.release_id, args.published_tag, expected, api)
-        else:
+        elif args.operation == 'delete-actions':
             result = delete_actions(args.release_id, args.assets_directory, expected, api)
         if args.operation == 'create' and os.environ.get('GITHUB_OUTPUT'):
             with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as output:

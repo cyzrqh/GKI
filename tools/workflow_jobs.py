@@ -222,40 +222,34 @@ def release_job():
             {'name': '上传同名校验文件', 'uses': 'actions/upload-artifact@v7',
              'with': {'path': 'release-publish/assets/SHA256SUMS.txt', 'archive': False,
                       'if-no-files-found': 'error', 'overwrite': True}},
+            {'name': '分配递增发行标签并绑定本次构建', 'id': 'release-tag',
+             'if': "inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true'",
+             'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}'},
+             'run': 'python3 tools/release_tags.py allocate --notes release-publish/release.md'},
             {'name': '发布独立安装包和刷机包', 'id': 'release',
              'if': "inputs.operation == '编译内核' && needs.prepare-matrix.outputs.full_catalog == 'true'",
-             'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}', 'RELEASE_TAG': 'gki-${{ github.run_id }}-${{ github.run_attempt }}'},
+             'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
+                     'RELEASE_TAG': '${{ steps.release-tag.outputs.release_tag }}',
+                     'RELEASE_EXISTS': '${{ steps.release-tag.outputs.release_exists }}'},
              'run': '''set -euo pipefail
 title="$(cat release-publish/title.txt)"
+if [ "$RELEASE_EXISTS" != true ]; then
 gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \\
   --draft --title "$title" --notes-file release-publish/release.md
+fi
 assets=(release-publish/assets/*)
-gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
-gh release edit "$RELEASE_TAG" --draft=false --latest --repo "$GITHUB_REPOSITORY"
+gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \\
+  --notes-file release-publish/release.md --repo "$GITHUB_REPOSITORY"
 url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+printf 'release_tag=%s\\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
 printf 'release_url=%s\\n' "$url" >> "$GITHUB_OUTPUT"
 printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' "$url" >> "$GITHUB_STEP_SUMMARY"
 '''},
             {'name': '核对原文件并清理发布中转包',
              'if': "steps.release.outcome == 'success'",
-             'env': {'GH_TOKEN': '${{ github.token }}'},
-             'run': 'python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID"'},
-            {'name': '清理本次临时源码备份',
-             'if': "needs.prepare-matrix.outputs.source_backup_release_id != '' && steps.release.outcome == 'success'",
-             'env': {'GH_TOKEN': '${{ github.token }}',
-                     'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}',
-                     'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
-             'run': '''python3 tools/transfer_ksu_snapshot.py delete --release-id "$SOURCE_BACKUP_RELEASE_ID" \\
-  --published-tag "gki-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" --expected-ref "$KSU_REF"
-'''},
-            {'name': '核对 Actions 原文件并清理临时源码备份',
-             'if': "needs.prepare-matrix.outputs.source_backup_release_id != '' && steps.release.outcome == 'skipped'",
-             'env': {'GH_TOKEN': '${{ github.token }}',
-                     'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}',
-                     'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
-             'run': '''python3 tools/transfer_ksu_snapshot.py delete-actions --release-id "$SOURCE_BACKUP_RELEASE_ID" \\
-  --expected-ref "$KSU_REF" --assets-directory release-publish/assets
-'''},
+             'env': {'GH_TOKEN': '${{ github.token }}', 'RELEASE_TAG': '${{ steps.release.outputs.release_tag }}'},
+             'run': 'python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"'},
             {'name': '显示构建配置与发行结果', 'if': 'always() && !cancelled()',
              'env': {'ASSETS_RESULT': '${{ steps.assets.outcome }}',
                      'RELEASE_RESULT': '${{ steps.release.outcome }}',

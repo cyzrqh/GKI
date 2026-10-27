@@ -4,7 +4,8 @@ from __future__ import annotations
 import copy
 from pathlib import Path
 
-from manager_lkm_jobs import source_cache_restore, source_backup_restore, source_backup_recache
+from manager_lkm_jobs import (source_cache_restore, source_backup_restore, source_backup_recache,
+                              source_cache_verify)
 
 OUTPUT = Path('.github/workflows/oplus-full-feature-matrix.yml')
 DISPATCH = "github.event_name == 'workflow_dispatch'"
@@ -62,19 +63,6 @@ PY
 NATIVE_ASSETS = '''set -euo pipefail
 python3 tools/oplus_assets.py collect --input oplus-input --output oplus-report \\
   --matrix "$OPLUS_MATRIX" --variants "$KSU_VARIANT"
-python3 - <<'PY'
-import pathlib,shutil,sys
-sys.path.insert(0,'tools')
-from transfer_ksu_snapshot import native_assets
-source = pathlib.Path('oplus-input')
-output = pathlib.Path('oplus-verified-assets')
-output.mkdir()
-for path in source.rglob('*'):
-    if path.is_file():
-        shutil.copyfile(path,output/path.name)
-shutil.copyfile('oplus-report/SHA256SUMS.txt',output/'SHA256SUMS.txt')
-native_assets(output.resolve())
-PY
 '''
 
 
@@ -132,7 +120,7 @@ def kernel_job() -> dict:
          'run': '''python3 tools/wait_manager_identity.py --expected-ref "$KSU_REF" \\
   --artifact-name "$MANAGER_ARTIFACT" --manager-job-id "$MANAGER_JOB_ID" --github-env "$GITHUB_ENV"
 '''},
-        source_cache_restore(), adapt(source_backup_restore()), source_backup_recache(),
+        source_cache_restore(), adapt(source_backup_restore()), source_backup_recache(), source_cache_verify(),
         {'name': '检出固定的 CCTV 构建方法参考', 'uses': 'actions/checkout@v6',
          'with': {'repository': '${{ matrix.recipe_repository }}', 'ref': '${{ matrix.recipe_ref }}',
                   'path': 'oplus-reference', 'fetch-depth': 1, 'persist-credentials': False}},
@@ -220,7 +208,7 @@ def collect_job():
         'if': "always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success' && needs.build-oplus-kernel.result == 'success'",
         'needs': ['prepare-matrix', 'build-sukisu-manager', 'build-oplus-kernel'],
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
-        'permissions': {'contents': 'write', 'actions': 'read'},
+        'permissions': {'contents': 'read', 'actions': 'read'},
         'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}'},
         'steps': [
             {'name': '检出本次原生校验工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
@@ -233,14 +221,6 @@ def collect_job():
             {'name': '上传原文件同名校验清单', 'uses': 'actions/upload-artifact@v7',
              'with': {'path': 'oplus-report/SHA256SUMS.txt', 'archive': False,
                       'if-no-files-found': 'error', 'overwrite': True}},
-            {'name': '以 Actions 原文件摘要证明后清理临时源码备份',
-             'if': "needs.prepare-matrix.outputs.source_backup_release_id != ''",
-             'env': {'GH_TOKEN': '${{ github.token }}',
-                     'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
-                     'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}'},
-             'run': '''python3 tools/transfer_ksu_snapshot.py delete-actions --release-id "$SOURCE_BACKUP_RELEASE_ID" \\
-  --expected-ref "$KSU_REF" --assets-directory "$GITHUB_WORKSPACE/oplus-verified-assets"
-'''},
             {'name': '显示统一的详细构建配置', 'if': "always() && !cancelled() && steps.assets.outcome == 'success'",
              'run': 'cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"'},
         ],

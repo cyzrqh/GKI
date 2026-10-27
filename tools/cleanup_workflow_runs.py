@@ -20,6 +20,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
+from release_tags import release_run_identity
 
 DEFAULT_WORKFLOW = 'all'
 DEFAULT_KEEP = 2
@@ -29,7 +30,6 @@ CONCLUSIONS = frozenset(('success', 'failure', 'neutral', 'cancelled', 'skipped'
 MAX_RESPONSE = 16 * 1024 * 1024
 MAX_RUNS = 100000
 MAX_RELEASES = 100000
-RELEASE_TAG = re.compile(r'gki-([1-9][0-9]*)-([1-9][0-9]*)')
 
 
 class CleanupError(RuntimeError):
@@ -196,11 +196,10 @@ def fetch_workflow_runs(client, workflow=DEFAULT_WORKFLOW):
 
 
 def fetch_release_run_ids(client, runs):
-    """Read every Release before trusting the publisher's exact run/attempt tag.
+    """Protect explicit run/attempt identities from old and versioned Releases.
 
-    workflow_jobs.release_job publishes only gki-RUN_ID-RUN_ATTEMPT. A commit
-    can belong to many manual runs, so target_commitish is never a fallback.
-    Unknown published tags fail closed instead of guessing their source runs.
+    A commit can belong to many manual runs, so target_commitish never selects
+    a run. Unknown or conflicting published identities stop cleanup safely.
     Draft source backups have no published build and do not protect a run.
     """
     original = {run['id']: run for run in runs}
@@ -233,18 +232,20 @@ def fetch_release_run_ids(client, runs):
                 datetime.strptime(published, '%Y-%m-%dT%H:%M:%SZ')
             except ValueError:
                 raise CleanupError('Published Release time is invalid') from None
-            match = RELEASE_TAG.fullmatch(tag)
-            if match is None:
-                raise CleanupError('A published Release has no verified gki run/attempt tag; '
-                                   'cleanup stopped to preserve its unknown source run')
-            run_id, attempt = map(int, match.groups())
+            try:
+                identity = release_run_identity(release)
+            except ValueError:
+                raise CleanupError('A published Release has no verified gki run/attempt tag or versioned run marker; '
+                                   'cleanup stopped to preserve its unknown source run') from None
+            if (identity['repository'] is not None
+                    and identity['repository'].casefold() != client.repository.casefold()):
+                raise CleanupError('Published Release run marker belongs to another repository')
+            run_id, attempt = identity['run_id'], identity['run_attempt']
             run = original.get(run_id)
             if run is not None:
                 if not positive_id(run.get('run_attempt')) or attempt > run['run_attempt']:
                     raise CleanupError('Published Release attempt does not match its Actions run')
-                target = release.get('target_commitish')
-                if (isinstance(target, str) and re.fullmatch(r'[0-9a-f]{40}', target)
-                        and target != run.get('head_sha')):
+                if identity['head_sha'] is not None and identity['head_sha'] != run.get('head_sha'):
                     raise CleanupError('Published Release commit does not match its Actions run')
             protected.add(run_id)
         if len(batch) < 100:

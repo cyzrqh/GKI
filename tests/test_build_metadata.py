@@ -135,6 +135,35 @@ class DirectReleasePreparationTests(unittest.TestCase):
         self.assertIn('没有内核构建', (self.output / 'release.md').read_text(encoding='utf-8'))
         self.assertEqual(list((self.output / 'assets').glob('*.zip')), [])
 
+    def test_public_title_uses_actual_version_code_even_when_a_version_name_is_available(self):
+        directory, document = self.manager(flat=True)
+        document.update(ksu_branch='Stable(标准)')
+        (directory / 'manager.json').write_text(json.dumps(document), encoding='utf-8')
+        prepare_release.prepare(self.source, self.output)
+        self.assertEqual('SukiSU 41030 正式版', (self.output / 'title.txt').read_text(encoding='utf-8'))
+
+    def test_public_title_without_a_numeric_manager_code_does_not_fall_back_to_semver(self):
+        directory, document = self.manager(flat=True)
+        for version_code in (None, '', 'v4.2.1', 0, True, '41030\n', 2_100_000_001):
+            with self.subTest(version_code=version_code):
+                document.update(ksu_version_code=version_code, ksu_branch='Latest(最新)')
+                (directory / 'manager.json').write_text(json.dumps(document), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'numeric manager version code'):
+                    prepare_release.prepare(self.source, self.output)
+                self.assertFalse(self.output.exists())
+
+    def test_development_custom_and_unknown_tiers_never_claim_a_formal_release(self):
+        directory, document = self.manager(flat=True)
+        for index, (branch, label) in enumerate((('Dev(开发)', '开发版'), ('Custom(自定义)', '自定义版'),
+                                                ('experimental-branch', 'experimental-branch'),
+                                                (None, '版本类型未知'))):
+            with self.subTest(branch=branch):
+                document['ksu_branch'] = branch
+                (directory / 'manager.json').write_text(json.dumps(document), encoding='utf-8')
+                output = self.root / f'public-{index}'
+                prepare_release.prepare(self.source, output)
+                self.assertEqual(f'SukiSU 41030 {label}', (output / 'title.txt').read_text(encoding='utf-8'))
+
     def kernel(self, *, flat=False):
         directory = self.source if flat else self.source / 'Release-SukiSU-android14-6.1-145-2025-09'
         directory.mkdir(exist_ok=True)
@@ -266,6 +295,24 @@ class RawReleasePreparationTests(unittest.TestCase):
         self.assertEqual({apk.name, 'SHA256SUMS.txt'}, {path.name for path in (self.output / 'assets').iterdir()})
         self.assertIn(self.manager['apk_sha256'] + '  ' + apk.name,
                       (self.output / 'assets/SHA256SUMS.txt').read_text())
+
+    def test_public_titles_follow_the_signed_sukisu_and_bakasu_source_tier(self):
+        for variant, code, package in (('SukiSU', '41068', 'com.sukisu.ultra'),
+                                       ('BakaSU', '35252', 'com.resukisu.resukisu')):
+            for branch, label in (('Stable(标准)', '正式版'), ('Latest(最新)', '最新测试版')):
+                with self.subTest(variant=variant, branch=branch):
+                    metadata = manager_metadata(ksu_variant=variant, package=package, ksu_branch=branch,
+                                                ksu_version_code=code, ksu_version_name='v4.2.1-r2',
+                                                file=f'{variant}_v4.2.1-r2_{code}-release.apk')
+                    source = self.root / f'input-{variant}-{label}'
+                    source.mkdir()
+                    apk = signed_apk(metadata)
+                    (source / metadata['file']).write_bytes(apk)
+                    output = self.root / f'public-{variant}-{label}'
+                    prepare_release.prepare(source, output)
+                    self.assertEqual(f'{variant} {code} {label}',
+                                     (output / 'title.txt').read_text(encoding='utf-8'))
+                    self.assertEqual(apk, (output / 'assets' / metadata['file']).read_bytes())
 
     def test_actions_report_retains_original_apk_ak3_boot_and_the_shared_configuration(self):
         self.make_raw(boot=True, flat=True)

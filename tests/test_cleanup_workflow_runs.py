@@ -44,6 +44,13 @@ def release(run_id, attempt=1, **changes):
     return result
 
 
+def versioned_release(run_id, attempt=1, *, tag='r1.0', repository='owner/gki', head_sha='a' * 40, **changes):
+    marker = (f'<!-- gki-release-run:v1 repository={repository} run_id={run_id} '
+              f'run_attempt={attempt} head_sha={head_sha} -->')
+    return release(run_id, attempt, tag_name=tag, target_commitish=head_sha,
+                   body=marker + '\n\nCompiled kernels\n', **changes)
+
+
 class FakeGitHub:
     repository = 'owner/gki'
 
@@ -477,6 +484,55 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual([4, 3], report.plan.kept_ids)
         self.assertEqual([2], report.deleted_ids)
         self.assertEqual({1: 'published release'}, report.plan.preserved)
+
+    def test_versioned_release_marker_protects_exact_run_not_other_runs_on_same_commit(self):
+        client = FakeGitHub([run(value, run_attempt=2, head_sha='a' * 40) for value in range(1, 7)],
+                            [versioned_release(1, repository='OWNER/GKI'), release(4)])
+        report = cleanup.cleanup(client, execute=True)
+        self.assertEqual([6, 5], report.plan.kept_ids)
+        self.assertEqual([3, 2], report.deleted_ids)
+        self.assertEqual({4: 'published release', 1: 'published release'}, report.plan.preserved)
+        self.assertEqual([1, 4], report.plan.release_run_ids)
+        self.assertFalse(any(method != 'GET' and resource.startswith('/releases')
+                             for method, resource, _ in client.calls))
+
+    def test_versioned_release_run_marker_mismatch_missing_or_duplicate_stops_all_deletion(self):
+        original = versioned_release(1)
+        body = original['body']
+        changes = ({'body': None}, {'body': 'no owner marker'}, {'body': body + body},
+                   {'body': body.replace('owner/gki', 'foreign/gki')},
+                   {'body': body.replace('run_attempt=1', 'run_attempt=2')},
+                   {'body': body.replace('head_sha=' + 'a' * 40, 'head_sha=' + 'b' * 40)},
+                   {'target_commitish': 'b' * 40},
+                   {'body': body.replace('run_id=1', 'run_id=0')},
+                   {'body': body.replace('run_id=1', 'run_id=01')})
+        for change in changes:
+            client = FakeGitHub([run(value, run_attempt=1, head_sha='a' * 40) for value in range(1, 5)],
+                                [{**original, **change}])
+            with self.subTest(change=change), self.assertRaises(cleanup.CleanupError):
+                cleanup.cleanup(client, execute=True)
+            self.assertEqual([], client.deleted)
+
+    def test_versioned_missing_old_run_and_earlier_attempt_never_consume_ordinary_slots(self):
+        client = FakeGitHub([run(1, run_attempt=3, head_sha='a' * 40, conclusion='failure'),
+                             run(2), run(3), run(4)],
+                            [versioned_release(1), versioned_release(90, tag='r1.1')])
+        report = cleanup.cleanup(client, execute=True)
+        self.assertEqual([4, 3], report.plan.kept_ids)
+        self.assertEqual([2], report.deleted_ids)
+        self.assertEqual([1, 90], report.plan.release_run_ids)
+
+    def test_new_versioned_release_published_during_cleanup_is_refreshed_before_delete(self):
+        client = FakeGitHub([run(value, run_attempt=1, head_sha='a' * 40) for value in range(1, 6)])
+        original = client.request
+        def request(resource, **kwargs):
+            if resource == '/actions/runs/3' and kwargs.get('method', 'GET') == 'GET':
+                client.releases = [versioned_release(3)]
+            return original(resource, **kwargs)
+        with patch.object(client, 'request', side_effect=request):
+            report = cleanup.cleanup(client, execute=True)
+        self.assertNotIn(3, report.deleted_ids)
+        self.assertEqual('published release', report.plan.preserved[3])
 
     def test_draft_source_backup_and_missing_old_runs_do_not_consume_success_slots(self):
         client = FakeGitHub([run(value) for value in range(1, 5)],

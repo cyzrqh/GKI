@@ -58,7 +58,7 @@ jobs:
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
     permissions:
-      contents: write
+      contents: read
       actions: write
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
@@ -66,7 +66,6 @@ jobs:
       source_cache_key: ${{ steps.source-snapshot.outputs.source_cache_key }}
       source_identity: ${{ steps.source-identity.outputs.source_identity }}
       susfs_sources: ${{ steps.shared-susfs.outputs.susfs_sources }}
-      source_backup_release_id: ${{ steps.source-backup.outputs.backup_release_id }}
       ddk_matrix: ${{ steps.lkm-matrix.outputs.matrix }}
       manager_package: ${{ steps.certificate.outputs.package }}
       manager_cert_size: ${{ steps.certificate.outputs.cert_size }}
@@ -203,16 +202,6 @@ jobs:
         with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
             output.write('source_identity='+json.dumps(identity,separators=(',',':'))+'\n')
         PY
-    - name: 保存本次源码的独立临时备份
-      id: source-backup
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
-      env:
-        GH_TOKEN: ${{ github.token }}
-        KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
-      run: |
-        python3 tools/transfer_ksu_snapshot.py create --source "$GITHUB_WORKSPACE/ksu-source-bundle" \
-          --expected-ref "$KSU_REF"
     - name: 保存本次不可变源码缓存
       uses: actions/cache/save@v5
       timeout-minutes: 3
@@ -273,20 +262,19 @@ jobs:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
         fail-on-cache-miss: false
-    - name: 从本次临时备份恢复固定源码
+    - name: 从官方固定提交恢复并核实源码
       id: source-backup
       if: steps.source-cache.outputs.cache-hit != 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         KSU_VARIANT: ${{ inputs.kernelsu_variant }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
-        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
         PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
         KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
         ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
       run: |
-        python3 tools/transfer_ksu_snapshot.py restore \
-          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+        python3 tools/transfer_ksu_snapshot.py restore-official \
+          --expected-ref "$KSU_REF" \
           --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
           --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
           --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
@@ -298,6 +286,14 @@ jobs:
       with:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+    - name: 核对固定源码与准备任务的完整身份
+      env:
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py verify-cache \
+          --source "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY"
     - name: 还原并核实管理器源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -455,20 +451,19 @@ jobs:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
         fail-on-cache-miss: false
-    - name: 从本次临时备份恢复固定源码
+    - name: 从官方固定提交恢复并核实源码
       id: source-backup
       if: steps.source-cache.outputs.cache-hit != 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         KSU_VARIANT: ${{ inputs.kernelsu_variant }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
-        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
         PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
         KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
         ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
       run: |
-        python3 tools/transfer_ksu_snapshot.py restore \
-          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+        python3 tools/transfer_ksu_snapshot.py restore-official \
+          --expected-ref "$KSU_REF" \
           --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
           --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
           --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
@@ -480,6 +475,14 @@ jobs:
       with:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+    - name: 核对固定源码与准备任务的完整身份
+      env:
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py verify-cache \
+          --source "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY"
     - name: 检出同一版本的管理器源码
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -854,20 +857,19 @@ jobs:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
         fail-on-cache-miss: false
-    - name: 从本次临时备份恢复固定源码
+    - name: 从官方固定提交恢复并核实源码
       id: source-backup
       if: steps.source-cache.outputs.cache-hit != 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         KSU_VARIANT: ${{ inputs.kernelsu_variant }}
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
-        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
         PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
         KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
         ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
       run: |
-        python3 tools/transfer_ksu_snapshot.py restore \
-          --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \
+        python3 tools/transfer_ksu_snapshot.py restore-official \
+          --expected-ref "$KSU_REF" \
           --output "$GITHUB_WORKSPACE/ksu-source-bundle" \
           --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \
           --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
@@ -879,6 +881,14 @@ jobs:
       with:
         path: ksu-source-bundle
         key: ${{ needs.prepare-matrix.outputs.source_cache_key }}
+    - name: 核对固定源码与准备任务的完整身份
+      env:
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
+      run: |
+        python3 tools/transfer_ksu_snapshot.py verify-cache \
+          --source "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" \
+          --prepared-identity "$PREPARED_SOURCE_IDENTITY"
     - name: 检出固定的 CCTV 构建方法参考
       uses: actions/checkout@v6
       with:
@@ -1005,7 +1015,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
       actions: read
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
@@ -1032,19 +1042,6 @@ jobs:
         set -euo pipefail
         python3 tools/oplus_assets.py collect --input oplus-input --output oplus-report \
           --matrix "$OPLUS_MATRIX" --variants "$KSU_VARIANT"
-        python3 - <<'PY'
-        import pathlib,shutil,sys
-        sys.path.insert(0,'tools')
-        from transfer_ksu_snapshot import native_assets
-        source = pathlib.Path('oplus-input')
-        output = pathlib.Path('oplus-verified-assets')
-        output.mkdir()
-        for path in source.rglob('*'):
-            if path.is_file():
-                shutil.copyfile(path,output/path.name)
-        shutil.copyfile('oplus-report/SHA256SUMS.txt',output/'SHA256SUMS.txt')
-        native_assets(output.resolve())
-        PY
     - name: 上传原文件同名校验清单
       uses: actions/upload-artifact@v7
       with:
@@ -1052,15 +1049,6 @@ jobs:
         archive: false
         if-no-files-found: error
         overwrite: true
-    - name: 以 Actions 原文件摘要证明后清理临时源码备份
-      if: needs.prepare-matrix.outputs.source_backup_release_id != ''
-      env:
-        GH_TOKEN: ${{ github.token }}
-        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
-        SOURCE_BACKUP_RELEASE_ID: ${{ needs.prepare-matrix.outputs.source_backup_release_id }}
-      run: |
-        python3 tools/transfer_ksu_snapshot.py delete-actions --release-id "$SOURCE_BACKUP_RELEASE_ID" \
-          --expected-ref "$KSU_REF" --assets-directory "$GITHUB_WORKSPACE/oplus-verified-assets"
     - name: 显示统一的详细构建配置
       if: always() && !cancelled() && steps.assets.outcome == 'success'
       run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"

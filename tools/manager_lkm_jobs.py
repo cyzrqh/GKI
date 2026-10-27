@@ -35,16 +35,15 @@ def source_backup_restore(*, condition: str | None = None) -> dict:
     if condition is not None:
         check = '(' + condition + ') && ' + check
     return {
-        'name': '从本次临时备份恢复固定源码', 'id': 'source-backup', 'if': check,
+        'name': '从官方固定提交恢复并核实源码', 'id': 'source-backup', 'if': check,
         'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
                 'KSU_VARIANT': MANAGER_VARIANT,
                 'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
-                'SOURCE_BACKUP_RELEASE_ID': '${{ needs.prepare-matrix.outputs.source_backup_release_id }}',
                 'PREPARED_SOURCE_IDENTITY': '${{ needs.prepare-matrix.outputs.source_identity }}',
                 'KSU_TIER': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
                 'ENABLE_SUSFS': "${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}"},
-        'run': '''python3 tools/transfer_ksu_snapshot.py restore \\
-  --release-id "$SOURCE_BACKUP_RELEASE_ID" --expected-ref "$KSU_REF" \\
+        'run': '''python3 tools/transfer_ksu_snapshot.py restore-official \\
+  --expected-ref "$KSU_REF" \\
   --output "$GITHUB_WORKSPACE/ksu-source-bundle" \\
   --prepared-identity "$PREPARED_SOURCE_IDENTITY" --root "$GITHUB_WORKSPACE" \\
   --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER"
@@ -53,13 +52,29 @@ def source_backup_restore(*, condition: str | None = None) -> dict:
 
 
 def source_backup_recache() -> dict:
-    """An evicted cache is an accelerator, never the only surviving source copy."""
+    """Cache the verified official reconstruction after a cache miss."""
     return {
         'name': '重新缓存本次已验证的固定源码',
         'uses': 'actions/cache/save@v5', 'timeout-minutes': 3, 'continue-on-error': True,
         'if': "steps.source-cache.outputs.cache-hit != 'true' && steps.source-backup.outcome == 'success'",
         'with': {'path': SOURCE_BUNDLE_PATH, 'key': SOURCE_CACHE_KEY},
     }
+
+
+def source_cache_verify(*, condition: str | None = None) -> dict:
+    """Bind cached and reconstructed snapshots to the successful prepare job."""
+    step = {
+        'name': '核对固定源码与准备任务的完整身份',
+        'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',
+                'PREPARED_SOURCE_IDENTITY': '${{ needs.prepare-matrix.outputs.source_identity }}'},
+        'run': '''python3 tools/transfer_ksu_snapshot.py verify-cache \\
+  --source "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" \\
+  --prepared-identity "$PREPARED_SOURCE_IDENTITY"
+''',
+    }
+    if condition is not None:
+        step['if'] = condition
+    return step
 
 
 def load_ddk_matrix(root: Path) -> list[dict[str, str]]:
@@ -137,6 +152,7 @@ def manager_lkm_job(condition: str) -> dict:
             source_cache_restore(),
             source_backup_restore(),
             source_backup_recache(),
+            source_cache_verify(),
             {'name': '还原并核实管理器源码',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}', 'KSU_VARIANT': MANAGER_VARIANT},
              'run': '''set -euo pipefail

@@ -99,6 +99,21 @@ def validate_bindings(manager: dict | None, kernels: list[tuple[dict, bool]], *,
                 raise ValueError('The release kernel does not match the signed manager APK: ' + key)
 
 
+def release_title(manager: dict | None) -> str:
+    """Name the release from its actual manager version code and resolved tier."""
+    if manager is None:
+        return 'GKI Kernel Release'
+    variant = manager.get('ksu_variant', 'SukiSU')
+    version = manager.get('ksu_version_code')
+    if (type(version) not in (str, int) or not re.fullmatch(r'[1-9][0-9]*', str(version))
+            or int(version) > 2_100_000_000):
+        raise ValueError('A public release title requires the actual numeric manager version code')
+    branch = manager.get('ksu_branch') or '版本类型未知'
+    label = {'Stable(标准)': '正式版', 'Latest(最新)': '最新测试版',
+             'Dev(开发)': '开发版', 'Custom(自定义)': '自定义版'}.get(branch, branch)
+    return f'{variant} {version} {label}'
+
+
 def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = None,
             report_kind: str = 'release') -> dict:
     if report_kind not in ('release', 'actions'):
@@ -228,6 +243,12 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
     if manager_verified and expected_hashes[manager['file']] != manager['apk_sha256']:
         raise ValueError('The signed manager APK changed while preparing its release')
     body = render_notes(manager, kernel_documents, report_kind=report_kind)
+    variant = manager.get('ksu_variant', 'SukiSU') if manager else None
+    if report_kind == 'actions':
+        title = ('GKI 构建结果 · ' + variant + ' ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code'))
+                 if manager else 'GKI 构建结果')
+    else:
+        title = release_title(manager)
     assets = output / 'assets'
     assets.mkdir(parents=True, exist_ok=True)
     checksums = []
@@ -240,11 +261,6 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
         checksums.append(actual_hash + '  ' + path.name)
     (assets / 'SHA256SUMS.txt').write_text('\n'.join(checksums) + '\n', encoding='utf-8')
     (output / 'release.md').write_text(body, encoding='utf-8')
-    variant = manager.get('ksu_variant', 'SukiSU') if manager else None
-    title = 'GKI · ' + variant + ' ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code')) if manager else 'GKI Kernel Release'
-    if report_kind == 'actions':
-        title = ('GKI 构建结果 · ' + variant + ' ' + str(manager.get('ksu_version_name') or manager.get('ksu_version_code'))
-                 if manager else 'GKI 构建结果')
     (output / 'title.txt').write_text(title, encoding='utf-8')
     return {'assets': len(entries), 'kernels': len(kernel_documents), 'manager': bool(manager)}
 

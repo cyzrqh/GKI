@@ -18,7 +18,6 @@ import oplus_workflow as workflow
 import oplus_recipe as recipe
 import oplus_kernel as kernel
 import oplus_catalog as catalog
-from transfer_ksu_snapshot import native_assets
 
 
 def heredoc(script):
@@ -109,6 +108,14 @@ class OplusWorkflowTests(unittest.TestCase):
         fallback = next(step for step in worker['steps'] if 'transfer_ksu_snapshot.py restore' in step.get('run', ''))
         self.assertNotIn('inputs.operation', json.dumps(fallback))
         self.assertIn('inputs.enable_susfs', fallback['env']['ENABLE_SUSFS'])
+        self.assertNotIn('--release-id', fallback['run'])
+        self.assertNotIn('SOURCE_BACKUP_RELEASE_ID', fallback['env'])
+        self.assertIn('--prepared-identity "$PREPARED_SOURCE_IDENTITY"', fallback['run'])
+        verification = workflow.source_cache_verify()
+        self.assertIn(verification, worker['steps'])
+        self.assertLess(worker['steps'].index(fallback), worker['steps'].index(verification))
+        bootstrap = next(step for step in worker['steps'] if '--phase bootstrap' in step.get('run', ''))
+        self.assertLess(worker['steps'].index(verification), worker['steps'].index(bootstrap))
         self.assertEqual(worker['env']['SUSFS_SOURCES'], '${{ needs.prepare-matrix.outputs.susfs_sources }}')
         self.assertEqual(worker['strategy']['matrix'], '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}')
         self.assertFalse(worker['strategy']['fail-fast'])
@@ -211,7 +218,7 @@ class OplusWorkflowTests(unittest.TestCase):
                 self.assertEqual(result, 0)
                 self.assertEqual(runner.call_args.args[:3], (self.directory, profile, inputs))
 
-    def test_native_aggregation_copies_real_signature_verified_outputs_for_delete_proof(self):
+    def test_native_aggregation_verifies_real_signed_apk_ak3_and_outputs_only_reports(self):
         # Reuse true test-only RSA signatures and Git/Image fixtures instead of
         # hand-writing an already-trusted metadata sidecar for the workflow.
         from test_oplus_assets import OplusAssetsTests
@@ -228,15 +235,15 @@ class OplusWorkflowTests(unittest.TestCase):
                 import oplus_assets
                 result = oplus_assets.collect(fixture.inputs, fixture.directory / 'oplus-report',
                                               {'include': [fixture.profile]}, 'SukiSU')
-                exec(compile(heredoc(workflow.NATIVE_ASSETS), '<workflow native cleanup proof>', 'exec'), {})
-                files = native_assets((fixture.directory / 'oplus-verified-assets').resolve())
             finally:
                 os.chdir(previous)
             self.assertEqual(result['count'], 1)
-            self.assertEqual(len(files), 3)
-            self.assertEqual(set(files), {fixture.manager['file'], 'SHA256SUMS.txt',
-                                          'Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip'})
-            self.assertNotIn('summary.md', files)
+            reports = fixture.directory / 'oplus-report'
+            self.assertEqual({path.name for path in reports.iterdir()}, {'SHA256SUMS.txt', 'summary.md'})
+            checksums = (reports / 'SHA256SUMS.txt').read_text()
+            self.assertIn(fixture.manager['file'], checksums)
+            self.assertIn('Oplus-sm8650-android14-6.1.57-SukiSU-AnyKernel3.zip', checksums)
+            self.assertFalse((fixture.directory / 'oplus-verified-assets').exists())
         finally:
             fixture.doCleanups()
             OplusAssetsTests.tearDownClass()
@@ -251,16 +258,19 @@ class OplusWorkflowTests(unittest.TestCase):
         collect = next(item for item in aggregate['steps'] if item.get('id') == 'assets')
         self.assertIn('--variants "$KSU_VARIANT"', collect['run'])
         self.assertEqual(collect['env']['OPLUS_MATRIX'], '${{ needs.prepare-matrix.outputs.matrix }}')
-        cleanup = next(item for item in aggregate['steps'] if 'delete-actions' in item.get('run', ''))
-        self.assertIn('oplus-verified-assets', cleanup['run'])
         steps = aggregate['steps']
         upload = next(item for item in steps if item.get('uses') == 'actions/upload-artifact@v7')
         self.assertLess(steps.index(collect), steps.index(upload))
-        self.assertLess(steps.index(upload), steps.index(cleanup))
         self.assertEqual(upload['with']['path'], 'oplus-report/SHA256SUMS.txt')
         self.assertIs(upload['with']['archive'], False)
         self.assertNotIn('publish-release', self.document['jobs'])
         self.assertNotIn('gh release create', json.dumps(self.document))
+        self.assertNotIn('transfer_ksu_snapshot.py create', json.dumps(self.document))
+        self.assertNotIn('source_backup_release_id', json.dumps(self.document))
+        self.assertNotIn('delete-actions', json.dumps(self.document))
+        self.assertNotIn('native_assets', collect['run'])
+        self.assertNotIn('oplus-verified-assets', collect['run'])
+        self.assertEqual(aggregate['permissions'], {'contents': 'read', 'actions': 'read'})
         summary = steps[-1]
         self.assertIn('oplus-report/summary.md', summary['run'])
         self.assertIn("steps.assets.outcome == 'success'", summary['if'])

@@ -438,7 +438,7 @@ class WorkflowTests(unittest.TestCase):
                             and manager == 'success')
                 self.assertEqual(expected, actual)
 
-    def test_non_release_builds_keep_checksums_configuration_and_clean_owned_source_draft(self):
+    def test_non_release_builds_keep_checksums_and_configuration_without_source_drafts(self):
         steps = self.workflow['jobs']['publish-release']['steps']
         publish = next(step for step in steps if step.get('id') == 'release')
         checksum = next(step for step in steps if step['name'] == '上传同名校验文件')
@@ -446,10 +446,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(steps.index(checksum), steps.index(publish))
         cleanup = next(step for step in steps if 'cleanup_build_artifacts.py' in step.get('run', ''))
         self.assertEqual(cleanup['if'], "steps.release.outcome == 'success'")
-        actions_cleanup = next(step for step in steps if 'delete-actions' in step.get('run', ''))
-        self.assertIn("steps.release.outcome == 'skipped'", actions_cleanup['if'])
-        self.assertIn("source_backup_release_id != ''", actions_cleanup['if'])
-        self.assertIn('--assets-directory release-publish/assets', actions_cleanup['run'])
+        self.assertFalse(any('delete-actions' in step.get('run', '') for step in steps))
+        self.assertNotIn('source_backup_release_id', str(self.workflow))
         summary = next(step for step in steps if step['name'] == '显示构建配置与发行结果')
         self.assertIn('cat release-publish/release.md', summary['run'])
 
@@ -541,27 +539,23 @@ class WorkflowTests(unittest.TestCase):
             self.assertTrue(step['continue-on-error'])
         self.assertNotIn('Source-SukiSU-', str(self.workflow))
 
-    def test_snapshot_backup_survives_cache_misses_and_is_deleted_only_after_public_files_match(self):
+    def test_source_cache_misses_restore_the_exact_official_identity_without_source_releases(self):
         prepare = self.workflow['jobs']['prepare-matrix']
-        self.assertEqual(prepare['permissions'], {'contents': 'write', 'actions': 'write'})
-        backup = next(step for step in prepare['steps'] if step.get('id') == 'source-backup')
-        save = next(step for step in prepare['steps'] if step['name'] == '保存本次不可变源码缓存')
-        self.assertLess(prepare['steps'].index(backup), prepare['steps'].index(save))
-        self.assertNotIn('continue-on-error', backup)
-        self.assertIn('transfer_ksu_snapshot.py create', backup['run'])
-        self.assertEqual(prepare['outputs']['source_backup_release_id'],
-                         '${{ steps.source-backup.outputs.backup_release_id }}')
+        self.assertEqual(prepare['permissions'], {'contents': 'read', 'actions': 'write'})
+        self.assertNotIn('source_backup_release_id', prepare['outputs'])
+        self.assertFalse(any(step.get('id') == 'source-backup' for step in prepare['steps']))
         for name in ('build-sukisu-lkm', 'build-sukisu-manager', 'build-kernel'):
             steps = self.workflow['jobs'][name]['steps']
             restore = next(step for step in steps if step.get('id') == 'source-cache')
-            fallback = next(step for step in steps if 'transfer_ksu_snapshot.py restore' in step.get('run', ''))
+            fallback = next(step for step in steps if 'transfer_ksu_snapshot.py restore-official' in step.get('run', ''))
+            verify = next(step for step in steps if 'transfer_ksu_snapshot.py verify-cache' in step.get('run', ''))
             checkout = next(step for step in steps if 'checkout_ksu_snapshot.py' in step.get('run', ''))
             self.assertLess(steps.index(restore), steps.index(fallback))
             self.assertLess(steps.index(fallback), steps.index(checkout))
             self.assertIn("steps.source-cache.outputs.cache-hit != 'true'", fallback['if'])
             self.assertNotIn('continue-on-error', fallback)
-            self.assertEqual(fallback['env']['SOURCE_BACKUP_RELEASE_ID'],
-                             '${{ needs.prepare-matrix.outputs.source_backup_release_id }}')
+            self.assertNotIn('SOURCE_BACKUP_RELEASE_ID', fallback['env'])
+            self.assertNotIn('--release-id', fallback['run'])
             self.assertIn('--expected-ref "$KSU_REF"', fallback['run'])
             self.assertEqual(fallback['env']['GH_TOKEN'], '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}')
             self.assertEqual('${{ needs.prepare-matrix.outputs.source_identity }}', fallback['env']['PREPARED_SOURCE_IDENTITY'])
@@ -572,11 +566,20 @@ class WorkflowTests(unittest.TestCase):
             self.assertLess(steps.index(recache), steps.index(checkout))
             self.assertEqual('${{ needs.prepare-matrix.outputs.source_cache_key }}', recache['with']['key'])
             self.assertIn("steps.source-backup.outcome == 'success'", recache['if'])
-        steps = self.workflow['jobs']['publish-release']['steps']
-        checked = next(step for step in steps if 'cleanup_build_artifacts.py' in step.get('run', ''))
-        cleanup = next(step for step in steps if 'transfer_ksu_snapshot.py delete' in step.get('run', ''))
-        self.assertLess(steps.index(checked), steps.index(cleanup))
-        self.assertIn('--published-tag "gki-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"', cleanup['run'])
+            self.assertLess(steps.index(recache), steps.index(verify))
+            self.assertLess(steps.index(verify), steps.index(checkout))
+            self.assertNotIn('continue-on-error', verify)
+            self.assertNotIn('cache-hit', verify.get('if', ''), 'Cache hits must pass the same identity verification')
+            self.assertEqual('${{ needs.prepare-matrix.outputs.source_identity }}', verify['env']['PREPARED_SOURCE_IDENTITY'])
+            self.assertIn('--source "$GITHUB_WORKSPACE/ksu-source-bundle"', verify['run'])
+            self.assertIn('--expected-ref "$KSU_REF"', verify['run'])
+            self.assertIn('--prepared-identity "$PREPARED_SOURCE_IDENTITY"', verify['run'])
+        for job in self.workflow['jobs'].values():
+            for step in job.get('steps', []):
+                script = step.get('run', '')
+                for forbidden in ('transfer_ksu_snapshot.py create', 'transfer_ksu_snapshot.py restore \\\n',
+                                  'transfer_ksu_snapshot.py delete', 'SOURCE_BACKUP_RELEASE_ID'):
+                    self.assertNotIn(forbidden, script)
 
     def test_source_cache_key_is_stored_by_prepare_with_its_original_run_attempt(self):
         snapshot = next(step for step in self.workflow['jobs']['prepare-matrix']['steps']
@@ -599,8 +602,8 @@ class WorkflowTests(unittest.TestCase):
     def test_prepare_exports_original_source_tree_history_and_native_version_for_recovery(self):
         prepare = self.workflow['jobs']['prepare-matrix']
         step = next(step for step in prepare['steps'] if step.get('id') == 'source-identity')
-        backup = next(step for step in prepare['steps'] if step.get('id') == 'source-backup')
-        self.assertLess(prepare['steps'].index(step), prepare['steps'].index(backup))
+        save = next(step for step in prepare['steps'] if step['name'] == '保存本次不可变源码缓存')
+        self.assertLess(prepare['steps'].index(step), prepare['steps'].index(save))
         self.assertEqual('${{ steps.source-identity.outputs.source_identity }}', prepare['outputs']['source_identity'])
         code = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
         directory = ROOT / 'tests' / ('.source-identity-' + uuid.uuid4().hex)
@@ -627,6 +630,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('schedule', release['if'])
         self.assertIn("github.event_name == 'workflow_dispatch'", release['if'])
         publish = next(step for step in release['steps'] if step.get('id') == 'release')
+        allocate = next(step for step in release['steps'] if step.get('id') == 'release-tag')
+        self.assertEqual(allocate['if'], publish['if'])
+        self.assertIn("needs.prepare-matrix.outputs.full_catalog == 'true'", allocate['if'])
+        self.assertIn('release_tags.py allocate --notes release-publish/release.md', allocate['run'])
+        self.assertLess(release['steps'].index(allocate), release['steps'].index(publish))
+        self.assertEqual(publish['env']['RELEASE_TAG'], '${{ steps.release-tag.outputs.release_tag }}')
+        self.assertIn('release_tag=%s', publish['run'])
         self.assertIn('--notes-file release-publish/release.md', publish['run'])
         self.assertLess(publish['run'].index('--draft --title'), publish['run'].index('gh release upload'))
         self.assertLess(publish['run'].index('gh release upload'), publish['run'].index('--draft=false'))
@@ -637,6 +647,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(checksum['with']['path'], 'release-publish/assets/SHA256SUMS.txt')
         cleanup = next(step for step in release['steps'] if 'cleanup_build_artifacts.py' in step.get('run', ''))
         self.assertEqual(cleanup['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertEqual(cleanup['env']['RELEASE_TAG'], '${{ steps.release.outputs.release_tag }}')
+        self.assertIn('--release-tag "$RELEASE_TAG"', cleanup['run'])
 
     def test_manager_caches_match_real_cargo_target_and_exclude_signing_outputs(self):
         steps = self.workflow['jobs']['build-sukisu-manager']['steps']

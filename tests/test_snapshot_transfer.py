@@ -153,6 +153,135 @@ class SnapshotTransferTests(unittest.TestCase):
             return snapshot.git(directory, 'fetch', '--quiet', '--tags', str(self.bundle / snapshot.BUNDLE_NAME), self.reference)
         return snapshot.git(directory, *arguments, **kwargs)
 
+    def cli_environment(self, variant='SukiSU'):
+        return {'GITHUB_REPOSITORY': self.expected.repository, 'GITHUB_RUN_ID': '123',
+                'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': self.expected.head_sha,
+                'KSU_VARIANT': variant, 'GH_TOKEN': '', 'GITHUB_TOKEN': ''}
+
+    def test_restore_official_cli_restores_real_same_source_without_release_api_or_token(self):
+        for variant in ('SukiSU', 'BakaSU'):
+            parent = self.root / variant[0]
+            parent.mkdir()
+            output = parent / 'ksu-source-bundle'
+            with self.subTest(variant=variant), mock.patch.dict(os.environ, self.cli_environment(variant)), \
+                    mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
+                    mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch) as upstream, \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                status = transfer.main(['restore-official', '--output', str(output),
+                    '--prepared-identity', json.dumps(self.identity()), '--expected-ref', self.reference,
+                    '--root', str(self.root), '--susfs', 'false', '--tier', 'Latest(最新)'])
+            self.assertEqual(status, 0)
+            self.assertTrue(json.loads(stdout.getvalue())['official_fallback'])
+            api.assert_not_called()
+            self.assertIn(('remote', 'add', 'origin', 'https://github.com/' +
+                           ('SukiSU-Ultra/SukiSU-Ultra' if variant == 'SukiSU' else 'Baka-SU/BakaSU') + '.git'),
+                          [call.args[1:] for call in upstream.call_args_list])
+            restored = checkout.checkout_snapshot(output, self.root / ('verified-' + variant),
+                                                  self.reference, variant=variant)
+            self.assertEqual(self.identity(), {field: restored[field] for field in self.identity()})
+        self.assertEqual([], self.api.calls)
+
+    def test_restore_official_cli_mismatched_prepare_fails_without_cache_replacement_or_api(self):
+        self.output.mkdir()
+        previous = self.output / snapshot.BUNDLE_NAME
+        previous.write_bytes(b'original cached evidence')
+        with mock.patch.dict(os.environ, self.cli_environment()), \
+                mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
+                mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch), \
+                contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()) as stderr:
+            status = transfer.main(['restore-official', '--output', str(self.output),
+                '--prepared-identity', json.dumps({**self.identity(), 'git_count': 999}),
+                '--expected-ref', self.reference, '--root', str(self.root)])
+        self.assertEqual(1, status)
+        self.assertIn('changed since prepare', stderr.getvalue())
+        self.assertEqual(b'original cached evidence', previous.read_bytes())
+        api.assert_not_called()
+
+    def test_verify_cache_cli_binds_real_bundle_and_manifest_to_prepare_without_api(self):
+        for variant, source in (('SukiSU', self.bundle), ('BakaSU', self.baka_bundle())):
+            with self.subTest(variant=variant), mock.patch.dict(os.environ, self.cli_environment(variant)), \
+                    mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
+                    mock.patch.object(transfer, 'restore_official') as fallback, \
+                    contextlib.redirect_stdout(io.StringIO()) as stdout:
+                status = transfer.main(['verify-cache', '--source', str(source),
+                    '--prepared-identity', json.dumps(self.identity()), '--expected-ref', self.reference])
+            self.assertEqual(0, status)
+            self.assertEqual({'verified': True, 'ksu_ref': self.reference, 'variant': variant},
+                             json.loads(stdout.getvalue()))
+            api.assert_not_called()
+            fallback.assert_not_called()
+
+    def test_verify_cache_rejects_tampered_hit_without_upstream_fallback(self):
+        self.output.mkdir()
+        for filename in transfer.FILES:
+            shutil.copyfile(self.bundle / filename, self.output / filename)
+        manifest_path = self.output / snapshot.MANIFEST_NAME
+        original_manifest = manifest_path.read_bytes()
+        bundle_path = self.output / snapshot.BUNDLE_NAME
+        original_bundle = bundle_path.read_bytes()
+        for field, value in [('git_tree', 'b' * 40), ('git_count', 999), ('git_describe', 'tampered-version')]:
+            changed = json.loads(original_manifest)
+            changed[field] = value
+            manifest_path.write_text(json.dumps(changed))
+            with self.subTest(field=field), mock.patch.dict(os.environ, self.cli_environment()), \
+                    mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
+                    mock.patch.object(transfer, 'restore_official') as fallback, \
+                    mock.patch.object(transfer, 'git') as upstream, \
+                    contextlib.redirect_stderr(io.StringIO()) as stderr:
+                status = transfer.main(['verify-cache', '--source', str(self.output),
+                    '--prepared-identity', json.dumps(self.identity()), '--expected-ref', self.reference])
+            self.assertEqual(1, status)
+            self.assertIn('differs from this prepare', stderr.getvalue())
+            fallback.assert_not_called()
+            upstream.assert_not_called()
+            api.assert_not_called()
+        manifest_path.write_bytes(original_manifest)
+        bundle_path.write_bytes(original_bundle + b'corrupt bytes')
+        with mock.patch.dict(os.environ, self.cli_environment()), \
+                mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
+                mock.patch.object(transfer, 'restore_official') as fallback, \
+                contextlib.redirect_stderr(io.StringIO()) as stderr:
+            status = transfer.main(['verify-cache', '--source', str(self.output),
+                '--prepared-identity', json.dumps(self.identity()), '--expected-ref', self.reference])
+        self.assertEqual(1, status)
+        self.assertIn('bundle does not match', stderr.getvalue())
+        fallback.assert_not_called()
+        api.assert_not_called()
+
+    def test_verify_cache_rejects_cross_variant_wrong_ref_and_unknown_files(self):
+        self.output.mkdir()
+        for filename in transfer.FILES:
+            shutil.copyfile(self.bundle / filename, self.output / filename)
+        for reference, variant in ((self.reference, 'BakaSU'), ('f' * 40, 'SukiSU'), ('main', 'SukiSU')):
+            with self.subTest(reference=reference, variant=variant), mock.patch.dict(os.environ, self.cli_environment(variant)), \
+                    mock.patch.object(transfer, 'GitHub', side_effect=AssertionError('No Release API allowed')) as api, \
+                    contextlib.redirect_stderr(io.StringIO()):
+                status = transfer.main(['verify-cache', '--source', str(self.output),
+                    '--prepared-identity', json.dumps(self.identity()), '--expected-ref', reference])
+            self.assertEqual(1, status)
+            api.assert_not_called()
+        keep = self.output / 'unrelated.json'
+        keep.write_text('preserve')
+        with self.assertRaisesRegex(transfer.TransferError, 'only the two'):
+            transfer.verify_cache(self.output, self.identity(), self.reference)
+        self.assertEqual('preserve', keep.read_text())
+
+    def test_verify_cache_strictly_compares_susfs_target_presence_and_identity(self):
+        susfs = {'android14-6.1': {'ref': 'a' * 40, 'tree': 'b' * 40,
+                                  'branch': 'gki-android14-6.1', 'version': 'v2.3.0',
+                                  'date': '2026-10-27 00:00:00 +0000'}}
+        self.output.mkdir()
+        for filename in transfer.FILES:
+            shutil.copyfile(self.bundle / filename, self.output / filename)
+        with self.assertRaisesRegex(transfer.TransferError, 'differs from this prepare'):
+            transfer.verify_cache(self.output, {**self.identity(), 'susfs_sources': susfs}, self.reference)
+        manifest_path = self.output / snapshot.MANIFEST_NAME
+        manifest = json.loads(manifest_path.read_text())
+        manifest['susfs_sources'] = susfs
+        manifest_path.write_text(json.dumps(manifest))
+        with self.assertRaisesRegex(transfer.TransferError, 'differs from this prepare'):
+            transfer.verify_cache(self.output, self.identity(), self.reference)
+
     def test_missing_draft_recovers_exact_official_commit_and_native_version(self):
         with mock.patch.object(transfer, 'git', side_effect=self.local_official_fetch):
             result = transfer.restore(901, self.output, self.expected, self.api,
@@ -484,6 +613,52 @@ class SnapshotTransferTests(unittest.TestCase):
         with self.assertRaisesRegex(transfer.TransferError, 'exact published build tag'):
             transfer.delete(901, 'gki-123-1', expected, self.api)
         self.assertTrue(transfer.delete(901, 'gki-123-2', expected, self.api)['deleted'])
+
+    def versioned_publication(self, expected=None, *, tag='r1.0', repository=None):
+        expected = expected or self.expected
+        self.api.published(expected)
+        published = self.api.releases['published']
+        published['tag_name'] = tag
+        published['body'] = (f'<!-- gki-release-run:v1 repository={repository or expected.repository} '
+                             f'run_id={expected.run_id} run_attempt={expected.run_attempt} '
+                             f'head_sha={expected.head_sha} -->\n\nKernel release\n')
+        return published
+
+    def test_versioned_release_cleans_only_exact_owned_source_draft_case_insensitively(self):
+        self.create()
+        original_tag = self.api.releases[901]['tag_name']
+        self.versioned_publication(repository=self.expected.repository.upper())
+        self.assertTrue(transfer.delete(901, 'r1.0', self.expected, self.api)['deleted'])
+        self.assertTrue(original_tag.startswith('gki-internal-source-123-1-'))
+        self.assertEqual('r1.0', self.api.releases['published']['tag_name'])
+        self.assertEqual([('DELETE', '/releases/901', None)],
+                         [call for call in self.api.calls if call[0] == 'DELETE'])
+
+    def test_versioned_release_invalid_or_foreign_marker_cannot_unlock_draft_deletion(self):
+        self.create()
+        original = copy.deepcopy(self.versioned_publication())
+        body = original['body']
+        changes = ({'body': None}, {'body': 'no marker'}, {'body': body + body},
+                   {'body': body.replace(self.expected.repository, 'foreign/repository')},
+                   {'body': body.replace('run_id=123', 'run_id=124')},
+                   {'body': body.replace('run_attempt=1', 'run_attempt=2')},
+                   {'body': body.replace('head_sha=' + self.expected.head_sha, 'head_sha=' + 'e' * 40)},
+                   {'target_commitish': 'e' * 40})
+        for change in changes:
+            self.api.releases['published'] = {**original, **change}
+            with self.subTest(change=change), self.assertRaises(transfer.TransferError):
+                transfer.delete(901, 'r1.0', self.expected, self.api)
+            self.assertIn(901, self.api.releases)
+            self.assertFalse(any(call[0] == 'DELETE' for call in self.api.calls))
+
+    def test_versioned_later_attempt_can_cleanup_earlier_backup_but_old_marker_cannot(self):
+        self.create()
+        expected = replace(self.expected, run_attempt=2)
+        self.versioned_publication()
+        with self.assertRaisesRegex(transfer.TransferError, 'exact published build tag'):
+            transfer.delete(901, 'r1.0', expected, self.api)
+        self.versioned_publication(expected, tag='r1.1')
+        self.assertTrue(transfer.delete(901, 'r1.1', expected, self.api)['deleted'])
 
     def test_actions_cleanup_matches_native_files_and_deletes_only_its_private_draft(self):
         self.create()

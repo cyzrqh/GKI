@@ -44,7 +44,8 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(len(fields), 8)
         self.assertEqual(fields['kernelsu_variant']['options'], ['SukiSU', 'BakaSU'])
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
-        self.assertEqual([key for key in fields if fields[key]['default'] is True], ['use_bbg', 'use_proxy_optimization'])
+        self.assertEqual([key for key in fields if fields[key]['default'] is True],
+                         ['enable_susfs', 'use_kpm', 'use_lz4kd'])
         self.assertNotIn('kernelsu_branch', fields)
         self.assertNotIn('models', fields)
         self.assertNotIn('schedule', self.document['on'])
@@ -267,7 +268,7 @@ class OplusWorkflowTests(unittest.TestCase):
     def test_generated_fourth_workflow_is_reproducible_yaml_with_boolean_on(self):
         current = generator.load_yaml(ROOT / workflow.OUTPUT)
         self.assertEqual(current, self.document)
-        self.assertIs(current['on']['workflow_dispatch']['inputs']['enable_susfs']['default'], False)
+        self.assertIs(current['on']['workflow_dispatch']['inputs']['enable_susfs']['default'], True)
         self.assertIs(current['jobs']['build-oplus-kernel']['strategy']['fail-fast'], False)
 
 

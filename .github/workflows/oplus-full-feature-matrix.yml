@@ -17,22 +17,22 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · 官方完整内核矩�
         description: 启用 SUSFS（android14/6.1、android15/6.6、android16/6.12）
         required: false
         type: boolean
-        default: false
+        default: true
       use_kpm:
         description: 启用 KPM（仅 SukiSU/BakaSU 生效）
         required: false
         type: boolean
-        default: false
+        default: true
       use_lz4kd:
         description: 启用 lz4kd
         required: false
         type: boolean
-        default: false
+        default: true
       use_bbg:
         description: 启用 BBG 基带防护
         required: false
         type: boolean
-        default: true
+        default: false
       use_bbr:
         description: 启用 BBR
         required: false
@@ -42,7 +42,7 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · 官方完整内核矩�
         description: 启用代理相关网络优化（MTK 会自动关闭）
         required: false
         type: boolean
-        default: true
+        default: false
       use_unicode_bypass:
         description: 启用 Unicode 零宽绕过修复
         required: false

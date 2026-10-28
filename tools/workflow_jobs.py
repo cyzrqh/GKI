@@ -55,6 +55,11 @@ def updater_job():
         'steps': [
             {'name': '检出默认分支', 'uses': 'actions/checkout@v6',
              'with': {'ref': '${{ github.event.repository.default_branch }}', 'fetch-depth': 0, 'persist-credentials': False}},
+            {'name': '清理上一批已结束的更新检查记录', 'id': 'previous-checks',
+             'if': "github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.operation == '仅检查并提醒')",
+             'continue-on-error': True, 'timeout-minutes': 2,
+             'env': {'GH_TOKEN': '${{ github.token }}'},
+             'run': 'python3 tools/remove_previous_update_checks.py --repo "$GITHUB_REPOSITORY" --execute'},
             {'name': '恢复已验证的官方内核版本快照', 'uses': 'actions/cache/restore@v5',
              'with': {'path': '${{ runner.temp }}/gki-kernel-catalog',
                       'key': 'gki-official-catalog-v1-${{ github.run_id }}-${{ github.run_attempt }}',

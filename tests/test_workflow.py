@@ -208,6 +208,27 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('sync_upstream.py', str(steps))
         self.assertNotIn('xingguangcuican6666', str(steps))
 
+    def test_update_check_removes_old_checks_without_running_during_manual_sync(self):
+        steps = self.updater['jobs']['check-upstream']['steps']
+        cleanup = next(step for step in steps if step.get('id') == 'previous-checks')
+        probe = next(step for step in steps if step.get('id') == 'official')
+        self.assertLess(steps.index(cleanup), steps.index(probe))
+        self.assertGreater(steps.index(cleanup), 0)
+        self.assertTrue(cleanup['continue-on-error'])
+        self.assertEqual(cleanup['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertIn('remove_previous_update_checks.py', cleanup['run'])
+        self.assertIn('--execute', cleanup['run'])
+        for event, operation, allowed in (('schedule', '', True),
+                                           ('workflow_dispatch', '仅检查并提醒', True),
+                                           ('workflow_dispatch', '同步官方更新', False),
+                                           ('push', '仅检查并提醒', False)):
+            expression = cleanup['if'].replace('github.event_name', repr(event)).replace('inputs.operation', repr(operation))
+            with self.subTest(event=event, operation=operation):
+                self.assertEqual(allowed, bool(eval(expression.replace('&&', ' and ').replace('||', ' or '),
+                                                   {'__builtins__': {}}, {})))
+        for document in (self.workflow, generator.cleanup_history_workflow()):
+            self.assertNotIn('remove_previous_update_checks.py', str(document))
+
     def test_only_explicit_manual_sync_can_merge_pending_or_new_pr(self):
         steps = self.updater['jobs']['check-upstream']['steps']
         step = next(step for step in steps if step.get('id') == 'sync')

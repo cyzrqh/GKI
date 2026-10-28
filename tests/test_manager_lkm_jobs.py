@@ -1,6 +1,8 @@
 """Validate pinned DDK selection and the exact-cache producer/consumer contract."""
 import copy
+import contextlib
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -54,6 +56,43 @@ def render_key(template, *, root=ROOT, **changes):
                     if values['inputs.kernelsu_variant'] == 'BakaSU' else '')
         return expression[1:-1] if expression.startswith("'") and expression.endswith("'") else values[expression]
     return re.sub(r'\$\{\{(.*?)\}\}', replace, template)
+
+
+def replay_cache_steps(steps, responses):
+    """Replay generated descriptors and execute their actual final Python gate.
+
+    Only the GitHub cache service and wait clock are simulated. No kernel,
+    module compiler, provenance verifier or final acceptance gate is mocked.
+    """
+    outputs, requests, delays = {}, [], []
+    result = {'requests': requests, 'delays': delays, 'exit': 0}
+    for step in steps:
+        if 'if' in step:
+            checks = []
+            for part in step['if'].split(' && '):
+                match = re.fullmatch(r"steps\.([a-z0-9-]+)\.outputs\.cache-hit != 'true'", part)
+                if match is None:
+                    raise AssertionError('Unexpected generated retry condition: ' + part)
+                checks.append(outputs.get(match[1], {}).get('cache-hit', '') != 'true')
+            if not all(checks):
+                continue
+        if step.get('uses') == 'actions/cache/restore@v5':
+            requests.append(step['with'])
+            outputs[step['id']] = responses[len(requests) - 1] if len(requests) <= len(responses) else {}
+        elif step['run'].startswith('sleep '):
+            delays.append(int(step['run'].split()[1]))
+        else:
+            environment = {}
+            for field, value in step['env'].items():
+                match = re.fullmatch(r'\$\{\{ steps\.([a-z0-9-]+)\.outputs\.([a-z-]+) \}\}', value)
+                environment[field] = outputs.get(match[1], {}).get(match[2], '') if match else value
+            command = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
+            try:
+                with patch.dict(os.environ, environment), contextlib.redirect_stdout(io.StringIO()):
+                    exec(compile(command, '<lkm-exact-cache-gate>', 'exec'), {})
+            except SystemExit as error:
+                result['exit'] = error.code
+    return result
 
 
 class ManagerLkmJobTests(unittest.TestCase):
@@ -208,15 +247,22 @@ class ManagerLkmJobTests(unittest.TestCase):
         steps = job['steps']
         caches = [step for step in steps if step.get('uses', '').startswith('actions/cache/')
                   and step.get('with', {}).get('path', '').startswith('manager-lkm/')]
-        self.assertEqual(['actions/cache/restore@v5', 'actions/cache/save@v5', 'actions/cache/restore@v5'],
+        self.assertEqual(['actions/cache/restore@v5', 'actions/cache/save@v5',
+                          *['actions/cache/restore@v5'] * 3],
                          [step['uses'] for step in caches])
         for step in caches:
-            self.assertNotIn('continue-on-error', step)
             self.assertNotIn('restore-keys', step['with'])
             self.assertEqual('manager-lkm/${{ matrix.kmi }}', step['with']['path'])
             self.assertEqual(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'), step['with']['key'])
-        self.assertTrue(caches[-1]['with']['lookup-only'])
-        self.assertTrue(caches[-1]['with']['fail-on-cache-miss'])
+        for step in caches[:2]:
+            self.assertNotIn('continue-on-error', step)
+        for step in caches[2:]:
+            self.assertTrue(step['with']['lookup-only'])
+            self.assertFalse(step['with']['fail-on-cache-miss'])
+            self.assertTrue(step['continue-on-error'])
+        self.assertEqual('lkm-published-ready', steps[-1]['id'])
+        self.assertNotIn('continue-on-error', steps[-1])
+        self.assertIn('raise SystemExit', steps[-1]['run'])
         self.assertFalse(any('upload-artifact' in step.get('uses', '') for step in steps))
         self.assertFalse(steps[0]['with']['persist-credentials'])
         hit = next(step for step in steps if '--expected-kmis "$KMI"' in step.get('run', ''))
@@ -226,6 +272,85 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertIn("cache-hit != 'true'", caches[1]['if'])
         self.assertLess(steps.index(hit), steps.index(build))
         self.assertLess(steps.index(build), steps.index(caches[1]))
+
+    def test_cache_visibility_lag_retries_exact_key_and_stops_on_later_hit(self):
+        key = render_key(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'))
+        for lookup_only in (True, False):
+            steps = jobs.lkm_cache_restore_steps(key, 'manager-lkm/android12-5.10',
+                id_prefix='retry-kmi', name='strict cache', lookup_only=lookup_only)
+            for responses in ([{}, {'cache-hit': 'true', 'cache-matched-key': key}],
+                              [{}, {}, {'cache-hit': 'true', 'cache-matched-key': key}]):
+                replay = replay_cache_steps(steps, responses)
+                with self.subTest(lookup_only=lookup_only, responses=responses):
+                    self.assertEqual(0, replay['exit'])
+                    self.assertEqual(len(responses), len(replay['requests']))
+                    self.assertEqual([10] if len(responses) == 2 else [10, 20], replay['delays'])
+                    self.assertTrue(all(request['key'] == key and request['lookup-only'] == lookup_only
+                                        and not request['fail-on-cache-miss'] for request in replay['requests']))
+            immediate = replay_cache_steps(steps, [{'cache-hit': 'true', 'cache-matched-key': key}])
+            self.assertEqual(0, immediate['exit'])
+            self.assertEqual(1, len(immediate['requests']))
+            self.assertEqual([], immediate['delays'])
+
+    def test_all_cache_misses_fail_after_bounded_retries_without_another_build_or_transport(self):
+        key = render_key(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'))
+        steps = jobs.lkm_cache_restore_steps(key, 'manager-lkm/android12-5.10',
+            id_prefix='bounded', name='strict cache', lookup_only=True)
+        replay = replay_cache_steps(steps, [{}, {}, {}])
+        self.assertIn('three bounded attempts', replay['exit'])
+        self.assertEqual(3, len(replay['requests']))
+        self.assertEqual([10, 20], replay['delays'])
+        self.assertEqual(6, len(steps))
+        for step in steps:
+            if 'uses' in step:
+                self.assertEqual('actions/cache/restore@v5', step['uses'])
+                self.assertEqual(3, step['timeout-minutes'])
+                self.assertNotIn('restore-keys', step['with'])
+            else:
+                self.assertTrue(step['run'].startswith(('sleep ', 'python3 -')))
+        self.assertNotIn('continue-on-error', steps[-1])
+
+    def test_a_cache_hit_for_another_source_signature_or_kmi_never_passes_the_gate(self):
+        key = render_key(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'))
+        steps = jobs.lkm_cache_restore_steps(key, 'manager-lkm/android12-5.10',
+            id_prefix='identity', name='strict cache')
+        wrong = (render_key(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'),
+                            **{'needs.prepare-matrix.outputs.ksu_ref': 'f' * 40}),
+                 render_key(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'),
+                            **{'needs.prepare-matrix.outputs.manager_cert_sha256': 'e' * 64}),
+                 render_key(jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short'),
+                            **{'matrix.kmi': 'android13-5.15'}))
+        for matched in wrong:
+            with self.subTest(matched=matched):
+                # A partial service match is never enough. Even an incorrectly
+                # reported cache-hit=true cannot bypass the exact-key gate.
+                for hit in ('false', 'true'):
+                    replay = replay_cache_steps(steps, [{'cache-hit': hit, 'cache-matched-key': matched}] * 3)
+                    self.assertIn('no other source or signature cache', replay['exit'])
+                    self.assertTrue(all(request['key'] == key for request in replay['requests']))
+
+    def test_fixed_consumers_and_matrix_producer_retry_the_identical_native_identity(self):
+        for variant in ('SukiSU', 'BakaSU'):
+            for row in jobs.load_ddk_matrix(ROOT):
+                dynamic = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
+                fixed = jobs.lkm_cache_key(repr(row['kmi']), repr(row['ddk_short']))
+                fields = {'inputs.kernelsu_variant': variant, 'matrix.kmi': row['kmi'],
+                          'matrix.ddk_short': row['ddk_short']}
+                producer = jobs.lkm_cache_restore_steps(dynamic, 'manager-lkm/' + row['kmi'],
+                    id_prefix='producer', name='publish', lookup_only=True)
+                consumer = jobs.lkm_cache_restore_steps(fixed, 'manager-lkm/' + row['kmi'],
+                    id_prefix='consumer', name='restore')
+                with self.subTest(variant=variant, kmi=row['kmi']):
+                    expected = render_key(dynamic, **fields)
+                    for step in producer + consumer:
+                        if 'uses' in step:
+                            self.assertEqual(expected, render_key(step['with']['key'], **fields))
+                            self.assertNotIn('restore-keys', step['with'])
+                    self.assertEqual(expected, render_key(consumer[-1]['env']['EXPECTED_CACHE_KEY'], **fields))
+        optional = jobs.lkm_cache_restore_steps('exact-key', 'manager-lkm/kmi',
+            id_prefix='optional', name='restore', condition='inputs.build_manager')
+        self.assertEqual('inputs.build_manager', optional[-1]['if'])
+        self.assertTrue(all('inputs.build_manager' in step['if'] for step in optional))
 
     def test_source_uses_exact_prepared_cache_key_and_never_downloads_an_artifact(self):
         steps = jobs.manager_lkm_job('true')['steps']

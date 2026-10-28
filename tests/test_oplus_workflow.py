@@ -140,6 +140,30 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertNotIn('matrix.platform }}', worker['name'])
         self.assertEqual(worker['strategy']['max-parallel'], 20)
 
+    def test_all_eight_manager_modules_finish_exact_cache_retries_before_packaging(self):
+        from manager_lkm_jobs import KMIS, lkm_cache_key
+        for document in (self.base, self.document):
+            steps = document['jobs']['build-sukisu-manager']['steps']
+            package = next(i for i, step in enumerate(steps) if 'prepare_manager_lkm.py stage' in step.get('run', ''))
+            ids = [step['id'] for step in steps if 'id' in step]
+            self.assertEqual(len(ids), len(set(ids)))
+            for index, kmi in enumerate(KMIS):
+                prefix = 'manager-lkm-' + str(index)
+                expected = lkm_cache_key(repr(kmi), f'fromJSON(needs.prepare-matrix.outputs.ddk_matrix).include[{index}].ddk_short')
+                attempts = [step for step in steps if step.get('id') in
+                            (prefix, prefix + '-retry-1', prefix + '-retry-2')]
+                self.assertEqual(3, len(attempts))
+                for step in attempts:
+                    self.assertEqual(expected, step['with']['key'])
+                    self.assertEqual('manager-lkm/' + kmi, step['with']['path'])
+                    self.assertIs(step['with']['lookup-only'], False)
+                    self.assertNotIn('restore-keys', step['with'])
+                gate = next(step for step in steps if step.get('id') == prefix + '-ready')
+                self.assertEqual(expected, gate['env']['EXPECTED_CACHE_KEY'])
+                self.assertNotIn('continue-on-error', gate)
+                self.assertLess(steps.index(attempts[-1]), steps.index(gate))
+                self.assertLess(steps.index(gate), package)
+
     def test_worker_orders_real_native_phases_then_verified_payload_package_upload(self):
         worker = self.document['jobs']['build-oplus-kernel']
         commands = [step.get('run', '') for step in worker['steps']]

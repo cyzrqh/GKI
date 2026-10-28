@@ -10,7 +10,7 @@ from pathlib import Path
 
 import yaml
 from workflow_jobs import updater_workflow, release_job, cleanup_history_workflow, successful_cleanup_sweep_step
-from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key,
+from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key, lkm_cache_restore_steps,
                               manager_lkm_job, source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
 
@@ -228,12 +228,11 @@ document = {'manager_package':os.environ['MANAGER_PACKAGE'],
 pathlib.Path(os.environ['RUNNER_TEMP'],'manager-public-certificate.json').write_text(json.dumps(document)+'\\n')
 PY
 '''},
-            *[{'name': '读取镜像修补模块 ' + kmi, 'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
-               'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
-               'with': {'path': 'manager-lkm/' + kmi,
-                        'key': lkm_cache_key(repr(kmi), f'fromJSON(needs.prepare-matrix.outputs.ddk_matrix).include[{index}].ddk_short'),
-                        'fail-on-cache-miss': True}}
-              for index, kmi in enumerate(KMIS)],
+            *[step for index, kmi in enumerate(KMIS)
+              for step in lkm_cache_restore_steps(
+                  lkm_cache_key(repr(kmi), f'fromJSON(needs.prepare-matrix.outputs.ddk_matrix).include[{index}].ddk_short'),
+                  'manager-lkm/' + kmi, id_prefix='manager-lkm-' + str(index),
+                  name='读取镜像修补模块 ' + kmi)],
             {'name': '按官方流程打包完整 LKM 模块',
              'env': {'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}'},
              'run': '''python3 tools/prepare_manager_lkm.py stage --source manager-source --artifacts manager-lkm \\

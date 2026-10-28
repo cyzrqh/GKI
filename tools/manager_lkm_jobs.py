@@ -128,6 +128,61 @@ def lkm_cache_key(kmi_expr: str, ddk_short_expr: str) -> str:
         "format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || ''")
 
 
+def lkm_cache_restore_steps(cache_key: str, cache_path: str, *, id_prefix: str,
+                            name: str, lookup_only: bool = False,
+                            condition: str | None = None) -> list[dict]:
+    """Retry the same exact cache at 0/10/30s, then require a verified hit.
+
+    A lookup has missed immediately after a successful save of the same key.
+    Retry that observed failure without assuming an internal service cause,
+    rebuilding the module or relaxing its source/signature key. Both producer
+    lookups and consumer downloads use this bounded sequence. Callers must
+    still verify downloaded modules' ELF and native provenance.
+    """
+    if not isinstance(id_prefix, str) or not re.fullmatch(r'[a-z][a-z0-9-]{0,63}', id_prefix):
+        raise ValueError('LKM cache retry steps require a unique literal step id prefix')
+    if type(lookup_only) is not bool:
+        raise ValueError('LKM cache lookup mode must be a boolean')
+    steps, attempts = [], []
+    for attempt, delay in enumerate((0, 10, 20)):
+        step_id = id_prefix + (f'-retry-{attempt}' if attempt else '')
+        missing = ' && '.join(f"steps.{previous}.outputs.cache-hit != 'true'" for previous in attempts)
+        check = ('(' + condition + ')' if condition is not None else '')
+        if missing:
+            check += (' && ' if check else '') + missing
+        if delay:
+            steps.append({'name': name + f'（等待后重试 {attempt}）', 'if': check,
+                          'shell': 'bash', 'run': f'sleep {delay}'})
+        step = {'name': name + f'（第 {attempt + 1} 次）', 'id': step_id,
+                'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
+                'continue-on-error': True,
+                'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
+                'with': {'path': cache_path, 'key': cache_key,
+                         'lookup-only': lookup_only, 'fail-on-cache-miss': False}}
+        if check:
+            step['if'] = check
+        steps.append(step)
+        attempts.append(step_id)
+    gate = {'name': name, 'id': id_prefix + '-ready', 'shell': 'bash',
+            'env': {'EXPECTED_CACHE_KEY': cache_key},
+            'run': '''python3 - <<'PY'
+import os
+expected = os.environ['EXPECTED_CACHE_KEY']
+matched = any(os.environ[f'CACHE_HIT_{index}'] == 'true'
+              and os.environ[f'CACHE_KEY_{index}'] == expected for index in range(3))
+if not expected or not matched:
+    raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
+print('The exact verified manager LKM cache is available.')
+PY
+'''}
+    for index, step_id in enumerate(attempts):
+        gate['env'][f'CACHE_HIT_{index}'] = '${{ steps.' + step_id + '.outputs.cache-hit }}'
+        gate['env'][f'CACHE_KEY_{index}'] = '${{ steps.' + step_id + '.outputs.cache-matched-key }}'
+    if condition is not None:
+        gate['if'] = condition
+    return [*steps, gate]
+
+
 def manager_lkm_job(condition: str) -> dict:
     cache_key = lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
     cache_path = 'manager-lkm/${{ matrix.kmi }}'
@@ -233,9 +288,7 @@ python3 tools/prepare_manager_lkm.py record --source manager-source \
              'if': "steps.lkm-cache.outputs.cache-hit != 'true'",
              'uses': 'actions/cache/save@v5', 'timeout-minutes': 3,
              'with': {'path': cache_path, 'key': cache_key}},
-            {'name': '确认管理器可读取原生模块缓存',
-             'uses': 'actions/cache/restore@v5', 'timeout-minutes': 3,
-             'with': {'path': cache_path, 'key': cache_key,
-                      'lookup-only': True, 'fail-on-cache-miss': True}},
+            *lkm_cache_restore_steps(cache_key, cache_path, id_prefix='lkm-published',
+                                     name='确认管理器可读取原生模块缓存', lookup_only=True),
         ],
     }

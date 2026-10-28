@@ -109,14 +109,31 @@ class SharedSusfsArchiveIntegrationTests(unittest.TestCase):
             return shared.prepare_sources(self.source, self.matrix, self.reference,
                                           root=self.root, variant=variant)
 
+    def synthetic_bakasu_port(self, source, reference):
+        # Archive transport uses a two-commit native-manager fixture, not the
+        # full BakaSU tree required by the separate real KPM port tests.
+        self.assertEqual(self.reference, reference)
+        self.assertEqual(snapshot.source_identity(self.source, self.reference),
+                         snapshot.source_identity(source, reference))
+        self.assertEqual('https://github.com/Baka-SU/BakaSU.git',
+                         self.git(source, 'remote', 'get-url', 'origin'))
+        self.assertEqual((self.source / 'kernel/Kbuild').read_bytes(),
+                         (source / 'kernel/Kbuild').read_bytes())
+        self.assertEqual('', self.git(source, 'status', '--porcelain', '--untracked-files=all'))
+        return {}
+
     def export(self, sources, variant='SukiSU'):
-        with mock.patch.object(snapshot, 'verify_susfs_compatibility') as port:
+        with (mock.patch.object(snapshot, 'verify_susfs_compatibility') as port,
+              mock.patch('restore_bakasu_kpm.restore_bakasu_kpm',
+                         side_effect=self.synthetic_bakasu_port) as baka_port):
             manifest = snapshot.snapshot_source(self.source, self.bundle, self.reference,
                 root=self.root, variant=variant, susfs=True, tier='Latest(最新)', susfs_sources=sources)
         if variant == 'SukiSU':
             port.assert_called_once()
+            baka_port.assert_not_called()
         else:
             port.assert_not_called()
+            baka_port.assert_called_once()
         return manifest
 
     def test_sukisu_archive_bundle_preserves_full_manager_history_and_offline_pins(self):

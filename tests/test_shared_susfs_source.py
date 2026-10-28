@@ -83,9 +83,27 @@ class SharedSusfsSourceTests(unittest.TestCase):
             return shared.prepare_sources(self.source, self.matrix, self.reference,
                                           root=self.root, variant='BakaSU', **kwargs)
 
+    def synthetic_bakasu_port(self, source, reference):
+        # This fixture models Git/SUSFS transport, not the full native BakaSU
+        # tree needed by the independently tested production KPM backport.
+        # Retain real identity/origin checks at that unrelated patch boundary.
+        self.assertEqual(self.reference, reference)
+        self.assertEqual(snapshot.source_identity(self.source, self.reference),
+                         snapshot.source_identity(source, reference))
+        self.assertEqual('https://github.com/Baka-SU/BakaSU.git',
+                         self.git(source, 'remote', 'get-url', 'origin'))
+        self.assertEqual((self.source / 'kernel/Kbuild').read_bytes(),
+                         (source / 'kernel/Kbuild').read_bytes())
+        self.assertEqual('', self.git(source, 'status', '--porcelain', '--untracked-files=all'))
+        return {}
+
     def export(self, sources):
-        return snapshot.snapshot_source(self.source, self.bundle, self.reference, root=self.root,
-                                        variant='BakaSU', susfs=True, susfs_sources=sources)
+        with mock.patch('restore_bakasu_kpm.restore_bakasu_kpm',
+                        side_effect=self.synthetic_bakasu_port) as port:
+            manifest = snapshot.snapshot_source(self.source, self.bundle, self.reference, root=self.root,
+                                                variant='BakaSU', susfs=True, susfs_sources=sources)
+        port.assert_called_once()
+        return manifest
 
     def test_one_official_fetch_serves_unique_targets_without_changing_native_identity(self):
         before = snapshot.source_identity(self.source, self.reference)
@@ -116,7 +134,10 @@ class SharedSusfsSourceTests(unittest.TestCase):
                 self.assertEqual(self.latest, self.git(restored, 'rev-parse', 'HEAD'))
                 self.assertEqual(shared.OFFICIAL, self.git(restored, 'remote', 'get-url', 'origin'))
             original = self.root / 'native-ksu'
-            checkout.checkout_snapshot(self.bundle, original, self.reference, variant='BakaSU')
+            with mock.patch('restore_bakasu_kpm.restore_bakasu_kpm',
+                            side_effect=self.synthetic_bakasu_port) as port:
+                checkout.checkout_snapshot(self.bundle, original, self.reference, variant='BakaSU')
+            port.assert_called_once()
         self.assertEqual(self.reference, self.git(original, 'rev-parse', 'HEAD'))
         self.assertEqual(manifest['git_count'], int(self.git(original, 'rev-list', '--count', 'HEAD')))
 

@@ -342,6 +342,37 @@ class OPlusRecipeTests(unittest.TestCase):
                 mock.patch.object(adapter, 'run_steps'), self.assertRaises(adapter.RecipeError):
             adapter.execute_phase('configure', workspace, profile, self.inputs(use_bbg=True), workspace)
 
+    def test_61_build_adapts_the_real_security_fix_before_invoking_make(self):
+        from test_oplus_rtmutex_compat import SCOPED_FUNCTION, PROXY_FUNCTION
+        document, _, profile = self.case(0)
+        self.assertEqual(profile['kernel_version'], '6.1')
+        workspace = self.temporary_workspace()
+        common = workspace / 'kernel_workspace/common'
+        locking = common / 'kernel/locking'
+        locking.mkdir(parents=True)
+        (common / 'Makefile').write_text('VERSION = 6\nPATCHLEVEL = 1\n', encoding='utf-8', newline='\n')
+        source = locking / 'rtmutex.c'
+        source.write_text(SCOPED_FUNCTION, encoding='utf-8', newline='\n')
+        (locking / 'rtmutex_api.c').write_text(PROXY_FUNCTION, encoding='utf-8', newline='\n')
+        native = '6.1.57-android14-11'
+        def compiled(*_args):
+            text = source.read_text(encoding='utf-8')
+            self.assertNotIn('scoped_guard', text)
+            self.assertIn('if (!waiter_task) /* never enqueued */', text)
+            self.assertIn('raw_spin_unlock(&waiter_task->pi_lock);', text)
+            output = common / 'out/arch/arm64/boot/Image'
+            output.parent.mkdir(parents=True)
+            output.write_bytes(b'not an installable kernel; execution boundary fixture')
+            release = common / 'out/include/config/kernel.release'
+            release.parent.mkdir(parents=True)
+            release.write_text(native, encoding='utf-8')
+        with mock.patch.object(adapter, 'load_recipe', return_value=document), \
+                mock.patch.object(adapter, 'check_kernel'), \
+                mock.patch('oplus_compat.prepare_native_release', return_value=native), \
+                mock.patch.object(adapter, 'run_steps', side_effect=compiled) as run:
+            adapter.execute_phase('build', workspace, profile, self.inputs(), workspace)
+        run.assert_called_once()
+
 
 if __name__ == '__main__':
     unittest.main()

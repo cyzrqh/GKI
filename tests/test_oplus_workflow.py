@@ -140,6 +140,16 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertNotIn('matrix.platform }}', worker['name'])
         self.assertEqual(worker['strategy']['max-parallel'], 20)
 
+    def test_native_dependency_and_filemap_behavior_tests_precede_source_preparation(self):
+        steps = self.document['jobs']['prepare-matrix']['steps']
+        preflight = next(step for step in steps if step['name'] == '验证欧加真源码、构建方法与原生配套校验')
+        sources = next(step for step in steps if step.get('id') == 'sources')
+        self.assertIn('command -v cc', preflight['run'])
+        self.assertIn("-p 'test_oplus_*.py'", preflight['run'])
+        self.assertIn("-p 'test_susfs_map_compat.py'", preflight['run'])
+        self.assertNotIn('continue-on-error', preflight)
+        self.assertLess(steps.index(preflight), steps.index(sources))
+
     def test_all_eight_manager_modules_finish_exact_cache_retries_before_packaging(self):
         from manager_lkm_jobs import KMIS, lkm_cache_key
         for document in (self.base, self.document):

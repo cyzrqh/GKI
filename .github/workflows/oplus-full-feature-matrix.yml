@@ -94,7 +94,11 @@ jobs:
       run: python3 -c 'import yaml, cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check
         PyYAML cryptography
     - name: 验证欧加真源码、构建方法与原生配套校验
-      run: python3 -m unittest discover -s tests -p 'test_oplus_*.py'
+      run: |-
+        set -euo pipefail
+        command -v cc >/dev/null
+        python3 -m unittest discover -s tests -p 'test_oplus_*.py'
+        python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
         == 'BakaSU')

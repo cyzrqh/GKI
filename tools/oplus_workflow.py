@@ -117,7 +117,10 @@ def prepare_job(base: dict) -> dict:
         if step.get('uses') == 'actions/checkout@v6' and 'repository' not in step.get('with', {}):
             steps += [python_dependencies(), {
                 'name': '验证欧加真源码、构建方法与原生配套校验',
-                'run': "python3 -m unittest discover -s tests -p 'test_oplus_*.py'"}]
+                'run': "set -euo pipefail\n"
+                       "command -v cc >/dev/null\n"
+                       "python3 -m unittest discover -s tests -p 'test_oplus_*.py'\n"
+                       "python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'"}]
         if step.get('id') == 'matrix':
             steps.append({'name': '固定官方 AnyKernel3 与可选 Unicode 补丁', 'id': 'oplus-deps',
                           'env': {'GH_TOKEN': '${{ github.token }}', 'UNICODE_BYPASS': '${{ inputs.use_unicode_bypass }}'},

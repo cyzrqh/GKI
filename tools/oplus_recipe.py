@@ -404,6 +404,9 @@ def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, wo
         if phase == 'build' and profile['kernel_version'] == '6.12':
             from oplus_compat import prepare_rust_bitcode
             prepare_rust_bitcode(common)
+        if phase == 'build' and profile['kernel_version'] == '6.1':
+            from oplus_rtmutex_compat import prepare_rtmutex_compat
+            prepare_rtmutex_compat(common)
         extra, records = {}, []
         if phase == 'configure':
             values = native_inputs(inputs, profile)

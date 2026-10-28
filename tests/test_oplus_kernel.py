@@ -60,6 +60,8 @@ class OPlusKernelTests(unittest.TestCase):
         signature = stack.enter_context(mock.patch.object(kernel, 'configure'))
         stack.enter_context(mock.patch('oplus_compat.prepare_vendor_dependencies', create=True))
         stack.enter_context(mock.patch('oplus_vendor_sources.restore_vendor_sources', return_value={}))
+        stack.enter_context(mock.patch('oplus_vendor_locking.restore_vendor_locking', return_value={}))
+        stack.enter_context(mock.patch('oplus_mtk_cpu.restore_mtk_cpu', return_value={}))
         stack.enter_context(mock.patch('oplus_ksu_compat.prepare_builtin_includes'))
         stack.enter_context(mock.patch('oplus_ksu_compat.prepare_kpm_members'))
         stack.enter_context(mock.patch('ensure_bakasu_symbol_lookup.validate_native_symbol_lookup', return_value=True))
@@ -128,16 +130,24 @@ class OPlusKernelTests(unittest.TestCase):
     def test_vendor_dependencies_are_checked_after_configuration_before_hook_validation(self):
         self.finalize_mocks()
         with mock.patch('oplus_vendor_sources.restore_vendor_sources') as restore, \
+                mock.patch('oplus_vendor_locking.restore_vendor_locking') as locking, \
+                mock.patch('oplus_mtk_cpu.restore_mtk_cpu') as cpu, \
                 mock.patch('oplus_compat.prepare_vendor_dependencies', create=True) as prepare, \
                 mock.patch.object(kernel, 'validate_hooks', return_value=SimpleNamespace(calls=1, ok=True)) as hooks:
             order = []
             provenance = {'schema_version': 1, 'files': {'native.c': {'sha256': 'f' * 64}}}
+            locking_provenance = {'schema_version': 1, 'files': {'locking.c': {'sha256': 'e' * 64}}}
             restore.side_effect = lambda common, profile: (order.append(('restore', common)) or provenance)
+            locking.side_effect = lambda common, profile: (order.append(('locking', common)) or locking_provenance)
+            cpu.side_effect = lambda common, profile: (order.append(('cpu', common)) or {})
             prepare.side_effect = lambda common: order.append(('vendor', common))
             hooks.side_effect = lambda *args, **kwargs: (order.append(('hooks', None)) or SimpleNamespace(calls=1, ok=True))
             self.finalize(inputs={**self.inputs, 'enable_susfs': True})
-            self.assertEqual([('restore', self.root / 'common'), ('vendor', self.root / 'common'), ('hooks', None)], order)
+            self.assertEqual([('restore', self.root / 'common'), ('locking', self.root / 'common'),
+                              ('cpu', self.root / 'common'), ('vendor', self.root / 'common'), ('hooks', None)], order)
             self.assertEqual(provenance, json.loads((self.root / 'common/out/gki-oplus-vendor-sources.json').read_text()))
+            self.assertEqual(locking_provenance, json.loads((self.root / 'common/out/gki-oplus-vendor-locking.json').read_text()))
+            self.assertFalse((self.root / 'common/out/gki-oplus-mtk-cpu.json').exists())
             prepare.assert_called_once_with(self.root / 'common')
 
     def test_kpm_native_bridge_follows_the_same_menu_policy_as_the_external_payload(self):
@@ -151,6 +161,32 @@ class OPlusKernelTests(unittest.TestCase):
                         expected = 'y' if requested else 'n'
                         self.assertEqual(['CONFIG_KPM=' + expected],
                                          re.findall(r'^CONFIG_KPM=.*$', self.config.read_text(), re.M))
+
+    def test_susfs_66_restores_the_real_filemap_helper_before_hook_validation(self):
+        self.profile.update(id='sm8750-6.6.30', platform='sm8750', kernel='6.6.30',
+                            kernel_version='6.6', sub_level='30', android_version='android15',
+                            kernel_repo='OnePlusOSS/android_kernel_common_oneplus_sm8750',
+                            recipe_repository='cctv18/oppo_oplus_realme_sm8750',
+                            recipe_workflow='.github/workflows/fastbuild_6.6.30.yml')
+        common = self.root / 'common'
+        fixture = ROOT / 'tests/fixtures/susfs-map-compat'
+        for relative in ('fs/proc/task_mmu.c', 'include/linux/page_size_compat.h', 'mm/page_size_compat.c'):
+            path = common / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(fixture / ('2024-07-' + relative.replace('/', '_')), path)
+        subprocess.run(['git', 'init', '--quiet', str(common)], check=True, capture_output=True)
+        subprocess.run(['git', '-C', str(common), '-c', 'core.autocrlf=false', 'apply',
+                        str(fixture / 'susfs23-task_mmu.patch')], check=True, capture_output=True)
+        task = (common / 'fs/proc/task_mmu.c').read_bytes()
+        from ensure_susfs_map_compat import IMPLEMENTATION, DECLARATION
+        def verify_ready(*_args, **_kwargs):
+            self.assertIn(IMPLEMENTATION, (common / 'mm/page_size_compat.c').read_text(encoding='utf-8'))
+            self.assertIn(DECLARATION, (common / 'include/linux/page_size_compat.h').read_text(encoding='utf-8'))
+            return SimpleNamespace(calls=1, ok=True)
+        self.finalize_mocks()
+        with mock.patch.object(kernel, 'validate_hooks', side_effect=verify_ready):
+            self.finalize(inputs={**self.inputs, 'enable_susfs': True})
+        self.assertEqual(task, (common / 'fs/proc/task_mmu.c').read_bytes())
 
     def test_enabled_kpm_cannot_silently_ignore_a_missing_native_bridge_symbol(self):
         self.finalize_mocks()

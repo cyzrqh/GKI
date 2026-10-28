@@ -1,0 +1,643 @@
+{
+  "common_headers": [
+    "include/linux/cgroup.h",
+    "include/linux/err.h",
+    "include/linux/kernel.h",
+    "include/linux/percpu.h",
+    "include/linux/printk.h",
+    "include/linux/rcupdate.h",
+    "include/linux/reciprocal_div.h",
+    "include/linux/sched/clock.h",
+    "include/linux/sched/cputime.h",
+    "include/linux/slab.h",
+    "kernel/sched/sched.h"
+  ],
+  "profiles": {
+    "mt6897-6.1.128": {
+      "common_commit": "bdf1628572ce25c64d3fd33f09a925d54d616454",
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6897",
+      "cpu_tree": "d1c7c30360dd8119f88d00eb3f81f5dbb2b15c03",
+      "files": {
+        "Kconfig": {
+          "git_blob": "0c4c14673608e4f5a1e10847c561dd2c4e21d811",
+          "mode": "100755",
+          "sha256": "daa857633c014833c2ad6bdbf82bcca9996492681d57ecfb1ec0f98d4eb2dfd6",
+          "size": 694
+        },
+        "cpufreq_bouncing/Kconfig": {
+          "git_blob": "61b3fc10a53d6b1bc89dd328833eb47c2b0215aa",
+          "mode": "100644",
+          "sha256": "4cb52322bc1e176ba5e77ab6ee4775ddbc7bad120958589cfdbfdb805c3e1469",
+          "size": 143
+        },
+        "cpufreq_health/Kconfig": {
+          "git_blob": "112eb2aa2bbfd592e8d420c11be5d6d557509ae2",
+          "mode": "100644",
+          "sha256": "7673465bf6ec39021313126fd328b4c0d551226533fcb037d4633687a366e5bd",
+          "size": 122
+        },
+        "oplus_game/Kconfig": {
+          "git_blob": "cb78cbba027d3b3fd7f38fbe0327996348b058f1",
+          "mode": "100644",
+          "sha256": "42b961d43e6906f58fbe6042fb5f9101630020596f6efa24237781f0000647a6",
+          "size": 301
+        },
+        "oplus_omrg/Kconfig": {
+          "git_blob": "0826a175727ff1b8c6595d184211be0116343bb1",
+          "mode": "100644",
+          "sha256": "0f6f5fd98e629b56aee8d837f50e763f0aa11026a7ed54ba3113f0a85273800b",
+          "size": 189
+        },
+        "oplus_overload/Kconfig": {
+          "git_blob": "d593c4dec0ed99932bf295643e8c93e1b1aa2f3b",
+          "mode": "100755",
+          "sha256": "be97859212a69e075a0c83b56f04d40801eb127d9e9eac8cf7d5a62399eb8b8c",
+          "size": 107
+        },
+        "oplus_slc/Kconfig": {
+          "git_blob": "5e57b7933df052c0570fd918adba6c3da0a82efb",
+          "mode": "100644",
+          "sha256": "7a9912258d6cecb2bc0c2f3fcbd1baf65a506b85d3a36b4435fbf3b2c262363a",
+          "size": 145
+        },
+        "sched/Kconfig": {
+          "git_blob": "b373aaaf32fbb5577c4ee456c7876f082bc6700a",
+          "mode": "100755",
+          "sha256": "4e533e6bf0fe752e0cd975c7a71a0be80b85048523b0615b8810a004ad61619e",
+          "size": 5632
+        },
+        "sched/sched_tune/Makefile": {
+          "git_blob": "a7630880829f7e3b85b3f20e337e10c7437e86b7",
+          "mode": "100755",
+          "sha256": "985e072325d4608aee2987288b833deac668076d786b10be21dd905a2c51316a",
+          "size": 138
+        },
+        "sched/sched_tune/tune.c": {
+          "git_blob": "e4b346e6df389404dd3d44ff599a6aa98646f30e",
+          "mode": "100755",
+          "sha256": "2aa662836d5b3eb8bac9abf62a5a3dd9f323d49b2376102d500a58c1508dacd3",
+          "size": 12763
+        },
+        "sched/sched_tune/tune.h": {
+          "git_blob": "b3bcf1a573afcbc0d734f326483493a272735ea3",
+          "mode": "100755",
+          "sha256": "4de00514e533349f1e1ef0dc45ac745410f6fea991162a64597a3142d3610074",
+          "size": 2399
+        },
+        "uad/Kconfig": {
+          "git_blob": "b2777636206bf8392052bd279b6cafeebc7c444a",
+          "mode": "100644",
+          "sha256": "ad8e2cf34967859367891a02444c1350e6e8846d647f7403d5ace0f60f4bee0b",
+          "size": 2075
+        },
+        "waker_identify/Kconfig": {
+          "git_blob": "6790418190c841e57ed8843dea16b6df46603c09",
+          "mode": "100644",
+          "sha256": "e5c6a411b9c5d5111a2e5d8ec764c1827dcf6533af2d179e9fc0cbcf8dfe7a7c",
+          "size": 216
+        }
+      },
+      "kernel": "6.1.128",
+      "native": {
+        "Kconfig.ext": {
+          "git_blob": "ea76521010c313a4e8fcb8a4ba3cab9629d30eee",
+          "sha256": "c5a2539834d2f47c030f651d18886da01361cf835cf4fa7bf407ce8ad4dad3f3",
+          "size": 198
+        },
+        "arch/arm64/configs/gki_defconfig": {
+          "git_blob": "7c0d8020fbdb9f2d832c7afc373b26d45fb91e9f",
+          "sha256": "6bc3804ce1f8b832851b80f3f21b9ee653899448ef461ab7971d957c0f8243f0",
+          "size": 19996
+        },
+        "kernel/Makefile": {
+          "git_blob": "955a29b4efe476d3f45dafa01d89e5d5ae6ac0fa",
+          "sha256": "83c79cc9314e636cbb47d023f21d5560ce0f60b06dea7ce82887a60f1132cebc",
+          "size": 5545
+        }
+      },
+      "platform": "mt6897",
+      "symbols": [
+        "LOCKING_PROTECT",
+        "OPLUS_ADD_CORE_CTRL_MASK",
+        "OPLUS_CAMERA_UX",
+        "OPLUS_CPUFREQ_IOWAIT_PROTECT",
+        "OPLUS_CPU_AUDIO_PERF",
+        "OPLUS_CPU_FREQ_GOV_UAG",
+        "OPLUS_FEATURE_ABNORMAL_FLAG",
+        "OPLUS_FEATURE_AUDIO_OPT",
+        "OPLUS_FEATURE_BAN_APP_SET_AFFINITY",
+        "OPLUS_FEATURE_CPU_GAME",
+        "OPLUS_FEATURE_CPU_JANKINFO",
+        "OPLUS_FEATURE_EAS_OPT",
+        "OPLUS_FEATURE_FRAME_BOOST",
+        "OPLUS_FEATURE_GAME_ENABLE",
+        "OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING",
+        "OPLUS_FEATURE_HEALTHINFO",
+        "OPLUS_FEATURE_LOADBALANCE",
+        "OPLUS_FEATURE_OCH",
+        "OPLUS_FEATURE_PERFORMANCE_SCHED",
+        "OPLUS_FEATURE_PIPELINE",
+        "OPLUS_FEATURE_SCHED_ASSIST",
+        "OPLUS_FEATURE_SCHED_SPREAD",
+        "OPLUS_FEATURE_SF_BOOST",
+        "OPLUS_FEATURE_SF_SLIDE_BOOST",
+        "OPLUS_FEATURE_SLC",
+        "OPLUS_FEATURE_TASK_CPUSTATS",
+        "OPLUS_FEATURE_TASK_LOAD",
+        "OPLUS_FEATURE_TASK_SCHED",
+        "OPLUS_FEATURE_TICK_GRAN",
+        "OPLUS_FEATURE_TOUCH_BOOST",
+        "OPLUS_FEATURE_VT_CAP",
+        "OPLUS_FEATURE_WAKER_IDENTIFY",
+        "OPLUS_MULTI_LV_TL",
+        "OPLUS_OMRG",
+        "OPLUS_PERF_SCHEDINFO",
+        "OPLUS_RWSEM_RSPIN",
+        "OPLUS_SCHED_HALT_MASK_PRT",
+        "OPLUS_SCHED_MT6895",
+        "OPLUS_SCHED_TUNE",
+        "OPLUS_UAG_AMU_AWARE",
+        "OPLUS_UAG_SOFT_LIMIT",
+        "OPLUS_UAG_USE_TL",
+        "PCPU_RWSEM_LOCKING_PROTECT",
+        "UAG_NONLINEAR_FREQ_CTL",
+        "UA_KERNEL_CPU_IOCTL"
+      ],
+      "vendor_branch": "oneplus/mt6897_v_15.0.0_oneplus_pad",
+      "vendor_commit": "7899d51d0baf10b258fd9d9f9329770c19d1a87c",
+      "vendor_repository": "OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6897"
+    },
+    "mt6897-6.1.75": {
+      "common_commit": "1bed026fb776f4167c7af2d9358e25b792adaa79",
+      "common_repository": "oppo-source/android_kernel_oppo_mt6897",
+      "cpu_tree": "b02241960ebcc2ead4150657e9fe23b02fd59852",
+      "files": {
+        "Kconfig": {
+          "git_blob": "0c4c14673608e4f5a1e10847c561dd2c4e21d811",
+          "mode": "100755",
+          "sha256": "daa857633c014833c2ad6bdbf82bcca9996492681d57ecfb1ec0f98d4eb2dfd6",
+          "size": 694
+        },
+        "cpufreq_bouncing/Kconfig": {
+          "git_blob": "61b3fc10a53d6b1bc89dd328833eb47c2b0215aa",
+          "mode": "100644",
+          "sha256": "4cb52322bc1e176ba5e77ab6ee4775ddbc7bad120958589cfdbfdb805c3e1469",
+          "size": 143
+        },
+        "cpufreq_health/Kconfig": {
+          "git_blob": "112eb2aa2bbfd592e8d420c11be5d6d557509ae2",
+          "mode": "100644",
+          "sha256": "7673465bf6ec39021313126fd328b4c0d551226533fcb037d4633687a366e5bd",
+          "size": 122
+        },
+        "oplus_game/Kconfig": {
+          "git_blob": "cb78cbba027d3b3fd7f38fbe0327996348b058f1",
+          "mode": "100644",
+          "sha256": "42b961d43e6906f58fbe6042fb5f9101630020596f6efa24237781f0000647a6",
+          "size": 301
+        },
+        "oplus_omrg/Kconfig": {
+          "git_blob": "0826a175727ff1b8c6595d184211be0116343bb1",
+          "mode": "100644",
+          "sha256": "0f6f5fd98e629b56aee8d837f50e763f0aa11026a7ed54ba3113f0a85273800b",
+          "size": 189
+        },
+        "oplus_overload/Kconfig": {
+          "git_blob": "d593c4dec0ed99932bf295643e8c93e1b1aa2f3b",
+          "mode": "100755",
+          "sha256": "be97859212a69e075a0c83b56f04d40801eb127d9e9eac8cf7d5a62399eb8b8c",
+          "size": 107
+        },
+        "oplus_slc/Kconfig": {
+          "git_blob": "5e57b7933df052c0570fd918adba6c3da0a82efb",
+          "mode": "100644",
+          "sha256": "7a9912258d6cecb2bc0c2f3fcbd1baf65a506b85d3a36b4435fbf3b2c262363a",
+          "size": 145
+        },
+        "sched/Kconfig": {
+          "git_blob": "b373aaaf32fbb5577c4ee456c7876f082bc6700a",
+          "mode": "100755",
+          "sha256": "4e533e6bf0fe752e0cd975c7a71a0be80b85048523b0615b8810a004ad61619e",
+          "size": 5632
+        },
+        "sched/sched_tune/Makefile": {
+          "git_blob": "a7630880829f7e3b85b3f20e337e10c7437e86b7",
+          "mode": "100755",
+          "sha256": "985e072325d4608aee2987288b833deac668076d786b10be21dd905a2c51316a",
+          "size": 138
+        },
+        "sched/sched_tune/tune.c": {
+          "git_blob": "e4b346e6df389404dd3d44ff599a6aa98646f30e",
+          "mode": "100755",
+          "sha256": "2aa662836d5b3eb8bac9abf62a5a3dd9f323d49b2376102d500a58c1508dacd3",
+          "size": 12763
+        },
+        "sched/sched_tune/tune.h": {
+          "git_blob": "b3bcf1a573afcbc0d734f326483493a272735ea3",
+          "mode": "100755",
+          "sha256": "4de00514e533349f1e1ef0dc45ac745410f6fea991162a64597a3142d3610074",
+          "size": 2399
+        },
+        "uad/Kconfig": {
+          "git_blob": "b2777636206bf8392052bd279b6cafeebc7c444a",
+          "mode": "100644",
+          "sha256": "ad8e2cf34967859367891a02444c1350e6e8846d647f7403d5ace0f60f4bee0b",
+          "size": 2075
+        },
+        "waker_identify/Kconfig": {
+          "git_blob": "6790418190c841e57ed8843dea16b6df46603c09",
+          "mode": "100644",
+          "sha256": "e5c6a411b9c5d5111a2e5d8ec764c1827dcf6533af2d179e9fc0cbcf8dfe7a7c",
+          "size": 216
+        }
+      },
+      "kernel": "6.1.75",
+      "native": {
+        "Kconfig.ext": {
+          "git_blob": "ea76521010c313a4e8fcb8a4ba3cab9629d30eee",
+          "sha256": "c5a2539834d2f47c030f651d18886da01361cf835cf4fa7bf407ce8ad4dad3f3",
+          "size": 198
+        },
+        "arch/arm64/configs/gki_defconfig": {
+          "git_blob": "10a55349f2e133e5c3d4c05cbac328cdac86a6c3",
+          "sha256": "d1caeecc729286177040bd606fe0f503bf1532f18a71147ea2e92ae886548e6e",
+          "size": 19104
+        },
+        "kernel/Makefile": {
+          "git_blob": "717ac68b8309aeb34acc37d736a13fab65cf611c",
+          "sha256": "8725c87f3b1aebc185a45a78cb0106156e921eabac5b6aa9734ba5765f046cfa",
+          "size": 5516
+        }
+      },
+      "platform": "mt6897",
+      "symbols": [
+        "LOCKING_PROTECT",
+        "OPLUS_ADD_CORE_CTRL_MASK",
+        "OPLUS_CAMERA_UX",
+        "OPLUS_CPUFREQ_IOWAIT_PROTECT",
+        "OPLUS_CPU_AUDIO_PERF",
+        "OPLUS_CPU_FREQ_GOV_UAG",
+        "OPLUS_FEATURE_ABNORMAL_FLAG",
+        "OPLUS_FEATURE_AUDIO_OPT",
+        "OPLUS_FEATURE_BAN_APP_SET_AFFINITY",
+        "OPLUS_FEATURE_CPU_GAME",
+        "OPLUS_FEATURE_CPU_JANKINFO",
+        "OPLUS_FEATURE_EAS_OPT",
+        "OPLUS_FEATURE_FRAME_BOOST",
+        "OPLUS_FEATURE_GAME_ENABLE",
+        "OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING",
+        "OPLUS_FEATURE_HEALTHINFO",
+        "OPLUS_FEATURE_LOADBALANCE",
+        "OPLUS_FEATURE_OCH",
+        "OPLUS_FEATURE_PERFORMANCE_SCHED",
+        "OPLUS_FEATURE_PIPELINE",
+        "OPLUS_FEATURE_SCHED_ASSIST",
+        "OPLUS_FEATURE_SCHED_SPREAD",
+        "OPLUS_FEATURE_SF_BOOST",
+        "OPLUS_FEATURE_SF_SLIDE_BOOST",
+        "OPLUS_FEATURE_SLC",
+        "OPLUS_FEATURE_TASK_CPUSTATS",
+        "OPLUS_FEATURE_TASK_LOAD",
+        "OPLUS_FEATURE_TASK_SCHED",
+        "OPLUS_FEATURE_TICK_GRAN",
+        "OPLUS_FEATURE_TOUCH_BOOST",
+        "OPLUS_FEATURE_VT_CAP",
+        "OPLUS_FEATURE_WAKER_IDENTIFY",
+        "OPLUS_MULTI_LV_TL",
+        "OPLUS_OMRG",
+        "OPLUS_PERF_SCHEDINFO",
+        "OPLUS_RWSEM_RSPIN",
+        "OPLUS_SCHED_HALT_MASK_PRT",
+        "OPLUS_SCHED_MT6895",
+        "OPLUS_SCHED_TUNE",
+        "OPLUS_UAG_AMU_AWARE",
+        "OPLUS_UAG_SOFT_LIMIT",
+        "OPLUS_UAG_USE_TL",
+        "PCPU_RWSEM_LOCKING_PROTECT",
+        "UAG_NONLINEAR_FREQ_CTL",
+        "UA_KERNEL_CPU_IOCTL"
+      ],
+      "vendor_branch": "oppo/mt6897_v_15.0.0_oppopad3",
+      "vendor_commit": "0c86228a7a06d2e32df8187ad753613a2159a5fa",
+      "vendor_repository": "oppo-source/android_kernel_modules_and_devicetree_oppo_mt6897"
+    },
+    "mt6989-6.1.115": {
+      "common_commit": "b1ea2c8ce2ef0f73927a593aa450f88143e3584a",
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "cpu_tree": "f351921a2247d959e2cdc7b907b8b76358933288",
+      "files": {
+        "Kconfig": {
+          "git_blob": "0c4c14673608e4f5a1e10847c561dd2c4e21d811",
+          "mode": "100755",
+          "sha256": "daa857633c014833c2ad6bdbf82bcca9996492681d57ecfb1ec0f98d4eb2dfd6",
+          "size": 694
+        },
+        "cpufreq_bouncing/Kconfig": {
+          "git_blob": "61b3fc10a53d6b1bc89dd328833eb47c2b0215aa",
+          "mode": "100644",
+          "sha256": "4cb52322bc1e176ba5e77ab6ee4775ddbc7bad120958589cfdbfdb805c3e1469",
+          "size": 143
+        },
+        "cpufreq_health/Kconfig": {
+          "git_blob": "112eb2aa2bbfd592e8d420c11be5d6d557509ae2",
+          "mode": "100644",
+          "sha256": "7673465bf6ec39021313126fd328b4c0d551226533fcb037d4633687a366e5bd",
+          "size": 122
+        },
+        "oplus_game/Kconfig": {
+          "git_blob": "cb78cbba027d3b3fd7f38fbe0327996348b058f1",
+          "mode": "100644",
+          "sha256": "42b961d43e6906f58fbe6042fb5f9101630020596f6efa24237781f0000647a6",
+          "size": 301
+        },
+        "oplus_omrg/Kconfig": {
+          "git_blob": "0826a175727ff1b8c6595d184211be0116343bb1",
+          "mode": "100644",
+          "sha256": "0f6f5fd98e629b56aee8d837f50e763f0aa11026a7ed54ba3113f0a85273800b",
+          "size": 189
+        },
+        "oplus_overload/Kconfig": {
+          "git_blob": "d593c4dec0ed99932bf295643e8c93e1b1aa2f3b",
+          "mode": "100755",
+          "sha256": "be97859212a69e075a0c83b56f04d40801eb127d9e9eac8cf7d5a62399eb8b8c",
+          "size": 107
+        },
+        "oplus_slc/Kconfig": {
+          "git_blob": "5e57b7933df052c0570fd918adba6c3da0a82efb",
+          "mode": "100644",
+          "sha256": "7a9912258d6cecb2bc0c2f3fcbd1baf65a506b85d3a36b4435fbf3b2c262363a",
+          "size": 145
+        },
+        "sched/Kconfig": {
+          "git_blob": "5784a86d5558151665d8a9d761968d32363e18d7",
+          "mode": "100755",
+          "sha256": "004f6ba6fb03e21ab9be9dc57196f399cfb651276d1f32b7dc5ccf28504feecd",
+          "size": 5963
+        },
+        "sched/sched_tune/Makefile": {
+          "git_blob": "a7630880829f7e3b85b3f20e337e10c7437e86b7",
+          "mode": "100755",
+          "sha256": "985e072325d4608aee2987288b833deac668076d786b10be21dd905a2c51316a",
+          "size": 138
+        },
+        "sched/sched_tune/tune.c": {
+          "git_blob": "e4b346e6df389404dd3d44ff599a6aa98646f30e",
+          "mode": "100755",
+          "sha256": "2aa662836d5b3eb8bac9abf62a5a3dd9f323d49b2376102d500a58c1508dacd3",
+          "size": 12763
+        },
+        "sched/sched_tune/tune.h": {
+          "git_blob": "b3bcf1a573afcbc0d734f326483493a272735ea3",
+          "mode": "100755",
+          "sha256": "4de00514e533349f1e1ef0dc45ac745410f6fea991162a64597a3142d3610074",
+          "size": 2399
+        },
+        "uad/Kconfig": {
+          "git_blob": "b2777636206bf8392052bd279b6cafeebc7c444a",
+          "mode": "100644",
+          "sha256": "ad8e2cf34967859367891a02444c1350e6e8846d647f7403d5ace0f60f4bee0b",
+          "size": 2075
+        },
+        "waker_identify/Kconfig": {
+          "git_blob": "6790418190c841e57ed8843dea16b6df46603c09",
+          "mode": "100644",
+          "sha256": "e5c6a411b9c5d5111a2e5d8ec764c1827dcf6533af2d179e9fc0cbcf8dfe7a7c",
+          "size": 216
+        }
+      },
+      "kernel": "6.1.115",
+      "native": {
+        "Kconfig.ext": {
+          "git_blob": "ea76521010c313a4e8fcb8a4ba3cab9629d30eee",
+          "sha256": "c5a2539834d2f47c030f651d18886da01361cf835cf4fa7bf407ce8ad4dad3f3",
+          "size": 198
+        },
+        "arch/arm64/configs/gki_defconfig": {
+          "git_blob": "d61f598a8522997cb062ecca56536b4e77dd39c8",
+          "sha256": "02ca8795c6b88c30ba9794f5f5186eb45f3db8aaa006d91468dc5365f31b163c",
+          "size": 20011
+        },
+        "kernel/Makefile": {
+          "git_blob": "955a29b4efe476d3f45dafa01d89e5d5ae6ac0fa",
+          "sha256": "83c79cc9314e636cbb47d023f21d5560ce0f60b06dea7ce82887a60f1132cebc",
+          "size": 5545
+        }
+      },
+      "platform": "mt6989",
+      "symbols": [
+        "LOCKING_PROTECT",
+        "OPLUS_ADD_CORE_CTRL_MASK",
+        "OPLUS_CAMERA_UX",
+        "OPLUS_CPUFREQ_IOWAIT_PROTECT",
+        "OPLUS_CPU_AUDIO_PERF",
+        "OPLUS_CPU_FREQ_GOV_UAG",
+        "OPLUS_FEATURE_ABNORMAL_FLAG",
+        "OPLUS_FEATURE_AUDIO_OPT",
+        "OPLUS_FEATURE_BAN_APP_SET_AFFINITY",
+        "OPLUS_FEATURE_CEILING_FREE",
+        "OPLUS_FEATURE_CPU_GAME",
+        "OPLUS_FEATURE_CPU_JANKINFO",
+        "OPLUS_FEATURE_EAS_OPT",
+        "OPLUS_FEATURE_FRAME_BOOST",
+        "OPLUS_FEATURE_GAME_ENABLE",
+        "OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING",
+        "OPLUS_FEATURE_HEALTHINFO",
+        "OPLUS_FEATURE_LOADBALANCE",
+        "OPLUS_FEATURE_OCH",
+        "OPLUS_FEATURE_PERFORMANCE_SCHED",
+        "OPLUS_FEATURE_PIPELINE",
+        "OPLUS_FEATURE_SCHED_ASSIST",
+        "OPLUS_FEATURE_SCHED_SPREAD",
+        "OPLUS_FEATURE_SF_BOOST",
+        "OPLUS_FEATURE_SF_SLIDE_BOOST",
+        "OPLUS_FEATURE_SLC",
+        "OPLUS_FEATURE_TASK_CPUSTATS",
+        "OPLUS_FEATURE_TASK_LOAD",
+        "OPLUS_FEATURE_TASK_SCHED",
+        "OPLUS_FEATURE_TICK_GRAN",
+        "OPLUS_FEATURE_TOUCH_BOOST",
+        "OPLUS_FEATURE_VT_CAP",
+        "OPLUS_FEATURE_WAKER_IDENTIFY",
+        "OPLUS_MULTI_LV_TL",
+        "OPLUS_OMRG",
+        "OPLUS_PERF_SCHEDINFO",
+        "OPLUS_PROCS_LOAD_STATE",
+        "OPLUS_RWSEM_RSPIN",
+        "OPLUS_SCHED_HALT_MASK_PRT",
+        "OPLUS_SCHED_MT6895",
+        "OPLUS_SCHED_TUNE",
+        "OPLUS_UAG_AMU_AWARE",
+        "OPLUS_UAG_SOFT_LIMIT",
+        "OPLUS_UAG_USE_TL",
+        "PCPU_RWSEM_LOCKING_PROTECT",
+        "UAG_NONLINEAR_FREQ_CTL",
+        "UA_KERNEL_CPU_IOCTL"
+      ],
+      "vendor_branch": "oneplus/mt6989_v_15.0.2_ace5_race",
+      "vendor_commit": "e7320c9131c8fa539dc0e3899e7c81eba901da21",
+      "vendor_repository": "OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6989"
+    },
+    "mt6989-6.1.134": {
+      "common_commit": "770ca1ea1e23e4451b1c19e247c5e36c8c9a2415",
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "cpu_tree": "479646b678dfb8189cf9c356528c8e34411f5568",
+      "files": {
+        "Kconfig": {
+          "git_blob": "0c4c14673608e4f5a1e10847c561dd2c4e21d811",
+          "mode": "100755",
+          "sha256": "daa857633c014833c2ad6bdbf82bcca9996492681d57ecfb1ec0f98d4eb2dfd6",
+          "size": 694
+        },
+        "cpufreq_bouncing/Kconfig": {
+          "git_blob": "61b3fc10a53d6b1bc89dd328833eb47c2b0215aa",
+          "mode": "100644",
+          "sha256": "4cb52322bc1e176ba5e77ab6ee4775ddbc7bad120958589cfdbfdb805c3e1469",
+          "size": 143
+        },
+        "cpufreq_health/Kconfig": {
+          "git_blob": "112eb2aa2bbfd592e8d420c11be5d6d557509ae2",
+          "mode": "100644",
+          "sha256": "7673465bf6ec39021313126fd328b4c0d551226533fcb037d4633687a366e5bd",
+          "size": 122
+        },
+        "oplus_game/Kconfig": {
+          "git_blob": "cb78cbba027d3b3fd7f38fbe0327996348b058f1",
+          "mode": "100644",
+          "sha256": "42b961d43e6906f58fbe6042fb5f9101630020596f6efa24237781f0000647a6",
+          "size": 301
+        },
+        "oplus_omrg/Kconfig": {
+          "git_blob": "0826a175727ff1b8c6595d184211be0116343bb1",
+          "mode": "100644",
+          "sha256": "0f6f5fd98e629b56aee8d837f50e763f0aa11026a7ed54ba3113f0a85273800b",
+          "size": 189
+        },
+        "oplus_overload/Kconfig": {
+          "git_blob": "d593c4dec0ed99932bf295643e8c93e1b1aa2f3b",
+          "mode": "100755",
+          "sha256": "be97859212a69e075a0c83b56f04d40801eb127d9e9eac8cf7d5a62399eb8b8c",
+          "size": 107
+        },
+        "oplus_slc/Kconfig": {
+          "git_blob": "5e57b7933df052c0570fd918adba6c3da0a82efb",
+          "mode": "100644",
+          "sha256": "7a9912258d6cecb2bc0c2f3fcbd1baf65a506b85d3a36b4435fbf3b2c262363a",
+          "size": 145
+        },
+        "sched/Kconfig": {
+          "git_blob": "b88d94710b54915cd808d3729e9c1b76b25a176a",
+          "mode": "100755",
+          "sha256": "060cea5ba6b6837246d1208b2b867148f500c1a9477a16e3416821159e39dad6",
+          "size": 6625
+        },
+        "sched/sched_tune/Makefile": {
+          "git_blob": "af21074748a2fc94b264ab8a6772d8667db827d8",
+          "mode": "100755",
+          "sha256": "25fabe5f843267bdd9302c81abde7f3405f7bbe6278016001776ecb16b1423ca",
+          "size": 137
+        },
+        "sched/sched_tune/tune.c": {
+          "git_blob": "85ee3625f2475344db48267a3fbc856638a14ee5",
+          "mode": "100755",
+          "sha256": "35efcc34bcf732e2672874bb8891f28ea8a28561b6a31ef5093b700172158758",
+          "size": 13405
+        },
+        "sched/sched_tune/tune.h": {
+          "git_blob": "6c1665186e989a2463130e585bcd901826c357eb",
+          "mode": "100755",
+          "sha256": "08f53fdfb467cfd3e6580c2e096f43c0b418ed11990e1a43afc110a7b0a3519f",
+          "size": 2590
+        },
+        "uad/Kconfig": {
+          "git_blob": "b2777636206bf8392052bd279b6cafeebc7c444a",
+          "mode": "100644",
+          "sha256": "ad8e2cf34967859367891a02444c1350e6e8846d647f7403d5ace0f60f4bee0b",
+          "size": 2075
+        },
+        "waker_identify/Kconfig": {
+          "git_blob": "6790418190c841e57ed8843dea16b6df46603c09",
+          "mode": "100644",
+          "sha256": "e5c6a411b9c5d5111a2e5d8ec764c1827dcf6533af2d179e9fc0cbcf8dfe7a7c",
+          "size": 216
+        }
+      },
+      "kernel": "6.1.134",
+      "native": {
+        "Kconfig.ext": {
+          "git_blob": "ea76521010c313a4e8fcb8a4ba3cab9629d30eee",
+          "sha256": "c5a2539834d2f47c030f651d18886da01361cf835cf4fa7bf407ce8ad4dad3f3",
+          "size": 198
+        },
+        "arch/arm64/configs/gki_defconfig": {
+          "git_blob": "6e8808a10b89d7453880c7735e4d2cac96b0b45d",
+          "sha256": "309160727bb48fd4c1910ed2644c1e7fc9dc13d3dcc6dec573726761fe335a10",
+          "size": 20086
+        },
+        "kernel/Makefile": {
+          "git_blob": "955a29b4efe476d3f45dafa01d89e5d5ae6ac0fa",
+          "sha256": "83c79cc9314e636cbb47d023f21d5560ce0f60b06dea7ce82887a60f1132cebc",
+          "size": 5545
+        }
+      },
+      "platform": "mt6989",
+      "symbols": [
+        "LOCKING_PROTECT",
+        "OPLUS_ADD_CORE_CTRL_MASK",
+        "OPLUS_CAMERA_UX",
+        "OPLUS_CPUFREQ_IOWAIT_PROTECT",
+        "OPLUS_CPU_AUDIO_PERF",
+        "OPLUS_CPU_FREQ_GOV_UAG",
+        "OPLUS_CPU_SKIP_ROTATION",
+        "OPLUS_FEATURE_ABNORMAL_FLAG",
+        "OPLUS_FEATURE_AUDIO_OPT",
+        "OPLUS_FEATURE_BAN_APP_SET_AFFINITY",
+        "OPLUS_FEATURE_CEILING_FREE",
+        "OPLUS_FEATURE_CPU_GAME",
+        "OPLUS_FEATURE_CPU_JANKINFO",
+        "OPLUS_FEATURE_EAS_OPT",
+        "OPLUS_FEATURE_FRAME_BOOST",
+        "OPLUS_FEATURE_GAME_ENABLE",
+        "OPLUS_FEATURE_GKI_CPUFREQ_BOUNCING",
+        "OPLUS_FEATURE_HEALTHINFO",
+        "OPLUS_FEATURE_LOADBALANCE",
+        "OPLUS_FEATURE_OCH",
+        "OPLUS_FEATURE_PERFORMANCE_SCHED",
+        "OPLUS_FEATURE_PIPELINE",
+        "OPLUS_FEATURE_QOS_SCHED",
+        "OPLUS_FEATURE_SCHED_ASSIST",
+        "OPLUS_FEATURE_SCHED_DDL",
+        "OPLUS_FEATURE_SCHED_SPREAD",
+        "OPLUS_FEATURE_SF_BOOST",
+        "OPLUS_FEATURE_SF_SLIDE_BOOST",
+        "OPLUS_FEATURE_SKIP_CAMERA_UX",
+        "OPLUS_FEATURE_SLC",
+        "OPLUS_FEATURE_TASK_CPUSTATS",
+        "OPLUS_FEATURE_TASK_LOAD",
+        "OPLUS_FEATURE_TASK_SCHED",
+        "OPLUS_FEATURE_TICK_GRAN",
+        "OPLUS_FEATURE_TOUCH_BOOST",
+        "OPLUS_FEATURE_VT_CAP",
+        "OPLUS_FEATURE_WAKER_IDENTIFY",
+        "OPLUS_MULTI_LV_TL",
+        "OPLUS_OMRG",
+        "OPLUS_PERF_SCHEDINFO",
+        "OPLUS_PROCS_LOAD_STATE",
+        "OPLUS_RWSEM_RSPIN",
+        "OPLUS_SCHED_GROUP_OPT",
+        "OPLUS_SCHED_HALT_MASK_PRT",
+        "OPLUS_SCHED_MT6895",
+        "OPLUS_SCHED_TUNE",
+        "OPLUS_UAG_AMU_AWARE",
+        "OPLUS_UAG_SOFT_LIMIT",
+        "OPLUS_UAG_USE_TL",
+        "PCPU_RWSEM_LOCKING_PROTECT",
+        "UAG_NONLINEAR_FREQ_CTL",
+        "UA_KERNEL_CPU_IOCTL"
+      ],
+      "vendor_branch": "oneplus/mt6989_b_16.0.0_ace5_race",
+      "vendor_commit": "d60d564c82de298fe4909657c31c29c73ba25aba",
+      "vendor_repository": "OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6989"
+    }
+  },
+  "schema_version": 1
+}

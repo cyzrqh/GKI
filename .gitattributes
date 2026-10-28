@@ -9,3 +9,4 @@ tests/fixtures/oplus-susfs61/*.c -whitespace
 tests/fixtures/oplus-susfs61/*.patch -whitespace
 tests/fixtures/oplus-susfs66/*.patch -whitespace
 tests/fixtures/oplus-susfs66/namespace-header.c -whitespace
+tests/fixtures/oplus-vendor-locking/*.source -whitespace

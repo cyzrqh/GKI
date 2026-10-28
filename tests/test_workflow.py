@@ -168,12 +168,15 @@ class WorkflowTests(unittest.TestCase):
 
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.updater['jobs']['check-upstream']
-        self.assertEqual(self.updater['on'], {'workflow_dispatch': {}})
+        self.assertEqual(self.updater['on']['schedule'], [{'cron': '13 */3 * * *'}])
+        operation = self.updater['on']['workflow_dispatch']['inputs']['operation']
+        self.assertEqual(operation['options'], ['仅检查并提醒', '同步官方更新'])
+        self.assertEqual(operation['default'], '仅检查并提醒')
         self.assertEqual(set(self.updater['jobs']), {'check-upstream'})
         self.assertNotIn('check-upstream', self.workflow['jobs'])
-        self.assertEqual(job['if'], "github.event_name == 'workflow_dispatch' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
+        self.assertEqual(job['if'], "(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
         self.assertNotIn('schedule', self.updater['run-name'])
-        self.assertNotIn('inputs.operation', str(self.updater))
+        self.assertIn('inputs.operation', self.updater['run-name'])
         self.assertEqual(job['permissions'], {'contents': 'read', 'pull-requests': 'write', 'actions': 'write'})
         checkout = job['steps'][0]
         self.assertIs(checkout['with']['persist-credentials'], False)
@@ -185,9 +188,10 @@ class WorkflowTests(unittest.TestCase):
         indexed = {step['id']: (i, step) for i, step in enumerate(steps) if 'id' in step}
         self.assertLess(indexed['guard'][0], indexed['update'][0])
         self.assertLess(indexed['update'][0], indexed['pr'][0])
-        self.assertIn("steps.guard.outputs.already_pending != 'true'", indexed['update'][1]['if'])
+        self.assertEqual("steps.probe.outputs.has_updates == 'true'", indexed['update'][1]['if'])
+        self.assertIn('official_sync_report.py --root . --base-ref HEAD', indexed['update'][1]['run'])
         pr = indexed['pr'][1]
-        self.assertEqual(pr['if'], "steps.update.outputs.has_updates == 'true'")
+        self.assertEqual(pr['if'], "steps.update.outputs.has_updates == 'true' && steps.guard.outputs.already_pending != 'true'")
         self.assertEqual(pr['with']['branch'], 'automation/upstream-sync')
         self.assertEqual(pr['with']['token'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
         self.assertNotIn('tools/', pr['with']['add-paths'])
@@ -204,7 +208,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('sync_upstream.py', str(steps))
         self.assertNotIn('xingguangcuican6666', str(steps))
 
-    def test_auto_sync_handles_pending_and_new_pr_without_manual_review_reminders(self):
+    def test_only_explicit_manual_sync_can_merge_pending_or_new_pr(self):
         steps = self.updater['jobs']['check-upstream']['steps']
         step = next(step for step in steps if step.get('id') == 'sync')
         self.assertEqual(step['env']['GH_TOKEN'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
@@ -215,7 +219,24 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('assignees', next(item for item in steps if item.get('id') == 'pr')['with'])
         summary = next(item for item in steps if item['name'] == '记录检查结果')
         self.assertEqual(summary['env']['SYNC_MERGED'], '${{ steps.sync.outputs.merged }}')
-        self.assertIn('无需手动合并', summary['run'])
+        self.assertIn('等待你手动同步', summary['run'])
+        self.assertIn('official-sync-report.md', summary['run'])
+        notify = next(item for item in steps if item.get('id') == 'notify')
+        self.assertEqual(notify['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertIn('notify_official_sync.py', notify['run'])
+        for event in ('schedule', 'workflow_dispatch'):
+            for operation in ('', '仅检查并提醒', '同步官方更新'):
+                for pending in (False, True):
+                    values = {'github.event_name': repr(event), 'inputs.operation': repr(operation),
+                              'steps.probe.outputs.has_updates': repr('true'),
+                              'steps.pr.outputs.pull-request-number': repr('' if pending else '12'),
+                              'steps.guard.outputs.already_pending': repr(str(pending).lower())}
+                    expression = step['if']
+                    for name, value in values.items():
+                        expression = expression.replace(name, value)
+                    allowed = bool(eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}, {}))
+                    with self.subTest(event=event, operation=operation, pending=pending):
+                        self.assertEqual(allowed, event == 'workflow_dispatch' and operation == '同步官方更新')
 
     def test_catalog_cache_survives_partial_failures_and_final_status_is_explicit(self):
         steps = self.updater['jobs']['check-upstream']['steps']
@@ -267,6 +288,7 @@ class WorkflowTests(unittest.TestCase):
         directory.mkdir()
         self.addCleanup(shutil.rmtree, directory)
         output = directory / 'output'
+        (directory / 'official-sync-report.md').write_text('## 本次变更\n\nSukiSU 提交：aaaa → bbbb\n', encoding='utf-8')
         environment = {'RUNNER_TEMP': str(directory), 'GITHUB_OUTPUT': str(output),
                        'OFFICIAL_RESULT': 'success', 'CATALOG_RESULT': 'failure',
                        'HEADS_MARKER': '<!-- gki-official-heads:sha256=' + 'a' * 64 + ' -->',
@@ -276,6 +298,8 @@ class WorkflowTests(unittest.TestCase):
         body = (directory / 'official-update.md').read_text(encoding='utf-8')
         self.assertIn('Android GKI：检查失败，未确认有无更新', body)
         self.assertIn('不能视为全部官方源已检查', body)
+        self.assertIn('SukiSU 提交：aaaa → bbbb', body)
+        self.assertIn('不会因检查而自动合并', body)
 
     def test_custom_ksu_ref_remains_available_through_repository_variable(self):
         sources = next(step for step in self.workflow['jobs']['prepare-matrix']['steps'] if step.get('id') == 'sources')

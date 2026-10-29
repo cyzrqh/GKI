@@ -236,11 +236,27 @@ def toolchain_script(recipe: dict, profile: dict, values: dict[str, str]) -> Ste
         if any(token in block for token in ('sudo', 'common.zip', 'GITHUB_TOKEN', 'gh release', 'rm -rf /')):
             raise RecipeError('Unexpected side effect in a native toolchain group')
         block = re.sub(r'\s*&\s*$', '', block).strip()
-        # Each pinned group is one AND-chain, and its failure is made explicit.
-        rendered.append('(\n' + render(block, recipe, profile, values) + '\n) || exit 1')
+        # Compiler, Rust and build-tools write independent directories. Start
+        # all fixed AND-chains before waiting, and collect every child's status
+        # so one failed archive never leaves a background download running.
+        rendered.append('(\n' + render(block, recipe, profile, values)
+                        + '\n) &\noplus_toolchain_pids+=("$!")')
     # Native setlocalversion belongs to the official kernel. Reference steps
     # that remove dirty state or hardcode a different KMI/hash never run.
-    return Step('固定参考工具链', 'cd "$GITHUB_WORKSPACE/kernel_workspace"\n' + '\n'.join(rendered))
+    return Step('固定参考工具链', 'cd "$GITHUB_WORKSPACE/kernel_workspace"\n'
+                'oplus_toolchain_pids=()\n' + '\n'.join(rendered) + '\n'
+                'oplus_toolchain_failed=0\n'
+                'for oplus_toolchain_pid in "${oplus_toolchain_pids[@]}"; do\n'
+                '  if wait "$oplus_toolchain_pid"; then\n'
+                '    :\n'
+                '  else\n'
+                '    oplus_toolchain_failed=1\n'
+                '  fi\n'
+                'done\n'
+                'if [ "$oplus_toolchain_failed" -ne 0 ]; then\n'
+                '  echo "A fixed OPlus toolchain download or extraction failed" >&2\n'
+                '  exit 1\n'
+                'fi\n')
 
 
 def configure_steps(recipe: dict, profile: dict, values: dict[str, str]) -> list[Step]:
@@ -296,6 +312,14 @@ def build_step(recipe: dict, profile: dict, values: dict[str, str]) -> Step:
     removed = removed.replace('export CCACHE_COMPILERCHECK="none"', 'export CCACHE_COMPILERCHECK="content"')
     if 'gki_defconfig' not in removed or not re.search(r'\bmake\s', removed):
         raise RecipeError('Native make entry changed')
+    # Native phases prepend Clang/build-tools after Actions' GITHUB_PATH. Keep
+    # the selected cache wrapper first when their compiler wrappers start.
+    removed, cache_path = re.subn(r'(?m)^([ \t]*)make[ \t]',
+        lambda match: match[1] + 'if [ -n "${CCACHE_PROGRAM:-}" ]; then\n'
+        + match[1] + '  export PATH="${CCACHE_PROGRAM%/*}:$PATH"\n'
+        + match[1] + 'fi\n' + match[0], removed, count=1)
+    if cache_path != 1:
+        raise RecipeError('Native Make entry cannot bind the selected compiler cache')
     if profile['kernel_version'] == '6.12' and any(token not in removed for token in
             ('-fdebug-prefix-map=', '-fmacro-prefix-map=', '-ffile-prefix-map=',
              'export RUSTC=', 'export BINDGEN=', 'export LIBCLANG_PATH=', 'cc-wrapper', 'ld-wrapper')):

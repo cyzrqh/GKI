@@ -6707,6 +6707,13 @@ jobs:
         else
           echo 'enabled=false' >> "$GITHUB_OUTPUT"
         fi
+    - name: 安装固定 ECS 编译缓存工具
+      if: steps.ccache-config.outputs.enabled == 'true'
+      run: |
+        set -euo pipefail
+        python3 "$GITHUB_WORKSPACE/tools/kernel_compile_cache.py" install \
+          --output "$RUNNER_TEMP/gki-ccache-ecs" \
+          --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
     - name: 恢复 ccache 缓存
       id: ccache-restore
       if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
@@ -6717,12 +6724,13 @@ jobs:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ~/.ccache
-        key: gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{
-          matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
+          }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level
+          }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
-          ${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-ccache-
-          gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
+          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
+          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
+          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
     - name: 开始记录实际 ccache 命中
       id: ccache-measurement
       if: steps.ccache-config.outputs.enabled == 'true'
@@ -7005,7 +7013,7 @@ jobs:
 
           if [ -f "build/build.sh" ]; then
             echo 'CCACHE_COMPILE_STARTED=true' >> "$GITHUB_ENV"
-            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
+            LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="${CCACHE_PROGRAM:-/usr/bin/ccache} clang" || exit 1
             strings "out/${{ matrix.android_version }}-${{ matrix.kernel_version }}/dist/Image" | grep 'Linux version'
           else
             # 提取 gki_defconfig 修改到 fragment，避免 bazel trim 检查失败
@@ -7058,8 +7066,9 @@ jobs:
       timeout-minutes: 3
       with:
         path: ~/.ccache
-        key: gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{
-          matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
+          }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level
+          }}-${{ github.run_id }}-${{ github.run_attempt }}
     - name: 限制 Bazel 缓存上传体积
       id: bazel-cache-trim
       if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome !=

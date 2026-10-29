@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "ecs": {
+    "repository": "cctv18/oppo_oplus_realme_sm8650",
+    "commit": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
+    "path": "lib/ccache-x86-64",
+    "url": "https://raw.githubusercontent.com/cctv18/oppo_oplus_realme_sm8650/f4e3a8084a7a5f8203e16ea177c8847c7ff517dc/lib/ccache-x86-64",
+    "size": 3849808,
+    "sha256": "40ecaea37903393fde418ad46fb8668546a04d6ed3b949059cbd4f1a1c148939"
+  }
+}

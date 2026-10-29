@@ -2,9 +2,11 @@
 import copy
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -146,7 +148,98 @@ class OPlusRecipeTests(unittest.TestCase):
                 self.assertNotIn(forbidden, script)
             self.assertNotIn('common/scripts/setlocalversion', script)
             self.assertIn('releases/download/LLVM-Clang', script)
-            self.assertIn(') || exit 1', script)
+            self.assertIn('if wait "$oplus_toolchain_pid"; then', script)
+            self.assertIn('if [ "$oplus_toolchain_failed" -ne 0 ]; then', script)
+            self.assertLess(script.rindex('oplus_toolchain_pids+=("$!")'),
+                            script.index('for oplus_toolchain_pid in'))
+
+    def toolchain_shell(self):
+        shell = shutil.which('bash') or shutil.which('sh')
+        if not shell and (git := shutil.which('git')):
+            candidate = Path(git).parent.parent / 'usr/bin/sh.exe'
+            shell = str(candidate) if candidate.is_file() else None
+        if not shell:
+            self.skipTest('Bash is required for inert parallel toolchain execution')
+        return shell
+
+    def run_inert_toolchains(self, index, failure_group='', failure_stage=''):
+        shell = self.toolchain_shell()
+        document, _, profile = self.case(index)
+        clang = adapter.SERIES[profile['kernel_version']][1]
+        groups = ['clang', 'build-tools'] + (['rust'] if clang == '19' else [])
+        workspace = self.temporary_workspace()
+        for directory in ('clang' + clang, 'rust', 'build-tools'):
+            (workspace / 'kernel_workspace' / directory).mkdir(parents=True)
+        sync = workspace / 'sync'
+        sync.mkdir()
+        # Every download waits for all groups to start. A serialized renderer
+        # times out rather than passing merely because its output looks right.
+        # All commands below are Bash builtins: no download, archive or compiler
+        # is executed and no external POSIX utilities are required on Windows.
+        stubs = '''mkdir() { :; }
+toolchain_group() {
+  case "$1" in
+    *clang*) printf clang ;;
+    *rust*) printf rust ;;
+    *build-tools*) printf build-tools ;;
+    *) return 96 ;;
+  esac
+}
+aria2c() {
+  local group deadline expected ready
+  group=$(toolchain_group "$1")
+  printf started > "$TEST_TOOLCHAIN_SYNC/start-$group"
+  deadline=$((SECONDS + 5))
+  while :; do
+    ready=true
+    for expected in $TEST_TOOLCHAIN_GROUPS; do
+      if [ ! -f "$TEST_TOOLCHAIN_SYNC/start-$expected" ]; then ready=false; fi
+    done
+    if [ "$ready" = true ]; then break; fi
+    if [ "$SECONDS" -ge "$deadline" ]; then return 97; fi
+  done
+  if [ "$group" = "$TEST_FAILURE_GROUP" ] && [ "$TEST_FAILURE_STAGE" = download ]; then return 41; fi
+}
+unzip() {
+  local group
+  group=$(toolchain_group "$1")
+  if [ "$group" = "$TEST_FAILURE_GROUP" ] && [ "$TEST_FAILURE_STAGE" = extract ]; then return 42; fi
+  printf extracted > "$TEST_TOOLCHAIN_SYNC/done-$group"
+}
+'''
+        environment = {**os.environ, 'GITHUB_WORKSPACE': workspace.as_posix(),
+                       'TEST_TOOLCHAIN_SYNC': sync.as_posix(),
+                       'TEST_TOOLCHAIN_GROUPS': ' '.join(groups),
+                       'TEST_FAILURE_GROUP': failure_group, 'TEST_FAILURE_STAGE': failure_stage}
+        script = adapter.plan_phase('bootstrap', document, profile, self.inputs())[0].script
+        result = subprocess.run([shell, '-euo', 'pipefail', '-c', stubs + script
+            + '\nprintf next-phase > "$TEST_TOOLCHAIN_SYNC/next-phase"\n'], cwd=workspace,
+            env=environment, capture_output=True, text=True, encoding='utf-8', timeout=15)
+        self.assertEqual({f'start-{group}' for group in groups},
+                         {path.name for path in sync.glob('start-*')}, result.stdout + result.stderr)
+        return result, sync, groups
+
+    def test_all_toolchain_archives_start_before_any_group_is_awaited(self):
+        for index in (0, 1, 3):
+            with self.subTest(series=self.references[index][0]):
+                result, sync, groups = self.run_inert_toolchains(index)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual({f'done-{group}' for group in groups},
+                                 {path.name for path in sync.glob('done-*')})
+                self.assertTrue((sync / 'next-phase').is_file())
+
+    def test_any_failed_archive_waits_for_other_groups_and_stops_the_next_phase(self):
+        for index in (0, 3):
+            groups = ['clang', 'build-tools'] + (['rust'] if index == 3 else [])
+            for group in groups:
+                for stage in ('download', 'extract'):
+                    with self.subTest(series=self.references[index][0], group=group, stage=stage):
+                        result, sync, groups = self.run_inert_toolchains(index, group, stage)
+                        self.assertEqual(1, result.returncode, result.stdout + result.stderr)
+                        self.assertIn('download or extraction failed', result.stderr)
+                        self.assertEqual({f'done-{other}' for other in groups if other != group},
+                                         {path.name for path in sync.glob('done-*')})
+                        self.assertFalse((sync / 'next-phase').exists())
 
     def test_feature_mapping_disables_hidden_options_and_mtk_proxy(self):
         _, _, profile = self.case(0)

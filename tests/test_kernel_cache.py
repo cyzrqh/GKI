@@ -28,7 +28,8 @@ def condition_value(expression, *, enabled='true', local='false', started='true'
 def render_key(template, **overrides):
     values = {'runner.os': 'Linux', 'runner.arch': 'X64', 'inputs.android_version': 'android13',
               'inputs.kernel_version': '5.15', 'inputs.sub_level': '41',
-              'inputs.os_patch_level': '2022-06', 'github.run_id': '100', 'github.run_attempt': '1'}
+              'inputs.os_patch_level': '2022-06', 'github.run_id': '100', 'github.run_attempt': '1',
+              "hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')": 'a' * 64}
     values.update(overrides)
     values.update({name.replace('inputs.', 'matrix.'): value for name, value in list(values.items())
                    if name.startswith('inputs.')})
@@ -78,9 +79,12 @@ class KernelCacheTests(unittest.TestCase):
         prefixes = self.find('恢复 ccache 缓存')['with']['restore-keys'].splitlines()
         self.assertTrue(reference.startswith(render_key(prefixes[0])))
         self.assertTrue(render_key(key, **{'inputs.sub_level': '74'}).startswith(render_key(prefixes[-1])))
-        # Existing successful builds remain usable during migration, but every
-        # new run saves under a new v2 key instead of freezing that old entry.
-        self.assertIn('ccache-', prefixes[1])
+        # Guarded ECS cannot import stock or unbound public object caches.
+        for prefix in prefixes:
+            self.assertTrue(prefix.startswith('gki-ccache-ecs-v1-'))
+            self.assertIn("hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')", prefix)
+        changed = {"hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')": 'b' * 64}
+        self.assertNotEqual(reference, render_key(key, **changed))
 
     def test_failures_after_compilation_save_but_precompile_failures_do_not(self):
         condition = self.find('保存本次 ccache 编译结果')['if']

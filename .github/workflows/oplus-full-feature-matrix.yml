@@ -1600,6 +1600,12 @@ jobs:
         ccache --max-size "$CCACHE_MAXSIZE"
         ccache --set-config=compression=true
         ccache --set-config=compiler_check=content
+    - name: 安装固定 ECS 编译缓存工具
+      run: |
+        set -euo pipefail
+        python3 tools/kernel_compile_cache.py install \
+          --output "$RUNNER_TEMP/gki-ccache-ecs" \
+          --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
     - name: 恢复本平台与内核的编译对象缓存
       id: oplus-ccache
       uses: actions/cache/restore@v5
@@ -1609,10 +1615,11 @@ jobs:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '1'
       with:
         path: ${{ env.CCACHE_DIR }}
-        key: oplus-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref
-          }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: oplus-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{
-          matrix.recipe_ref }}-
+        key: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
+          }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
+        restore-keys: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-
     - name: 获取官方固定源码及参考配方工具链
       run: |
         python3 tools/oplus_recipe.py --phase bootstrap --recipe-root "$GITHUB_WORKSPACE/oplus-reference" \
@@ -1638,6 +1645,13 @@ jobs:
       run: |
         python3 tools/apply_kpm_patch.py prepare --cache-dir "$RUNNER_TEMP/oplus-kpm-official" \
           --github-env "$GITHUB_ENV" --ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"
+    - name: 开始记录本次 ECS 缓存命中
+      id: oplus-cache-measurement
+      run: |
+        set -euo pipefail
+        ccache --zero-stats
+        ccache --version
+        echo 'started=true' >> "$GITHUB_OUTPUT"
     - name: 使用原生 Make 与对应 Clang/Rust 编译内核
       run: |
         python3 tools/oplus_recipe.py --phase build --recipe-root "$GITHUB_WORKSPACE/oplus-reference" \
@@ -1665,11 +1679,22 @@ jobs:
         if-no-files-found: error
         overwrite: true
     - name: 限制缓存容量并显示命中情况
-      if: always() && !cancelled() && steps.oplus-build.outcome == 'success'
+      if: always() && !cancelled() && steps.oplus-cache-measurement.outputs.started == 'true'
       run: |
+        set -euo pipefail
         ccache --max-size "$CCACHE_MAXSIZE"
         ccache --cleanup
-        ccache --show-stats
+        report="$RUNNER_TEMP/oplus-ccache-statistics.txt"
+        ccache --show-stats --verbose | tee "$report"
+        {
+          echo '### 本次欧加真编译缓存'
+          echo ''
+          echo '以下数据只统计本次编译；更换工具链或配置后，受影响的缓存会重新生成。'
+          echo ''
+          echo '```text'
+          cat "$report"
+          echo '```'
+        } >> "$GITHUB_STEP_SUMMARY"
     - name: 保存已成功编译的平台缓存
       if: always() && !cancelled() && steps.oplus-build.outcome == 'success' && steps.oplus-ccache.outputs.cache-primary-key
         != ''

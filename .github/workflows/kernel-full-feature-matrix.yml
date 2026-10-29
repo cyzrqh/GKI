@@ -4257,9 +4257,8 @@ jobs:
       run: |
         set -euo pipefail
         echo "Integrating Re-Kernel..."
-        TMP_REKERNEL=/tmp/rekernel
-        rm -rf "$TMP_REKERNEL"
-        git clone --depth 1 https://github.com/Sakion-Team/Re-Kernel.git "$TMP_REKERNEL"
+        TMP_REKERNEL="$RUNNER_TEMP/rekernel-source"
+        python3 "$GITHUB_WORKSPACE/tools/rekernel_source.py" --output "$TMP_REKERNEL"
 
         REKERNEL_SRC="$TMP_REKERNEL/LKM-Source"
         if [ ! -d "$REKERNEL_SRC" ]; then

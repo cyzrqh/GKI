@@ -96,6 +96,49 @@ class WorkflowTests(unittest.TestCase):
         matrix = next(step for step in self.workflow['jobs']['prepare-matrix']['steps'] if step.get('id') == 'matrix')
         self.assertEqual(matrix['if'], generator.BUILD_IF)
 
+    def test_rekernel_source_failure_stops_before_modifying_the_kernel(self):
+        step = self.find('应用 Re-Kernel')
+        script = step['run']
+        self.assertEqual(step['if'], 'inputs.use_rekernel')
+        self.assertTrue(script.startswith('set -euo pipefail\n'))
+        self.assertIn('TMP_REKERNEL="$RUNNER_TEMP/rekernel-source"', script)
+        acquisition = 'python3 "$GITHUB_WORKSPACE/tools/rekernel_source.py" --output "$TMP_REKERNEL"'
+        self.assertIn(acquisition, script)
+        self.assertLess(script.index(acquisition), script.index('rm -rf common/drivers/rekernel'))
+        self.assertLess(script.index('test -f "$REKERNEL_SRC/rekernel.h"'),
+                        script.index('rm -rf common/drivers/rekernel'))
+        self.assertNotIn('git clone', script)
+        self.assertNotIn('/tmp/rekernel', script)
+        self.assertNotIn('|| true', script)
+        self.assertNotIn('continue-on-error', step)
+        self.assertIn('tools/historical_rekernel.py', script)
+
+    def test_actual_rekernel_script_preserves_existing_driver_when_download_fails(self):
+        shell = shutil.which('bash') or shutil.which('sh')
+        if not shell and (git := shutil.which('git')):
+            candidate = Path(git).parent.parent / 'usr/bin/sh.exe'
+            shell = str(candidate) if candidate.is_file() else None
+        if not shell:
+            self.skipTest('Bash is required to execute the Re-Kernel failure path')
+        temporary = ROOT / 'tests' / ('.rekernel-download-' + uuid.uuid4().hex)
+        driver = temporary / 'common/drivers/rekernel'
+        driver.mkdir(parents=True)
+        sentinel = driver / 'original.c'
+        sentinel.write_text('original source\n', encoding='utf-8')
+        try:
+            result = subprocess.run(
+                [shell, '-c', 'python3() { return 91; }\n' + self.find('应用 Re-Kernel')['run']],
+                cwd=temporary, capture_output=True, text=True, encoding='utf-8', timeout=15,
+                env={**os.environ, 'RUNNER_TEMP': '/inert-runner-temp',
+                     'GITHUB_WORKSPACE': '/inert-workspace', 'BASH_ENV': ''})
+            self.assertEqual(91, result.returncode, result.stdout + result.stderr)
+            self.assertEqual('original source\n', sentinel.read_text(encoding='utf-8'))
+            self.assertEqual([sentinel], list(driver.iterdir()))
+        finally:
+            if temporary.resolve().parent != (ROOT / 'tests').resolve() or temporary.is_symlink():
+                raise RuntimeError('Refusing cleanup outside the Re-Kernel test directory')
+            shutil.rmtree(temporary)
+
     def test_both_selected_managers_build_for_kernel_and_apk_only_operations(self):
         for variant, operation, event in itertools.product(
                 ('SukiSU', 'BakaSU', 'Official', 'None'),

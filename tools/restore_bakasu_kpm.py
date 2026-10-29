@@ -9,6 +9,7 @@ import os
 from pathlib import Path, PurePosixPath
 import re
 import stat
+import struct
 import subprocess
 import uuid
 
@@ -24,6 +25,22 @@ MAX_FILE = 4 * 1024 * 1024
 MAX_PATCH = 16 * 1024 * 1024
 SHA = re.compile(r'[0-9a-f]{64}\Z')
 REF = re.compile(r'[0-9a-f]{40}\Z')
+NATIVE_BUILD_INPUTS = {
+    'kernel/Makefile': '0f3e28f59311db0c8383600f0294cec5b8e4d6cc0fb229b5723b9ff539e08992',
+    'kernel/tools/check_symbol.c': 'e1498452044010e383dd5a4d16993576337d28f91769b829ec416e76e22bfdc2',
+    'kernel/tools/code_generation/code_generation.mk': '7216cdc24d5c6c5196ac53587ce79981d1ddc18f0d8d5c2e609b4cbd54b3871f',
+    'kernel/tools/code_generation/syscall_no/syscall_no.mk': '5d65354bc6cc01fdb4c288ef69b5365e1b98cfe7619a8c942cbde99a3253b894',
+    'kernel/tools/code_generation/syscall_no/syscall_no.c': '92b1ef09e02b6b0c069c7ab2ffe64ddc90943df39f2f5963b83a29fcc0365226',
+    'kernel/tools/code_generation/preinit_runner/preinit_runner.mk': '3461eaa72bd7ca96933fae3797b7f6e828c127ea042118dbc43d902361dd5c65',
+}
+NATIVE_BUILD_OUTPUTS = frozenset((
+    'kernel/check_symbol', 'kernel/compile_commands.json', 'kernel/compat/syscall_no.h',
+    'kernel/tools/code_generation/syscall_no/syscall_no', 'kernel/preinit/runner.elf',
+))
+SYSCALL_HEADER_PREFIX = ('/** Auto generated file. DO NOT EDIT **/\n\n#ifndef KSU_NR_COMPAT_H\n'
+                         '#define KSU_NR_COMPAT_H\n\n#include <asm/unistd.h>\n\n')
+SYSCALL_COMPAT_TAIL = ('#define ksu_get_syscall_no(name) (is_compat_task() ? __NR_compat32_##name : __NR_##name)\n'
+                       '#define ksu_get_compat_syscall_no(name) __NR_compat32_##name\n\n#endif\n')
 
 
 class KpmPortError(ValueError):
@@ -226,16 +243,89 @@ def scopes(scope) -> tuple[str, ...]:
     return tuple(sorted({path_name(value, patch=False) for value in values}))
 
 
+def native_build_contract(source: Path) -> None:
+    """Bind the five outputs to the unchanged, reviewed official generators."""
+    reference = os.fsdecode(git(source, 'rev-parse', '--verify', 'HEAD')).strip()
+    for name, expected in NATIVE_BUILD_INPUTS.items():
+        original = head_file(source, reference, name)
+        if original is None or digest(original) != expected or regular(safe_path(source, name), MAX_FILE) != original:
+            raise KpmPortError('Review the changed official BakaSU native build generator: ' + name)
+
+
+def native_syscall_header(data: bytes) -> None:
+    """Accept only the ARM64 forms emitted by the verified native C generator."""
+    text = data.decode('ascii').replace('\r\n', '\n')
+    plain = ('#define ksu_get_syscall_no(name) __NR_##name\n'
+             '#define ksu_get_compat_syscall_no(name) \\\n'
+             '({ BUILD_BUG_ON_MSG(1, "ksu_get_compat_syscall_no() requires CONFIG_COMPAT"); 0; })\n\n#endif\n')
+    compat = '#include <asm/syscall.h>\n'
+    if text in (SYSCALL_HEADER_PREFIX + plain,
+                SYSCALL_HEADER_PREFIX + compat + '#include <asm/unistd_compat_32.h>\n\n' + SYSCALL_COMPAT_TAIL):
+        return
+    if not text.startswith(SYSCALL_HEADER_PREFIX + compat) or not text.endswith('\n' + SYSCALL_COMPAT_TAIL):
+        raise KpmPortError('Unknown native BakaSU generated syscall header layout')
+    middle = text[len(SYSCALL_HEADER_PREFIX + compat):-len('\n' + SYSCALL_COMPAT_TAIL)].splitlines()
+    origin = re.fullmatch(r'/\*\* Generated from ([A-Za-z0-9_./+-]{1,2048}) \*\*/', middle[0]) if middle else None
+    # srctree may be an absolute source directory or a relative path from
+    # Kbuild's output directory. This is only the generator's comment: never
+    # open or resolve it, and do not confuse the DDK source and output roots.
+    if origin is None or not re.fullmatch(r'(?:[A-Za-z0-9_./+-]*/)?arch/arm64/include/asm/unistd32\.h', origin[1]):
+        raise KpmPortError('Native BakaSU compat syscall table has an unreviewed source path')
+    names = set()
+    for line in middle[1:]:
+        match = re.fullmatch(r'#define __NR_compat32_([A-Za-z_][A-Za-z0-9_]*) ([^\r\n]+)', line)
+        if match is None or match[1] in names:
+            raise KpmPortError('Native BakaSU compat syscall table requires unique constant macros')
+        # The reviewed ARM64 tables for 5.10, 5.15, 6.1 and 6.6 contain
+        # decimal numbers and an optional ugetrlimit explanatory comment.
+        # Never accept arbitrary C, expressions or more includes.
+        value = re.sub(r'/\*(?:(?!\*/)[^\r\n])*\*/[ \t]*$', '', match[2])
+        if '/*' in value or '*/' in value:
+            raise KpmPortError('Invalid comment in native BakaSU compat syscall table')
+        if not re.fullmatch(r'[0-9]+', value.strip()):
+            raise KpmPortError('Native BakaSU compat syscall table contains nonconstant source')
+        names.add(match[1])
+    if not 1 <= len(names) <= 1024:
+        raise KpmPortError('Native BakaSU compat syscall table is empty or oversized')
+
+
+def native_build_output(source: Path, name: str) -> None:
+    data = regular(safe_path(source, name), MAX_FILE)
+    if name == 'kernel/compat/syscall_no.h':
+        native_syscall_header(data)
+    elif name == 'kernel/compile_commands.json':
+        database = json.loads(data)
+        if (not isinstance(database, list) or not 1 <= len(database) <= 4096
+                or any(not isinstance(entry, dict) or not {'directory', 'file'} <= entry.keys()
+                       or not isinstance(entry.get('command'), str) or not entry['command']
+                       or any(not isinstance(value, str) or len(value) > 65536 for value in entry.values())
+                       for entry in database)):
+            raise KpmPortError('Invalid bounded native BakaSU compilation database')
+    else:
+        machine = 183 if name == 'kernel/preinit/runner.elf' else 62
+        if (len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01'
+                or struct.unpack_from('<HH', data, 16) not in ((2, machine), (3, machine))
+                or struct.unpack_from('<H', data, 52)[0] != 64):
+            raise KpmPortError('Native BakaSU build output is not its expected bounded ELF: ' + name)
+
+
 def changes(source: Path, scope: tuple[str, ...]) -> set[str]:
     tracked = git(source, 'diff', '--no-ext-diff', '--name-only', '--no-renames', 'HEAD', '-z', '--', *scope)
     # Ignored source files can still be included by Kbuild; do not let a
     # .gitignore rule hide an additional driver or manager trust asset.
     untracked = git(source, 'ls-files', '--others', '-z', '--', *scope)
     modified = {item.decode('utf-8') for item in tracked.split(b'\0') if item}
+    native_checked = False
     for item in untracked.split(b'\0'):
         if not item:
             continue
         name = item.decode('utf-8')
+        if name in NATIVE_BUILD_OUTPUTS:
+            if not native_checked:
+                native_build_contract(source)
+                native_checked = True
+            native_build_output(source, name)
+            continue
         # Native DDK compilation writes these outputs beside kernel sources.
         # Never exempt tracked changes, arbitrary new C code, or symlinks.
         leaf = name.rsplit('/', 1)[-1]
@@ -297,8 +387,11 @@ def check_applied(source: Path, before: dict, after: dict, scope: tuple[str, ...
             raise KpmPortError('BakaSU KPM source differs from its exact audited port: ' + name)
     expected = {name for name in after if before[name] != after[name]
                 and any(name == prefix or name.startswith(prefix + '/') for prefix in scope)}
-    if changes(source, scope) != expected:
-        raise KpmPortError('Additional source changes are outside the exact BakaSU KPM port')
+    actual = changes(source, scope)
+    if actual != expected:
+        details = {'unexpected': sorted(actual - expected)[:8], 'missing': sorted(expected - actual)[:8]}
+        raise KpmPortError('Additional source changes are outside the exact BakaSU KPM port: '
+                           + json.dumps(details, ensure_ascii=True)[:1024])
     # Index edits are never part of this working-tree-only port.
     if git(source, 'diff', '--cached', '--name-only', 'HEAD', '-z', '--', *scope):
         raise KpmPortError('BakaSU KPM port must not alter or conceal staged source changes')

@@ -211,9 +211,11 @@ class OPlusKernelTests(unittest.TestCase):
                         mock.patch.object(kernel, 'native_inputs'), \
                         mock.patch('ensure_susfs_map_compat.ensure_map_compat'), \
                         mock.patch('oplus_vma_compat.prepare_vma_compat') as compat, \
+                        mock.patch('oplus_mtk_vma_compat.prepare_mtk_vma_compat') as mtk_compat, \
                         mock.patch.object(kernel, 'validate_hooks') as hooks:
                     def validate(*_args, **_kwargs):
                         self.assertEqual(1 if series == '6.1' else 0, compat.call_count)
+                        self.assertEqual(1 if series == '6.1' else 0, mtk_compat.call_count)
                         return SimpleNamespace(calls=1, ok=True)
                     hooks.side_effect = validate
                     original = self.profile
@@ -223,8 +225,10 @@ class OPlusKernelTests(unittest.TestCase):
                                       variant=variant)
                         if series == '6.1' and enabled:
                             compat.assert_called_once_with(self.root / 'common', self.profile)
+                            mtk_compat.assert_called_once_with(self.root / 'common', self.profile)
                         else:
                             compat.assert_not_called()
+                            mtk_compat.assert_not_called()
                     finally:
                         self.profile = original
 

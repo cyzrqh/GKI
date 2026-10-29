@@ -1,0 +1,104 @@
+{
+  "license": "GPL-2.0",
+  "source_profiles": {
+    "mt6897-6.1.128": {
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6897",
+      "common_commit": "bdf1628572ce25c64d3fd33f09a925d54d616454",
+      "platform": "mt6897",
+      "kernel": "6.1.128",
+      "files": {
+        "include/linux/mm.h": "7ddb9b45265b9fa6cfb93d5399a6240a270dd64c796f0a310be3aac5ca2b03d4",
+        "include/linux/mm_types.h": "066d14a64a6da4ad1102ed554652c4c569cf1ebb9e304da667a04d533f93aca0",
+        "include/linux/pgsize_migration.h": "0c0e53268712b99a6faf19f807fc530e02307f13bf2ff0c3b04d84e759542005",
+        "include/linux/pgsize_migration_inline.h": "1c318800fa00d56e51cf7a2c279daf89ecc98ad7053a790722864882445109af",
+        "mm/pgsize_migration.c": "3eb77846a0e884dbd4c3a2dee2ebf89944e826e9bd982809b95498acdbfa50ac",
+        "mm/Makefile": "7539ea83bc303aa85ce86787a80c52fc738d7e5de8ba1d716308da386ca17b43",
+        "mm/madvise.c": "db3ee159b233e25898957bfa2fa080911f39f183fe4a13c96f55e4052f0c1c86",
+        "mm/mmap.c": "db587b1135879f9c4acbec638d060357c6ecde7b8075fd603218f5a8d648c56d",
+        "fs/binfmt_elf.c": "be05ec5ab0e8cd3ded9715c302fb5c8c8015303b82cccefaaaf8b1bac828d251",
+        "fs/proc/task_mmu.c": "2054ea1f6a50f4ecd5e7a92d5f940ee34f361a59aefb8cfee6b0a501290edfbf"
+      },
+      "native_kbuild_padding": false,
+      "native_madvise_padding": false
+    },
+    "mt6897-6.1.75": {
+      "common_repository": "oppo-source/android_kernel_oppo_mt6897",
+      "common_commit": "1bed026fb776f4167c7af2d9358e25b792adaa79",
+      "platform": "mt6897",
+      "kernel": "6.1.75",
+      "files": {
+        "include/linux/mm.h": "898360753467375651f849743dd80c2c4ac728d694fa85dc32a75d23e544a729",
+        "include/linux/mm_types.h": "066d14a64a6da4ad1102ed554652c4c569cf1ebb9e304da667a04d533f93aca0",
+        "mm/Makefile": "650c865aa1ed82238827808e94d096d75e77a6649b1b216042bfdc8fa220731b",
+        "mm/madvise.c": "177b552df9f8df3a76162db009d8a04f825d269eaf9af326d469d25d2d8b003a",
+        "mm/mmap.c": "c7a8d5bd20e7d1cc3f50bce867aeaaa20455c1901d9522e776eff6e37cb2d5fa",
+        "fs/binfmt_elf.c": "f6aa2d2a2159edf7b19c8c94da1c268b91f0964c5e27051ca36e24f4d33304a6",
+        "fs/proc/task_mmu.c": "d8f3b0f37aaf23d26a0192ef0746dcd5de76f33376b5e2737c914db9df827345"
+      },
+      "native_kbuild_padding": false,
+      "native_madvise_padding": false
+    },
+    "mt6989-6.1.115": {
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "common_commit": "b1ea2c8ce2ef0f73927a593aa450f88143e3584a",
+      "platform": "mt6989",
+      "kernel": "6.1.115",
+      "files": {
+        "include/linux/mm.h": "19f73de1ac763c1a7346ee3ca9223f729c173b09f64f6bbea3300253418d4ff1",
+        "include/linux/mm_types.h": "066d14a64a6da4ad1102ed554652c4c569cf1ebb9e304da667a04d533f93aca0",
+        "include/linux/pgsize_migration.h": "0c0e53268712b99a6faf19f807fc530e02307f13bf2ff0c3b04d84e759542005",
+        "include/linux/pgsize_migration_inline.h": "1c318800fa00d56e51cf7a2c279daf89ecc98ad7053a790722864882445109af",
+        "mm/pgsize_migration.c": "3eb77846a0e884dbd4c3a2dee2ebf89944e826e9bd982809b95498acdbfa50ac",
+        "mm/Makefile": "5237b81cc7032d2f92a16847913c6552b658bb573c2350c7e47aee37fe6ab88d",
+        "mm/madvise.c": "a44cdaae325c5f621eae6a774981e0bd54bb8f8c4b598d9b3d608121ed90ea27",
+        "mm/mmap.c": "3e96d89badaffb219ba569a1f4007bb9dd79f12586c1984f841003ac7d1b16cb",
+        "fs/binfmt_elf.c": "be05ec5ab0e8cd3ded9715c302fb5c8c8015303b82cccefaaaf8b1bac828d251",
+        "fs/proc/task_mmu.c": "5486fba78c4b23ba3ea14cd2ab4fa83f12bf6ab24abb1149d847270ee40dd122"
+      },
+      "native_kbuild_padding": true,
+      "native_madvise_padding": true
+    },
+    "mt6989-6.1.134": {
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "common_commit": "770ca1ea1e23e4451b1c19e247c5e36c8c9a2415",
+      "platform": "mt6989",
+      "kernel": "6.1.134",
+      "files": {
+        "include/linux/mm.h": "4be62cb1ceab14bb71cfbef2ebc4ad3b33f259f30588ed0e0f97f94bf9e51db3",
+        "include/linux/mm_types.h": "066d14a64a6da4ad1102ed554652c4c569cf1ebb9e304da667a04d533f93aca0",
+        "include/linux/pgsize_migration.h": "0c0e53268712b99a6faf19f807fc530e02307f13bf2ff0c3b04d84e759542005",
+        "include/linux/pgsize_migration_inline.h": "1c318800fa00d56e51cf7a2c279daf89ecc98ad7053a790722864882445109af",
+        "mm/pgsize_migration.c": "3eb77846a0e884dbd4c3a2dee2ebf89944e826e9bd982809b95498acdbfa50ac",
+        "mm/Makefile": "4b356df4202b2e60d7a413c45fb6a29b59f03f16dc0d9cb9f8ec89c1dfd88226",
+        "mm/madvise.c": "bac2ca630014e84cb518e099217ef4466823add49f62233469d08d4bb1b808ed",
+        "mm/mmap.c": "9384c323b991fb9255e6dfd202e1da1858803ba777041ef654ac4ea45819964f",
+        "fs/binfmt_elf.c": "7dc9ea959422f9fb260334db28b2437f33ab5a1bff49057c8e083cbc1e8b9d74",
+        "fs/proc/task_mmu.c": "5486fba78c4b23ba3ea14cd2ab4fa83f12bf6ab24abb1149d847270ee40dd122"
+      },
+      "native_kbuild_padding": true,
+      "native_madvise_padding": true
+    }
+  },
+  "fixtures": {
+    "native-show_map_vma.c": {
+      "size": 1646,
+      "sha256": "45f11bed5cf914d7929361d54489f3189e3f5cedfd9675c32f9859b4df1f6d8c"
+    },
+    "susfs-show_map_vma.c": {
+      "size": 2687,
+      "sha256": "23e97c68e76849cc475c76be97894b23d3114f7dcc03990b3e97171a674753ff"
+    },
+    "pgsize_migration.h": {
+      "size": 2525,
+      "sha256": "0c0e53268712b99a6faf19f807fc530e02307f13bf2ff0c3b04d84e759542005"
+    },
+    "pgsize_migration_inline.h": {
+      "size": 2111,
+      "sha256": "1c318800fa00d56e51cf7a2c279daf89ecc98ad7053a790722864882445109af"
+    },
+    "vma_pad_pages.c": {
+      "size": 164,
+      "sha256": "b726d977fa27ba5403c53f788d6803cf8286faf3406acbf4426d925bacc416a0"
+    }
+  }
+}

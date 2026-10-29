@@ -22,6 +22,7 @@ class MtkMemoryTests(unittest.TestCase):
     def setUp(self):
         self.profile = next(p for p in json.loads((ROOT / 'config/oplus-kernel-profiles.json').read_text('utf-8'))['profiles']
                             if p['id'] == memory.PROFILE)
+        self.pair = memory.selected(self.profile)
         self.source = bytes.fromhex((ROOT / 'tests/fixtures/oplus-mtk-memory/mm-trace.hex').read_text('ascii'))
         self.root = ROOT / 'tests' / ('.mtk-memory-' + uuid.uuid4().hex)
         self.common = self.root / 'common'
@@ -43,13 +44,44 @@ class MtkMemoryTests(unittest.TestCase):
             with self.subTest(field=field), self.assertRaises(ValueError):
                 memory.selected({**self.profile, field: value})
 
+    def test_all_four_profiles_bind_their_own_reviewed_official_common_and_vendor(self):
+        profiles = json.loads((ROOT / 'config/oplus-kernel-profiles.json').read_text('utf-8'))['profiles']
+        for profile in profiles:
+            if profile['id'] not in memory.VMSCAN_SHA256:
+                continue
+            with self.subTest(profile=profile['id']):
+                pair = memory.selected(profile)
+                self.assertEqual(profile['kernel_repo'], pair['common_repository'])
+                self.assertEqual(profile['verified_kernel_ref'], pair['common_commit'])
+                report = memory.provenance(pair)
+                self.assertEqual(pair['vendor_repository'], report['repository'])
+                self.assertEqual(pair['vendor_commit'], report['commit'])
+                self.assertEqual(report, memory.validate_mtk_memory_provenance(profile, report))
+                response = MagicMock()
+                url = ('https://raw.githubusercontent.com/' + pair['vendor_repository']
+                       + '/' + pair['vendor_commit'] + '/' + memory.SOURCE)
+                response.status = 200
+                response.geturl.return_value = url
+                response.read.return_value = self.source
+                response.__enter__.return_value = response
+                opener = MagicMock()
+                opener.open.return_value = response
+                with patch.object(memory, 'build_opener', return_value=opener):
+                    self.assertEqual(self.source, memory.download_source(pair))
+                request = opener.open.call_args.args[0]
+                self.assertEqual(url, request.full_url)
+                self.assertNotIn('Authorization', dict(request.header_items()))
+                if profile['id'] != self.profile['id']:
+                    with self.assertRaises(ValueError):
+                        memory.validate_mtk_memory_provenance(profile, memory.provenance(self.pair))
+
     def test_other_platforms_noop_without_transport(self):
         with patch.object(memory, 'download_source') as fetch:
-            self.assertEqual({}, memory.restore_mtk_memory(self.common, {'id': 'mt6897-6.1.128'}))
+            self.assertEqual({}, memory.restore_mtk_memory(self.common, {'id': 'mt6897-6.6.89'}))
             self.assertEqual({}, memory.verify_mtk_memory_report(self.common, {'id': 'sm8650-6.1.57'}, {}))
             fetch.assert_not_called()
         with self.assertRaises(ValueError):
-            memory.validate_mtk_memory_provenance({'id': 'mt6897-6.1.128'}, memory.provenance())
+            memory.validate_mtk_memory_provenance({'id': 'mt6897-6.6.89'}, memory.provenance(self.pair))
 
     def test_publication_is_byte_exact_idempotent_and_report_is_required(self):
         with self.simulation():
@@ -83,7 +115,7 @@ class MtkMemoryTests(unittest.TestCase):
             report = memory.restore_mtk_memory(self.common, self.profile)
         self.assertFalse(target.is_symlink())
         self.assertEqual(self.source, target.read_bytes())
-        self.assertEqual(memory.provenance(), report)
+        self.assertEqual(memory.provenance(self.pair), report)
         self.assertFalse((self.root / 'vendor').exists())
 
     def test_all_transport_attempts_fail_without_unbounded_wait(self):
@@ -91,7 +123,7 @@ class MtkMemoryTests(unittest.TestCase):
         opener.open.side_effect = URLError('offline')
         with patch.object(memory, 'build_opener', return_value=opener), patch.object(memory.time, 'sleep') as sleep:
             with self.assertRaisesRegex(ValueError, 'transport'):
-                memory.download_source()
+                memory.download_source(self.pair)
         self.assertEqual(3, opener.open.call_count)
         self.assertEqual([1, 2], [call.args[0] for call in sleep.call_args_list])
 
@@ -107,33 +139,34 @@ class MtkMemoryTests(unittest.TestCase):
 
     def test_changed_consumer_or_native_link_is_rejected(self):
         link = '120000 blob ' + memory.LINK_BLOB + '\t' + memory.TARGET + '\n'
-        with patch.object(memory, 'native_git', side_effect=[memory.COMMON_REF, link]), \
+        with patch.object(memory, 'native_git', side_effect=[self.pair['common_commit'], link]), \
                 patch.object(memory, 'read', return_value=b'changed native vmscan'):
             with self.assertRaisesRegex(ValueError, 'consumer'):
-                memory.check_common(self.common)
-        for head, native in [('a' * 40, link), (memory.COMMON_REF, link.replace('120000', '100644'))]:
+                memory.check_common(self.common, self.pair)
+        for head, native in [('a' * 40, link), (self.pair['common_commit'], link.replace('120000', '100644'))]:
             with patch.object(memory, 'native_git', side_effect=[head, native]), self.assertRaises(ValueError):
-                memory.check_common(self.common)
+                memory.check_common(self.common, self.pair)
         with self.assertRaisesRegex(ValueError, 'exact dangling'):
             memory.check_link(self.common / memory.TARGET)
 
     def test_transient_downloads_are_bounded_and_exact(self):
         response = MagicMock()
         response.status = 200
-        response.geturl.return_value = 'https://raw.githubusercontent.com/' + memory.VENDOR + '/' + memory.VENDOR_REF + '/' + memory.SOURCE
+        response.geturl.return_value = ('https://raw.githubusercontent.com/' + self.pair['vendor_repository']
+                                       + '/' + self.pair['vendor_commit'] + '/' + memory.SOURCE)
         response.read.return_value = self.source
         response.__enter__.return_value = response
         opener = MagicMock()
         opener.open.side_effect = [URLError('transient'), response]
         with patch.object(memory, 'build_opener', return_value=opener), patch.object(memory.time, 'sleep') as sleep:
-            self.assertEqual(self.source, memory.download_source())
+            self.assertEqual(self.source, memory.download_source(self.pair))
             self.assertEqual(2, opener.open.call_count)
             sleep.assert_called_once_with(1)
             response.read.assert_called_once_with(memory.SPEC['size'] + 1)
         opener.open.side_effect = HTTPError('https://redacted.invalid', 404, 'missing', {}, io.BytesIO())
         with patch.object(memory, 'build_opener', return_value=opener), patch.object(memory.time, 'sleep') as sleep:
             with self.assertRaises(ValueError):
-                memory.download_source()
+                memory.download_source(self.pair)
             sleep.assert_not_called()
 
     def test_exact_official_header_compiles_and_emits_native_trace_messages(self):

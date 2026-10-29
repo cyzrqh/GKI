@@ -1,0 +1,12 @@
+{
+  "repository": "Baka-SU/BakaSU",
+  "commit": "d5e9e025b8b49155f8014684d64c91742b465f65",
+  "files": {
+    "kernel/Makefile": "0f3e28f59311db0c8383600f0294cec5b8e4d6cc0fb229b5723b9ff539e08992",
+    "kernel/tools/check_symbol.c": "e1498452044010e383dd5a4d16993576337d28f91769b829ec416e76e22bfdc2",
+    "kernel/tools/code_generation/code_generation.mk": "7216cdc24d5c6c5196ac53587ce79981d1ddc18f0d8d5c2e609b4cbd54b3871f",
+    "kernel/tools/code_generation/syscall_no/syscall_no.mk": "5d65354bc6cc01fdb4c288ef69b5365e1b98cfe7619a8c942cbde99a3253b894",
+    "kernel/tools/code_generation/syscall_no/syscall_no.c": "92b1ef09e02b6b0c069c7ab2ffe64ddc90943df39f2f5963b83a29fcc0365226",
+    "kernel/tools/code_generation/preinit_runner/preinit_runner.mk": "3461eaa72bd7ca96933fae3797b7f6e828c127ea042118dbc43d902361dd5c65"
+  }
+}

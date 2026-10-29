@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import shutil
 import stat
+import struct
 import subprocess
 import sys
 import unittest
@@ -281,6 +282,137 @@ class BakaKpmPortTests(unittest.TestCase):
         self.write('kernel/unknown.mod.c', b'/* not an audited generated source filename */\n')
         with self.assertRaisesRegex(ValueError, 'Additional source changes'):
             port.verify_bakasu_kpm_port(self.source, self.reference, scope=('kernel', 'uapi'))
+
+    def native_build_inputs(self):
+        fixtures = ROOT / 'tests/fixtures/bakasu-native-build'
+        for name, expected in port.NATIVE_BUILD_INPUTS.items():
+            data = bytes.fromhex((fixtures / (name.replace('/', '_') + '.hex')).read_text('ascii'))
+            self.assertEqual(expected, port.digest(data))
+            self.write(name, data)
+        self.command('add', 'kernel')
+        self.reference = self.commit('unchanged native build generators')
+
+    def native_build_outputs(self):
+        # Non-executable recognition fixtures: these test classification only,
+        # never claim that a synthetic ELF header is a compiled module/tool.
+        def elf(machine):
+            data = bytearray(64)
+            data[:7] = b'\x7fELF\x02\x01\x01'
+            struct.pack_into('<HH', data, 16, 2, machine)
+            struct.pack_into('<H', data, 52, 64)
+            return bytes(data)
+        header = (port.SYSCALL_HEADER_PREFIX + '#include <asm/syscall.h>\n'
+                  '#include <asm/unistd_compat_32.h>\n\n' + port.SYSCALL_COMPAT_TAIL).encode()
+        database = json.dumps([{'directory': '/opt/ddk/kdir/android15-6.6',
+                               'file': 'kernel/core/init.c', 'command': 'clang -c kernel/core/init.c'}]).encode()
+        for name in port.NATIVE_BUILD_OUTPUTS:
+            data = (header if name.endswith('syscall_no.h') else database if name.endswith('.json')
+                    else elf(183 if name.endswith('runner.elf') else 62))
+            self.write(name, data)
+
+    def test_actual_native_output_closure_passes_without_allowing_other_sources(self):
+        self.native_build_inputs()
+        self.restore()
+        self.native_build_outputs()
+        result = port.verify_bakasu_kpm_port(self.source, self.reference)
+        self.assertEqual(self.reference, result['source_ref'])
+        self.assertEqual('', self.command('diff', '--cached', '--name-only'))
+        self.write('kernel/compat/unreviewed.h', b'#define UNREVIEWED 1\n')
+        with self.assertRaisesRegex(ValueError, r'Additional source changes.*kernel/compat/unreviewed.h'):
+            port.verify_bakasu_kpm_port(self.source, self.reference)
+
+    def test_native_contract_rejects_changed_generator_before_exempting_outputs(self):
+        self.native_build_inputs()
+        self.restore()
+        self.native_build_outputs()
+        name = 'kernel/tools/code_generation/syscall_no/syscall_no.c'
+        self.write(name, (self.source / name).read_bytes() + b'/* changed */\n')
+        with self.assertRaisesRegex(ValueError, 'changed official.*generator'):
+            port.verify_bakasu_kpm_port(self.source, self.reference)
+
+    def test_native_outputs_reject_unexpected_formats_or_any_link_traversal(self):
+        self.native_build_inputs()
+        self.restore()
+        self.native_build_outputs()
+        for name in sorted(port.NATIVE_BUILD_OUTPUTS):
+            path = self.source / name
+            original = path.read_bytes()
+            path.write_bytes(b'unreviewed source text')
+            with self.subTest(name=name), self.assertRaises(ValueError):
+                port.verify_bakasu_kpm_port(self.source, self.reference)
+            path.write_bytes(original)
+        link = self.source / 'kernel/compat'
+        real = port.is_link
+        with mock.patch.object(port, 'is_link', side_effect=lambda p: p == link or real(p)), \
+                self.assertRaisesRegex(ValueError, 'symlink or junction'):
+            port.native_build_output(self.source, 'kernel/compat/syscall_no.h')
+
+    def test_generated_header_only_accepts_native_constant_forms(self):
+        head = port.SYSCALL_HEADER_PREFIX + '#include <asm/syscall.h>\n'
+        origin = '/** Generated from /opt/ddk/kdir/android14-6.1/arch/arm64/include/asm/unistd32.h **/\n'
+        table = '#define __NR_compat32_restart_syscall 0\n#define __NR_compat32_ugetrlimit 191\t/* SuS compliant getrlimit */\n'
+        real = (head + origin + table + '\n' + port.SYSCALL_COMPAT_TAIL).encode()
+        port.native_syscall_header(real)
+        port.native_syscall_header(real.replace(b'\n', b'\r\n'))
+        cases = [real.replace(b' 191\t', b' arbitrary_function()\t'),
+                 real.replace(b' 191\t', b' 191; unreviewed();\t'),
+                 real.replace(b'#define __NR_compat32_restart_syscall 0', b'#include "unreviewed.h"'),
+                 real.replace(b'__NR_compat32_ugetrlimit', b'__NR_compat32_restart_syscall'),
+                 real.replace(b'/opt/ddk/kdir/', b'/unreviewed;escape/'),
+                 real.replace(b'asm/unistd32.h', b'asm/unreviewed.h'),
+                 real.replace(b'asm/unistd32.h', b'asm/unistd32.h */ injected /*'),
+                 real.replace(table.encode(), b''), real + b'void injected(void);\n']
+        for data in cases:
+            with self.subTest(data=data[:100]), self.assertRaises(ValueError):
+                port.native_syscall_header(data)
+        for path in ('/opt/ddk/kdir/android14-6.1/arch/arm64/include/asm/unistd32.h',
+                     '/opt/ddk/src/android14-6.1/arch/arm64/include/asm/unistd32.h',
+                     './arch/arm64/include/asm/unistd32.h', '../arch/arm64/include/asm/unistd32.h',
+                     'arch/arm64/include/asm/unistd32.h'):
+            with self.subTest(path=path):
+                changed = real.replace(b'/opt/ddk/kdir/android14-6.1/arch/arm64/include/asm/unistd32.h', path.encode())
+                port.native_syscall_header(changed)
+
+    def test_actual_native_generator_runs_for_arm64_compat_and_legacy_table(self):
+        compiler = os.environ.get('BAKASU_NATIVE_CC') or shutil.which('cc')
+        if not compiler:
+            self.skipTest('Requires a native C compiler')
+        data = bytes.fromhex((ROOT / 'tests/fixtures/bakasu-native-build/kernel_tools_code_generation_syscall_no_syscall_no.c.hex').read_text('ascii'))
+        source = self.directory / 'syscall_no.c'
+        source.write_bytes(data)
+        executable = self.directory / ('syscall_no.exe' if os.name == 'nt' else 'syscall_no')
+        command = [compiler] + (['cc'] if Path(compiler).stem.lower() == 'zig' else [])
+        subprocess.run(command + [str(source), '-o', str(executable)], check=True, capture_output=True, timeout=120)
+        legacy = self.directory / 'unistd32.h'
+        legacy.write_bytes(b'#define __NR_restart_syscall 0\n#define __NR_ugetrlimit 191\t/* SuS compliant getrlimit */\n')
+        for args in (['--arm64'], ['--arm64-compat'], ['--arm64-compat', str(legacy)]):
+            with self.subTest(args=args):
+                output = self.directory / 'syscall_no.h'
+                subprocess.run([str(executable), str(output), *args], check=True, capture_output=True, timeout=15)
+                header = output.read_bytes()
+                if len(args) == 2:
+                    # The generator includes its real input path in a comment.
+                    # Substitute only this host-specific comment for the DDK path.
+                    for path in (b'/opt/ddk/kdir/android14-6.1/arch/arm64/include/asm/unistd32.h',
+                                 b'/opt/ddk/src/android14-6.1/arch/arm64/include/asm/unistd32.h'):
+                        port.native_syscall_header(header.replace(str(legacy).encode(), path))
+                    header = header.replace(str(legacy).encode(), b'/opt/ddk/src/android14-6.1/arch/arm64/include/asm/unistd32.h')
+                port.native_syscall_header(header)
+        # Run the unmodified generator with real relative srctree arguments.
+        # Both resolve to files owned by this test, while their spelling in
+        # the native comment remains exactly as passed by Kbuild.
+        relative = self.directory / 'arch/arm64/include/asm/unistd32.h'
+        relative.parent.mkdir(parents=True)
+        relative.write_bytes(legacy.read_bytes())
+        child = self.directory / 'obj'
+        child.mkdir()
+        for cwd, path in ((self.directory, './arch/arm64/include/asm/unistd32.h'),
+                          (child, '../arch/arm64/include/asm/unistd32.h')):
+            with self.subTest(srctree=path):
+                output = self.directory / 'relative-syscall_no.h'
+                subprocess.run([str(executable), str(output), '--arm64-compat', path],
+                               cwd=cwd, check=True, capture_output=True, timeout=15)
+                port.native_syscall_header(output.read_bytes())
 
     def test_symlinked_destination_is_rejected_before_application(self):
         parent = self.source / 'kernel/kpm'

@@ -291,7 +291,9 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
     if susfs:
         if profile['kernel_version'] == '6.1':
             from oplus_vma_compat import prepare_vma_compat
+            from oplus_mtk_vma_compat import prepare_mtk_vma_compat
             prepare_vma_compat(root / 'common', profile)
+            prepare_mtk_vma_compat(root / 'common', profile)
         if profile['kernel_version'] == '6.6':
             from ensure_susfs_map_compat import ensure_map_compat
             ensure_map_compat(root)

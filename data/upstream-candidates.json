@@ -14,10 +14,10 @@
       "branch": "dev",
       "head": "96ceb4a42c50e27199a094264f62cfbafee77fa0"
     },
-    "sukisu_head": "29f8b18d08dae3be66c0c3cd364536827df0a378",
+    "sukisu_head": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
     "sukisu_release": {
-      "commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
-      "tag": "v4.2.1-r2"
+      "commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
+      "tag": "v4.3.0"
     },
     "susfs": {
       "android12-5.10": "eb95da080c76724c4962d0c62e9af3be37d9d439",
@@ -40,18 +40,18 @@
   },
   "changes": [
     {
-      "candidate": "29f8b18d08dae3be66c0c3cd364536827df0a378",
+      "candidate": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "main",
       "source": "SukiSU",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/29f8b18d08dae3be66c0c3cd364536827df0a378"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/e67b14e6bbbbd3e67f24df658a01d3e73a64159c"
     },
     {
-      "candidate": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
+      "candidate": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
-      "ref": "v4.2.1-r2",
+      "ref": "v4.3.0",
       "source": "SukiSU release",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.2.1-r2"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.3.0"
     },
     {
       "candidate": "96ceb4a42c50e27199a094264f62cfbafee77fa0",
@@ -128,11 +128,11 @@
         "branch": "dev",
         "head": "96ceb4a42c50e27199a094264f62cfbafee77fa0"
       },
-      "head": "29f8b18d08dae3be66c0c3cd364536827df0a378",
+      "head": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
       "release": {
-        "commit": "d6b36700f3bd0a4c1585549b470dd30bb8774534",
+        "commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
         "newer_than_baseline": true,
-        "tag": "v4.2.1-r2"
+        "tag": "v4.3.0"
       }
     },
     "susfs": {

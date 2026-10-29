@@ -1,14 +1,20 @@
+import contextlib
+import io
+import json
 from pathlib import Path
 import subprocess
 import sys
 import shutil
 import unittest
 import uuid
+from urllib.error import HTTPError, URLError
 from unittest.mock import patch
 import xml.etree.ElementTree as ET
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tools"))
-from set_kernel_ref import resolve_kernel_ref, resolve_named_kernel_ref, set_kernel_ref, validate_ref
+import set_kernel_ref as kernel_ref
+from set_kernel_ref import (KernelRefTransportError, resolve_kernel_ref,
+                            resolve_named_kernel_ref, set_kernel_ref, validate_ref)
 
 
 BRANCH = "android14-6.1-2025-09"
@@ -217,12 +223,159 @@ class KernelRefTests(unittest.TestCase):
                 run.reset_mock()
                 sleep.reset_mock()
                 run.side_effect = error
-                with self.assertRaises(type(error)):
-                    set_kernel_ref(self.root, REF, BRANCH)
+                with patch('set_kernel_ref._gitiles_named_ref',
+                           side_effect=KernelRefTransportError('Gitiles connection failed')) as gitiles:
+                    with self.assertRaises(KernelRefTransportError):
+                        set_kernel_ref(self.root, REF, BRANCH)
+                gitiles.assert_called_once_with(REF)
                 self.assertEqual(run.call_count, 3)
                 self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (4,)])
                 self.assertEqual(default.read_bytes(), original)
                 self.assertFalse(list(self.root.glob(".gki-manifest-*")))
+
+    @patch('set_kernel_ref.time.sleep')
+    @patch('set_kernel_ref.subprocess.run')
+    def test_named_git_transport_failure_uses_verified_same_official_ref(self, run, sleep):
+        run.side_effect = subprocess.CalledProcessError(128, ['git'], stderr='curl 92 HTTP/2 stream error')
+        with patch('set_kernel_ref._gitiles_named_ref', return_value=True) as gitiles:
+            self.assertEqual(resolve_named_kernel_ref(BRANCH, REF), REF)
+        gitiles.assert_called_once_with(REF)
+        self.assertEqual(run.call_count, 3)
+        self.assertEqual(run.call_args_list[0].args[0][:2], ['git', 'ls-remote'])
+        for call in run.call_args_list[1:]:
+            self.assertEqual(call.args[0][:4], ['git', '-c', 'http.version=HTTP/1.1', 'ls-remote'])
+            self.assertEqual(call.args[0][-2:], [REF, DEPRECATED_REF])
+        self.assertEqual([call.args for call in sleep.call_args_list], [(2,), (4,)])
+
+    @patch('set_kernel_ref._query_git_refs', side_effect=KernelRefTransportError('Git unavailable'))
+    def test_gitiles_fallback_obeys_preference_and_only_same_name_alias(self, query):
+        for preferred, other in ((REF, DEPRECATED_REF), (DEPRECATED_REF, REF)):
+            with self.subTest(preferred=preferred):
+                with patch('set_kernel_ref._gitiles_named_ref', side_effect=[False, True]) as gitiles:
+                    self.assertEqual(resolve_named_kernel_ref(BRANCH, preferred), other)
+                self.assertEqual([call.args for call in gitiles.call_args_list], [(preferred,), (other,)])
+        with patch('set_kernel_ref._gitiles_named_ref', return_value=False) as gitiles:
+            with self.assertRaisesRegex(ValueError, 'explicitly selected'):
+                resolve_named_kernel_ref(BRANCH, REF)
+        self.assertEqual(gitiles.call_count, 2)
+
+    @patch('set_kernel_ref._query_git_refs', side_effect=KernelRefTransportError('Git unavailable'))
+    def test_gitiles_preferred_query_failure_never_switches_to_unverified_alias(self, query):
+        default = self.write('default.xml', '<manifest><project path="common" revision="old"/></manifest>')
+        original = default.read_bytes()
+        for error in (KernelRefTransportError('HTTP 503'), ValueError('Invalid Gitiles JSON')):
+            with self.subTest(error=type(error).__name__):
+                with patch('set_kernel_ref._gitiles_named_ref', side_effect=error) as gitiles:
+                    with self.assertRaises(type(error)):
+                        set_kernel_ref(self.root, REF, BRANCH)
+                gitiles.assert_called_once_with(REF)
+                self.assertEqual(default.read_bytes(), original)
+
+    @patch('set_kernel_ref.time.sleep')
+    @patch('set_kernel_ref.subprocess.run')
+    def test_unnamed_ref_query_also_retries_without_changing_exact_patterns(self, run, sleep):
+        run.side_effect = [subprocess.TimeoutExpired(['git'], 60), self.remote([REF])]
+        with patch('set_kernel_ref._gitiles_named_ref') as gitiles:
+            self.assertEqual(resolve_kernel_ref(BRANCH), REF)
+        gitiles.assert_not_called()
+        self.assertEqual([call.args for call in sleep.call_args_list], [(2,)])
+        self.assertEqual(run.call_args.args[0][-3:], [REF, DEPRECATED_REF, f'refs/tags/{BRANCH}_r*'])
+
+    def gitiles_response(self, data=None, raw=None, status=200, url=None):
+        response = unittest.mock.MagicMock()
+        response.__enter__.return_value = response
+        response.status = status
+        response.geturl.return_value = url or kernel_ref.COMMON_URL + '/+' + REF + '?format=JSON'
+        response.read.return_value = raw if raw is not None else b")]}'\n" + json.dumps(data).encode()
+        return response
+
+    @patch('set_kernel_ref.build_opener')
+    def test_gitiles_reads_one_bounded_exact_ref_without_credentials_or_redirects(self, opener):
+        response = self.gitiles_response({REF: {'value': 'a' * 40}})
+        opener.return_value.open.return_value = response
+        self.assertTrue(kernel_ref._gitiles_named_ref(REF))
+        request = opener.return_value.open.call_args.args[0]
+        self.assertEqual(request.full_url, kernel_ref.COMMON_URL + '/+' + REF + '?format=JSON')
+        self.assertEqual(opener.return_value.open.call_args.kwargs, {'timeout': 20})
+        self.assertNotIn('Authorization', dict(request.header_items()))
+        self.assertIsInstance(opener.call_args.args[0], kernel_ref._NoRedirect)
+        self.assertIsNone(opener.call_args.args[0].redirect_request(None, None, None, None, None, None))
+        response.read.assert_called_once_with(8193)
+
+    @patch('set_kernel_ref.build_opener')
+    def test_gitiles_missing_exact_ref_is_not_a_transport_error(self, opener):
+        opener.return_value.open.return_value = self.gitiles_response({})
+        self.assertFalse(kernel_ref._gitiles_named_ref(REF))
+        opener.return_value.open.side_effect = HTTPError('https://official.invalid', 404, 'not found', {}, None)
+        self.assertFalse(kernel_ref._gitiles_named_ref(REF))
+
+    @patch('set_kernel_ref.build_opener')
+    def test_gitiles_rejects_other_names_partial_hashes_duplicates_or_oversized_payloads(self, opener):
+        invalid = [self.gitiles_response({DEPRECATED_REF: {'value': 'a' * 40}}),
+                   self.gitiles_response({REF + '/child': {'value': 'a' * 40}}),
+                   self.gitiles_response({REF: {'value': 'a' * 41}}),
+                   self.gitiles_response({REF: {'value': 'a' * 39}}),
+                   self.gitiles_response({REF: {'value': 'a' * 40, 'peeled': 'b' * 40}}),
+                   self.gitiles_response({REF: ['a' * 40]}),
+                   self.gitiles_response([REF]),
+                   self.gitiles_response(raw=b'{}'),
+                   self.gitiles_response(raw=b")]}'\n" + b' ' * 8192),
+                   self.gitiles_response(raw=b")]}'\n{\"duplicate\":1,\"duplicate\":2}"),
+                   self.gitiles_response(raw=b")]}'\n{invalid}"),
+                   self.gitiles_response({REF: {'value': 'a' * 40}}, url='https://other.invalid/'),
+                   self.gitiles_response({REF: {'value': 'a' * 40}}, status=302)]
+        for response in invalid:
+            with self.subTest(response=response), self.assertRaises(ValueError):
+                opener.return_value.open.return_value = response
+                kernel_ref._gitiles_named_ref(REF)
+
+    @patch('set_kernel_ref.time.sleep')
+    @patch('set_kernel_ref.build_opener')
+    def test_gitiles_retries_only_transient_failures_with_bounded_timeout(self, opener, sleep):
+        for error in (HTTPError('https://official.invalid', 503, 'unavailable', {}, None),
+                      URLError('temporary connection failure')):
+            with self.subTest(error=type(error).__name__):
+                opener.return_value.open.reset_mock()
+                sleep.reset_mock()
+                opener.return_value.open.side_effect = [error, self.gitiles_response({REF: {'value': 'a' * 40}})]
+                self.assertTrue(kernel_ref._gitiles_named_ref(REF))
+                self.assertEqual(opener.return_value.open.call_count, 2)
+                sleep.assert_called_once_with(2)
+                for call in opener.return_value.open.call_args_list:
+                    self.assertEqual(call.kwargs['timeout'], 20)
+        opener.return_value.open.side_effect = URLError('unavailable')
+        opener.return_value.open.reset_mock()
+        with self.assertRaises(KernelRefTransportError):
+            kernel_ref._gitiles_named_ref(REF)
+        self.assertEqual(opener.return_value.open.call_count, 2)
+
+    @patch('set_kernel_ref.time.sleep')
+    @patch('set_kernel_ref.build_opener')
+    def test_gitiles_redirect_or_authorization_failure_never_means_missing(self, opener, sleep):
+        for code in (301, 302, 401, 403):
+            with self.subTest(code=code):
+                opener.return_value.open.reset_mock()
+                opener.return_value.open.side_effect = HTTPError('https://official.invalid', code, 'denied', {}, None)
+                with self.assertRaises(KernelRefTransportError):
+                    kernel_ref._gitiles_named_ref(REF)
+                opener.return_value.open.assert_called_once()
+        sleep.assert_not_called()
+
+    @patch('set_kernel_ref.time.sleep')
+    @patch('set_kernel_ref.subprocess.run')
+    def test_transport_diagnostics_keep_status_codes_and_never_echo_credentials(self, run, sleep):
+        error = subprocess.CalledProcessError(128, ['git'], stderr=(
+            'fatal: https://user:private-password@proxy.invalid/?token=private-token\n'
+            'error: RPC failed; HTTP 503 curl 22 TLS connection reset\n'))
+        run.side_effect = error
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output), self.assertRaises(KernelRefTransportError) as failure:
+            kernel_ref._query_git_refs((REF, DEPRECATED_REF))
+        diagnosis = output.getvalue() + str(failure.exception)
+        for expected in ('Git transport exit 128', 'HTTP 503', 'curl 22', 'TLS failure', 'connection reset'):
+            self.assertIn(expected, diagnosis)
+        for secret in ('private-password', 'private-token', 'proxy.invalid', 'https://'):
+            self.assertNotIn(secret, diagnosis)
 
     @patch("set_kernel_ref.time.sleep")
     @patch("set_kernel_ref.subprocess.run")

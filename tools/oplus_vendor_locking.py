@@ -21,10 +21,11 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
-LOCK_DIGEST = '4898672ff22c31952d513b001e5e49a4c3ac15ff95109a7099f3462c8d3d1a2e'
+LOCK_DIGEST = '3c017b0a9bf423c02594283be23096d175b527221e798db7c3c9b9940690b441'
 DESTINATIONS = frozenset(('kernel/locking/oplus_locking.c', 'kernel/locking/locking_main.h',
                           'kernel/locking/sa_common_struct.h'))
-PROFILES = frozenset(('sm8650-6.1.75', 'sm8650-6.1.118', 'sm8650-6.1.141'))
+PROFILES = frozenset(('sm8650-6.1.75', 'sm8650-6.1.118', 'sm8650-6.1.141',
+                      'mt6897-6.1.75', 'mt6989-6.1.115', 'mt6897-6.1.128', 'mt6989-6.1.134'))
 COMMON_HEADERS = frozenset(('linux/module.h', 'linux/init.h', 'linux/version.h', 'linux/sched/clock.h',
                            'linux/cgroup.h', 'linux/ftrace.h', 'linux/futex.h', 'linux/proc_fs.h',
                            'linux/seq_file.h', 'linux/errno.h', 'linux/slab.h', 'linux/spinlock.h',
@@ -87,7 +88,8 @@ def _profile(profile: dict, lock: dict) -> dict:
     selected = lock['profiles'][profile['id']]
     reference = profile.get('kernel_ref', profile.get('verified_kernel_ref'))
     if (profile.get('platform') != selected['platform'] or profile.get('kernel') != selected['kernel']
-            or profile.get('kernel_repo') != lock['common_repository'] or reference != selected['common_commit']
+            or profile.get('kernel_repo') != selected.get('common_repository', lock['common_repository'])
+            or reference != selected['common_commit']
             or profile.get('verified_kernel_ref', selected['common_commit']) != selected['common_commit']):
         raise ValueError('Official locking source pairing does not match this frozen profile')
     return selected
@@ -168,7 +170,8 @@ def download_locking_source(profile_id: str, destination: str, size: int) -> byt
     spec = selected['files'][destination]
     if type(size) is not int or size != spec['size']:
         raise ValueError('Unreviewed official locking download size')
-    url = ('https://raw.githubusercontent.com/' + lock['vendor_repository'] + '/' + selected['vendor_commit']
+    url = ('https://raw.githubusercontent.com/' + selected.get('vendor_repository', lock['vendor_repository'])
+           + '/' + selected['vendor_commit']
            + '/' + spec['source_path'])
     request = Request(url, headers={'User-Agent': 'gki-official-locking-source', 'Accept': 'application/octet-stream'})
     opener = build_opener(_NoRedirect())
@@ -229,8 +232,10 @@ def _installed(common: Path, selected: dict) -> None:
 
 def _provenance(lock: dict, selected: dict) -> dict:
     return {'schema_version': 1, 'component': lock['component'],
-            'repository': lock['vendor_repository'], 'branch': selected['vendor_branch'], 'commit': selected['vendor_commit'],
-            'common_repository': lock['common_repository'], 'common_commit': selected['common_commit'],
+            'repository': selected.get('vendor_repository', lock['vendor_repository']),
+            'branch': selected['vendor_branch'], 'commit': selected['vendor_commit'],
+            'common_repository': selected.get('common_repository', lock['common_repository']),
+            'common_commit': selected['common_commit'],
             'files': {path: {'source_path': spec['source_path'], 'source_sha256': spec['sha256'],
                              'sha256': spec['sha256'], 'size': spec['size']}
                       for path, spec in selected['files'].items()}}

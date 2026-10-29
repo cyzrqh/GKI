@@ -62,6 +62,7 @@ class OPlusKernelTests(unittest.TestCase):
         stack.enter_context(mock.patch('oplus_vendor_sources.restore_vendor_sources', return_value={}))
         stack.enter_context(mock.patch('oplus_vendor_locking.restore_vendor_locking', return_value={}))
         stack.enter_context(mock.patch('oplus_mtk_cpu.restore_mtk_cpu', return_value={}))
+        stack.enter_context(mock.patch('oplus_mtk_memory.restore_mtk_memory', return_value={}))
         stack.enter_context(mock.patch('oplus_ksu_compat.prepare_builtin_includes'))
         stack.enter_context(mock.patch('oplus_ksu_compat.prepare_kpm_members'))
         stack.enter_context(mock.patch('ensure_bakasu_symbol_lookup.validate_native_symbol_lookup', return_value=True))
@@ -132,22 +133,27 @@ class OPlusKernelTests(unittest.TestCase):
         with mock.patch('oplus_vendor_sources.restore_vendor_sources') as restore, \
                 mock.patch('oplus_vendor_locking.restore_vendor_locking') as locking, \
                 mock.patch('oplus_mtk_cpu.restore_mtk_cpu') as cpu, \
+                mock.patch('oplus_mtk_memory.restore_mtk_memory') as memory, \
                 mock.patch('oplus_compat.prepare_vendor_dependencies', create=True) as prepare, \
                 mock.patch.object(kernel, 'validate_hooks', return_value=SimpleNamespace(calls=1, ok=True)) as hooks:
             order = []
             provenance = {'schema_version': 1, 'files': {'native.c': {'sha256': 'f' * 64}}}
             locking_provenance = {'schema_version': 1, 'files': {'locking.c': {'sha256': 'e' * 64}}}
+            memory_provenance = {'schema_version': 1, 'files': {'mm-trace.h': {'sha256': 'd' * 64}}}
             restore.side_effect = lambda common, profile: (order.append(('restore', common)) or provenance)
             locking.side_effect = lambda common, profile: (order.append(('locking', common)) or locking_provenance)
             cpu.side_effect = lambda common, profile: (order.append(('cpu', common)) or {})
+            memory.side_effect = lambda common, profile: (order.append(('memory', common)) or memory_provenance)
             prepare.side_effect = lambda common: order.append(('vendor', common))
             hooks.side_effect = lambda *args, **kwargs: (order.append(('hooks', None)) or SimpleNamespace(calls=1, ok=True))
             self.finalize(inputs={**self.inputs, 'enable_susfs': True})
             self.assertEqual([('restore', self.root / 'common'), ('locking', self.root / 'common'),
-                              ('cpu', self.root / 'common'), ('vendor', self.root / 'common'), ('hooks', None)], order)
+                              ('cpu', self.root / 'common'), ('memory', self.root / 'common'),
+                              ('vendor', self.root / 'common'), ('hooks', None)], order)
             self.assertEqual(provenance, json.loads((self.root / 'common/out/gki-oplus-vendor-sources.json').read_text()))
             self.assertEqual(locking_provenance, json.loads((self.root / 'common/out/gki-oplus-vendor-locking.json').read_text()))
             self.assertFalse((self.root / 'common/out/gki-oplus-mtk-cpu.json').exists())
+            self.assertEqual(memory_provenance, json.loads((self.root / 'common/out/gki-oplus-mtk-memory.json').read_text()))
             prepare.assert_called_once_with(self.root / 'common')
 
     def test_kpm_native_bridge_follows_the_same_menu_policy_as_the_external_payload(self):
@@ -194,6 +200,33 @@ class OPlusKernelTests(unittest.TestCase):
         path.write_text(path.read_text().replace('config KPM\n', ''))
         with self.assertRaisesRegex(ValueError, 'native KPM bridge configuration'):
             self.finalize(inputs={**self.inputs, 'use_kpm': True})
+
+    def test_legacy_vma_boundary_is_prepared_only_for_enabled_61_susfs_before_hook_checks(self):
+        for series, variant, enabled in (('6.1', 'SukiSU', True), ('6.1', 'BakaSU', True),
+                                         ('6.1', 'SukiSU', False), ('6.6', 'SukiSU', True),
+                                         ('6.12', 'SukiSU', True)):
+            with self.subTest(series=series, variant=variant, enabled=enabled):
+                self.finalize_mocks(variant)
+                with mock.patch.object(kernel, 'validate_profile', side_effect=lambda profile: profile), \
+                        mock.patch.object(kernel, 'native_inputs'), \
+                        mock.patch('ensure_susfs_map_compat.ensure_map_compat'), \
+                        mock.patch('oplus_vma_compat.prepare_vma_compat') as compat, \
+                        mock.patch.object(kernel, 'validate_hooks') as hooks:
+                    def validate(*_args, **_kwargs):
+                        self.assertEqual(1 if series == '6.1' else 0, compat.call_count)
+                        return SimpleNamespace(calls=1, ok=True)
+                    hooks.side_effect = validate
+                    original = self.profile
+                    self.profile = {**original, 'kernel_version': series}
+                    try:
+                        self.finalize(inputs={**self.inputs, 'kernelsu_variant': variant, 'enable_susfs': enabled},
+                                      variant=variant)
+                        if series == '6.1' and enabled:
+                            compat.assert_called_once_with(self.root / 'common', self.profile)
+                        else:
+                            compat.assert_not_called()
+                    finally:
+                        self.profile = original
 
     def test_include_root_adaptation_is_only_for_oplus_sukisu_612(self):
         for version, variant in (('6.1', 'SukiSU'), ('6.6', 'SukiSU'), ('6.12', 'SukiSU'), ('6.12', 'BakaSU')):

@@ -48,12 +48,46 @@ class VendorLockingTests(unittest.TestCase):
                 patch.object(locking,'_check_links'),patch.object(locking,'_check_link'),
                 patch.object(locking,'download_locking_source',side_effect=self.transport))
 
-    def test_all_three_matching_official_source_closures_pass_full_locks(self):
+    def test_all_seven_matching_official_source_closures_pass_full_locks(self):
         for name, selected in self.lock['profiles'].items():
             with self.subTest(profile=name):
                 locking.verify_source_bytes(self.fixture_sources(selected),selected)
                 self.assertEqual(selected,locking._profile(self.profiles[name],self.lock))
-        self.assertEqual(7,len(list(FIXTURE.iterdir())))
+        self.assertEqual(9,len(list(FIXTURE.iterdir())))
+
+    def test_mtk_pairings_use_each_official_repository_and_native_shorter_link(self):
+        cpu_lock=json.loads((ROOT/'config/oplus-mtk-cpu.json').read_text('utf-8'))
+        for name,cpu in cpu_lock['profiles'].items():
+            with self.subTest(profile=name):
+                selected=self.lock['profiles'][name]
+                for key in ('common_repository','common_commit','vendor_repository','vendor_branch','vendor_commit'):
+                    self.assertEqual(cpu[key],selected[key])
+                for spec in selected['files'].values():
+                    self.assertEqual('../../../'+spec['source_path'],spec['symlink_target'])
+                report=locking._provenance(self.lock,selected)
+                self.assertEqual(selected['vendor_repository'],report['repository'])
+                self.assertEqual(selected['common_repository'],report['common_repository'])
+                self.assertEqual(report,locking.validate_vendor_locking_provenance(self.profiles[name],report))
+                wrong={**self.profiles[name],'kernel_repo':self.lock['common_repository']}
+                with self.assertRaises(ValueError):locking.validate_vendor_locking_provenance(wrong,report)
+
+    def test_mtk_download_uses_its_paired_vendor_instead_of_qualcomm_repository(self):
+        profile='mt6897-6.1.75'
+        selected=self.lock['profiles'][profile]
+        path='kernel/locking/oplus_locking.c'
+        spec=selected['files'][path]
+        url=('https://raw.githubusercontent.com/'+selected['vendor_repository']+'/'
+             +selected['vendor_commit']+'/'+spec['source_path'])
+        response=MagicMock()
+        response.__enter__.return_value=response
+        response.status=200
+        response.geturl.return_value=url
+        response.read.return_value=self.fixture_sources(selected)[path]
+        opener=MagicMock()
+        opener.open.return_value=response
+        with patch.object(locking,'build_opener',return_value=opener):
+            self.assertEqual(response.read.return_value,locking.download_locking_source(profile,path,spec['size']))
+        self.assertEqual(url,opener.open.call_args.args[0].full_url)
 
     def test_not_in_scope_is_noop_and_cannot_carry_foreign_provenance(self):
         profile=self.profiles['sm8650-6.1.57']

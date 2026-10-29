@@ -264,10 +264,12 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         from oplus_vendor_sources import restore_vendor_sources
         from oplus_vendor_locking import restore_vendor_locking
         from oplus_mtk_cpu import restore_mtk_cpu
+        from oplus_mtk_memory import restore_mtk_memory
         from oplus_compat import prepare_vendor_dependencies
         for name, restore in (('gki-oplus-vendor-sources.json', restore_vendor_sources),
                               ('gki-oplus-vendor-locking.json', restore_vendor_locking),
-                              ('gki-oplus-mtk-cpu.json', restore_mtk_cpu)):
+                              ('gki-oplus-mtk-cpu.json', restore_mtk_cpu),
+                              ('gki-oplus-mtk-memory.json', restore_mtk_memory)):
             if provenance := restore(root / 'common', profile):
                 output = root / 'common/out'
                 if output.is_symlink() or output.exists() and not output.is_dir():
@@ -287,6 +289,9 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
             raise ValueError('Unicode patch checkout differs from its prepared reference')
         patch_checked(root / 'common', patches / 'common/unicode_bypass_fix_6.1+.patch')
     if susfs:
+        if profile['kernel_version'] == '6.1':
+            from oplus_vma_compat import prepare_vma_compat
+            prepare_vma_compat(root / 'common', profile)
         if profile['kernel_version'] == '6.6':
             from ensure_susfs_map_compat import ensure_map_compat
             ensure_map_compat(root)

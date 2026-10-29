@@ -8,6 +8,134 @@
   "common_repository": "OnePlusOSS/android_kernel_common_oneplus_sm8650",
   "component": "oplus-native-locking",
   "profiles": {
+    "mt6897-6.1.128": {
+      "common_commit": "bdf1628572ce25c64d3fd33f09a925d54d616454",
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6897",
+      "files": {
+        "kernel/locking/locking_main.h": {
+          "git_blob": "809e98b1719943ce3d5d17b5a1206933633056e2",
+          "sha256": "291d03d04c999eaa12e4cdef51c48bf8e5b6592c63264829c85f77427da3f110",
+          "size": 3996,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.h",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.h"
+        },
+        "kernel/locking/oplus_locking.c": {
+          "git_blob": "9de0deaf98ed24ef14fd5ef4f6bdff31f971e3ae",
+          "sha256": "f1817b75e30d3dd80bc8f8cc1ff8f1eb625847a577ec9d9338ca3c539e6f4285",
+          "size": 22922,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.c",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.c"
+        },
+        "kernel/locking/sa_common_struct.h": {
+          "git_blob": "5708b33e7a7a18478308c0fdd2232346ebcb8edb",
+          "sha256": "1d941fcf9765097b8dda76aeaf9aa828e9c2e4b8b2460f3d0d3ccf94ad28a4d6",
+          "size": 4517,
+          "source_path": "vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h",
+          "symlink_target": "../../../vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h"
+        }
+      },
+      "kernel": "6.1.128",
+      "platform": "mt6897",
+      "vendor_branch": "oneplus/mt6897_v_15.0.0_oneplus_pad",
+      "vendor_commit": "7899d51d0baf10b258fd9d9f9329770c19d1a87c",
+      "vendor_repository": "OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6897"
+    },
+    "mt6897-6.1.75": {
+      "common_commit": "1bed026fb776f4167c7af2d9358e25b792adaa79",
+      "common_repository": "oppo-source/android_kernel_oppo_mt6897",
+      "files": {
+        "kernel/locking/locking_main.h": {
+          "git_blob": "809e98b1719943ce3d5d17b5a1206933633056e2",
+          "sha256": "291d03d04c999eaa12e4cdef51c48bf8e5b6592c63264829c85f77427da3f110",
+          "size": 3996,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.h",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.h"
+        },
+        "kernel/locking/oplus_locking.c": {
+          "git_blob": "9de0deaf98ed24ef14fd5ef4f6bdff31f971e3ae",
+          "sha256": "f1817b75e30d3dd80bc8f8cc1ff8f1eb625847a577ec9d9338ca3c539e6f4285",
+          "size": 22922,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.c",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.c"
+        },
+        "kernel/locking/sa_common_struct.h": {
+          "git_blob": "1d4b2f9950d9d0ef549193d102ac72242bdc0ef6",
+          "sha256": "6d8e02734ade8acba7ce1432e12515c50eef850c5cd6971cf935aa12ae61d4fd",
+          "size": 4516,
+          "source_path": "vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h",
+          "symlink_target": "../../../vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h"
+        }
+      },
+      "kernel": "6.1.75",
+      "platform": "mt6897",
+      "vendor_branch": "oppo/mt6897_v_15.0.0_oppopad3",
+      "vendor_commit": "0c86228a7a06d2e32df8187ad753613a2159a5fa",
+      "vendor_repository": "oppo-source/android_kernel_modules_and_devicetree_oppo_mt6897"
+    },
+    "mt6989-6.1.115": {
+      "common_commit": "b1ea2c8ce2ef0f73927a593aa450f88143e3584a",
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "files": {
+        "kernel/locking/locking_main.h": {
+          "git_blob": "809e98b1719943ce3d5d17b5a1206933633056e2",
+          "sha256": "291d03d04c999eaa12e4cdef51c48bf8e5b6592c63264829c85f77427da3f110",
+          "size": 3996,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.h",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.h"
+        },
+        "kernel/locking/oplus_locking.c": {
+          "git_blob": "9de0deaf98ed24ef14fd5ef4f6bdff31f971e3ae",
+          "sha256": "f1817b75e30d3dd80bc8f8cc1ff8f1eb625847a577ec9d9338ca3c539e6f4285",
+          "size": 22922,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.c",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.c"
+        },
+        "kernel/locking/sa_common_struct.h": {
+          "git_blob": "d0da7a35fafc3f539439a7739c3cb81b1e01c67f",
+          "sha256": "2557629e18afa76253a88b99722b49ed374c2d0eefaddc97ae0502bdfa6052d7",
+          "size": 4814,
+          "source_path": "vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h",
+          "symlink_target": "../../../vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h"
+        }
+      },
+      "kernel": "6.1.115",
+      "platform": "mt6989",
+      "vendor_branch": "oneplus/mt6989_v_15.0.2_ace5_race",
+      "vendor_commit": "e7320c9131c8fa539dc0e3899e7c81eba901da21",
+      "vendor_repository": "OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6989"
+    },
+    "mt6989-6.1.134": {
+      "common_commit": "770ca1ea1e23e4451b1c19e247c5e36c8c9a2415",
+      "common_repository": "OnePlusOSS/android_kernel_oneplus_mt6989",
+      "files": {
+        "kernel/locking/locking_main.h": {
+          "git_blob": "9c44dc3aa079d825ed5540fddbf903717b6babf1",
+          "sha256": "628a8be9d7111a844b4f9e04b7e00ce8a280f68a7a93be21347c6dc0e954b5a2",
+          "size": 3879,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.h",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.h"
+        },
+        "kernel/locking/oplus_locking.c": {
+          "git_blob": "9de0deaf98ed24ef14fd5ef4f6bdff31f971e3ae",
+          "sha256": "f1817b75e30d3dd80bc8f8cc1ff8f1eb625847a577ec9d9338ca3c539e6f4285",
+          "size": 22922,
+          "source_path": "vendor/oplus/kernel/synchronize/oplus_locking.c",
+          "symlink_target": "../../../vendor/oplus/kernel/synchronize/oplus_locking.c"
+        },
+        "kernel/locking/sa_common_struct.h": {
+          "git_blob": "0d6ca91db2523dea57de08d1deb4d8b34674c5d8",
+          "sha256": "ec402f672f174cf82778da49c0369ba016bc6fa6865ec79e5abb05c8eeefe663",
+          "size": 5243,
+          "source_path": "vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h",
+          "symlink_target": "../../../vendor/oplus/kernel/cpu/sched/sched_assist/sa_common_struct.h"
+        }
+      },
+      "kernel": "6.1.134",
+      "platform": "mt6989",
+      "vendor_branch": "oneplus/mt6989_b_16.0.0_ace5_race",
+      "vendor_commit": "d60d564c82de298fe4909657c31c29c73ba25aba",
+      "vendor_repository": "OnePlusOSS/android_kernel_modules_and_devicetree_oneplus_mt6989"
+    },
     "sm8650-6.1.118": {
       "common_commit": "d4ebeebda66f400ef47524375c42ac61b27e66ba",
       "files": {

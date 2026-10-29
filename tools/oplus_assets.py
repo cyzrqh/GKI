@@ -26,6 +26,7 @@ import oplus_catalog as catalog
 from oplus_vendor_sources import validate_vendor_provenance, verify_vendor_report
 from oplus_vendor_locking import validate_vendor_locking_provenance, verify_vendor_locking_report
 from oplus_mtk_cpu import validate_mtk_cpu_provenance, verify_mtk_cpu_report
+from oplus_mtk_memory import validate_mtk_memory_provenance, verify_mtk_memory_report
 from validate_arm64_image import validate_image
 
 
@@ -317,6 +318,10 @@ def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, 
     cpu_report = (metadata_json(regular(cpu_report_path, 65536))
                   if cpu_report_path.exists() or cpu_report_path.is_symlink() else {})
     metadata['mtk_cpu_sources'] = verify_mtk_cpu_report(common, profile, cpu_report)
+    memory_report_path = common / 'out/gki-oplus-mtk-memory.json'
+    memory_report = (metadata_json(regular(memory_report_path, 65536))
+                     if memory_report_path.exists() or memory_report_path.is_symlink() else {})
+    metadata['mtk_memory_sources'] = verify_mtk_memory_report(common, profile, memory_report)
     for field in MANAGER_BINDINGS:
         metadata[field] = os.environ.get(field.upper(), '')
     runtime, ak3_ref = template_files(template)
@@ -376,6 +381,7 @@ def validate_document(document: dict) -> None:
         validate_vendor_provenance(profile, document.get('vendor_sources', {}))
         validate_vendor_locking_provenance(profile, document.get('vendor_locking', {}))
         validate_mtk_cpu_provenance(profile, document.get('mtk_cpu_sources', {}))
+        validate_mtk_memory_provenance(profile, document.get('mtk_memory_sources', {}))
     except ValueError as error:
         raise AssetError(str(error)) from None
     variant = document.get('ksu_variant')

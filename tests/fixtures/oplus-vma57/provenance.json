@@ -1,0 +1,41 @@
+{
+  "license": "GPL-2.0-only",
+  "note": "Exact raw official source bytes; show_map_vma is a complete function excerpt and its SUSFS added-lines hunk. Hex encoding preserves bytes on Windows.",
+  "files": [
+    {
+      "fixture": "include_linux_mm.h.hex",
+      "source": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650/blob/e02429a7e0f337d517be2c01e12d1cf153df4542/include/linux/mm.h",
+      "commit": "e02429a7e0f337d517be2c01e12d1cf153df4542",
+      "sha256": "d2d39d5f74b8407e460bf226070ac1a89ebe79fda544ecaf68fdf25ad6dae244",
+      "size": 146240
+    },
+    {
+      "fixture": "include_linux_mm_types.h.hex",
+      "source": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650/blob/e02429a7e0f337d517be2c01e12d1cf153df4542/include/linux/mm_types.h",
+      "commit": "e02429a7e0f337d517be2c01e12d1cf153df4542",
+      "sha256": "066d14a64a6da4ad1102ed554652c4c569cf1ebb9e304da667a04d533f93aca0",
+      "size": 34071
+    },
+    {
+      "fixture": "native-show_map_vma.c.hex",
+      "source": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650/blob/e02429a7e0f337d517be2c01e12d1cf153df4542/fs/proc/task_mmu.c#L275",
+      "commit": "e02429a7e0f337d517be2c01e12d1cf153df4542",
+      "sha256": "1bc8cb3e52188676d4103d8638118e354fc959b914e9f6c356146121756be97e",
+      "size": 1505
+    },
+    {
+      "fixture": "susfs23-show_map_vma.patch.hex",
+      "source": "https://gitlab.com/simonpunk/susfs4ksu/-/blob/b57ed1998b82c4e3a2a81cdbf11172a560979c40/kernel_patches/50_add_susfs_in_gki-android14-6.1.patch",
+      "commit": "b57ed1998b82c4e3a2a81cdbf11172a560979c40",
+      "sha256": "35332d61122270981bb1b606889c37c126c1081dfdebf7e807a8b88b17b45afe",
+      "size": 1487
+    },
+    {
+      "fixture": "75-include_linux_pgsize_migration.h.hex",
+      "source": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650/blob/5a0c0a9e7b06f4b019ed44c08b152f68e61c2c90/include/linux/pgsize_migration.h",
+      "commit": "5a0c0a9e7b06f4b019ed44c08b152f68e61c2c90",
+      "sha256": "aa79fb6dfbd68e39bd400e57e1c525c12a412adf8f1630ebc71c1074e1fc286b",
+      "size": 3973
+    }
+  ]
+}

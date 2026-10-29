@@ -827,7 +827,7 @@ PY
     }
     workflow = {
         'name': 'GKI 全属性内核构建矩阵',
-        'run-name': "${{ inputs.operation == '仅编译管理器安装包' && format('仅编译 {0} 安装包', inputs.kernelsu_variant) || format('{0} · {1} · {2}', inputs.kernelsu_variant, inputs.kernel_versions, inputs.artifact_mode) }}",
+        'run-name': "${{ inputs.operation == '仅编译管理器安装包' && format('仅编译 {0} · {1} 安装包', inputs.kernelsu_variant, inputs.kernelsu_branch) || format('{0} · {1} · {2} · {3}', inputs.kernelsu_variant, inputs.kernelsu_branch, inputs.kernel_versions == 'all' && '全部内核' || inputs.kernel_versions, inputs.artifact_mode) }}",
         'on': {'workflow_dispatch': {'inputs': dispatch}},
         'permissions': {'contents': 'read'},
         'jobs': {'prepare-matrix': prepare, 'build-sukisu-lkm': manager_lkm_job(MANAGER_IF),

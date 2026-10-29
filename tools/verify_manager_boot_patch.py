@@ -168,13 +168,36 @@ def protected_host_sources(variant: str | None = None) -> tuple[str, ...]:
               'userspace/ksud/Cargo.toml')
     if selected_variant(variant) == 'BakaSU':
         return (*common, 'userspace/ksud/Cargo.lock', 'userspace/ksuinit/Cargo.toml',
-                'userspace/ksuinit/Cargo.lock')
+                'userspace/ksuinit/Cargo.lock', 'userspace/ksuinit/build.rs')
     return (*common, 'Cargo.toml', 'Cargo.lock')
+
+
+def validate_native_sources(source: Path, reference: str) -> None:
+    """Keep shared patch/restore code native while allowing the audited port.
+
+    The BakaSU KPM port adds Android CLI modules under ksud/src. It is checked
+    against its exact source inventory rather than mistaken for an unrelated
+    modification. The host image patcher and its locked dependencies are not
+    part of that port and must still match the original committed source.
+    """
+    protected = protected_host_sources()
+    if selected_variant() == 'BakaSU':
+        from restore_bakasu_kpm import verify_bakasu_kpm_port
+        native_init = ('userspace/ksuinit/src',)
+        try:
+            verify_bakasu_kpm_port(source, reference,
+                                  scope=('kernel', 'uapi', 'userspace/ksud/src', *native_init, *protected))
+        except ValueError as error:
+            raise VerificationError('BakaSU host verification source differs from its audited KPM port: '
+                                    + str(error)) from None
+        git(source, 'diff', '--quiet', 'HEAD', '--', *native_init, *protected)
+    else:
+        git(source, 'diff', '--quiet', 'HEAD', '--', 'userspace/ksud/src', *protected)
 
 
 def validate_assets(source: Path, report_path: Path, reference: str) -> tuple[dict, dict[str, bytes], bytes]:
     provenance = selected_source(source, reference)
-    git(source, "diff", "--quiet", "HEAD", "--", "userspace/ksud/src", *protected_host_sources())
+    validate_native_sources(source, reference)
     report = read_json(report_path)
     identity = public_identity(report_path)
     if (type(report.get("schema_version")) is not int or report["schema_version"] != 1
@@ -237,8 +260,22 @@ def prepare_host_copy(source: Path, destination: Path, reference: str,
     """
     if destination.exists() or destination.is_symlink():
         raise VerificationError("Host verification source copy must not already exist")
+    validate_native_sources(source, reference)
     git(destination.parent, "clone", "--quiet", "--shared", "--no-checkout", str(source), str(destination))
     git(destination, "checkout", "--quiet", "--detach", reference)
+    if selected_variant() == 'BakaSU':
+        # A Git clone contains committed objects only. Reapply the same
+        # verified working-tree port before checking its identity or compiling
+        # the host CLI; the actual Android build source remains untouched.
+        git(destination, 'remote', 'set-url', 'origin',
+            'https://github.com/' + manager_profile('BakaSU')['repository'] + '.git')
+        from restore_bakasu_kpm import restore_bakasu_kpm
+        try:
+            restore_bakasu_kpm(destination, reference)
+        except ValueError as error:
+            raise VerificationError('BakaSU host copy could not restore its audited KPM port: '
+                                    + str(error)) from None
+    validate_native_sources(destination, reference)
     if selected_source(destination, reference) != selected_source(source, reference):
         raise VerificationError("Host copy did not preserve the selected official source identity")
     protected = protected_host_sources()

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import os
+import difflib
+import json
 from pathlib import Path
 import shutil
 import stat
@@ -15,6 +17,7 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import verify_manager_boot_patch as boot
+import restore_bakasu_kpm as kpm_port
 
 
 class ManagerBootPatchTests(unittest.TestCase):
@@ -234,6 +237,7 @@ class ManagerBootPatchTests(unittest.TestCase):
             protected = boot.protected_host_sources()
             self.assertIn('userspace/ksud/Cargo.lock', protected)
             self.assertIn('userspace/ksuinit/Cargo.lock', protected)
+            self.assertIn('userspace/ksuinit/build.rs', protected)
             self.assertNotIn('Cargo.toml', protected)
             self.assertNotIn('Cargo.lock', protected)
             self.assertEqual('com.resukisu.resukisu', boot.host_environment(source)['KSU_PACKAGE_NAME'])
@@ -248,6 +252,143 @@ class ManagerBootPatchTests(unittest.TestCase):
             with self.subTest(changed=changed), self.assertRaises(boot.VerificationError):
                 boot.apply_host_cfg(source, variant='BakaSU')
             self.assertEqual(changed, main.read_bytes())
+
+
+class BakaHostCopySourceTests(unittest.TestCase):
+    """Real Git/port lifecycle; the tiny files are not a buildable manager."""
+
+    def setUp(self):
+        self.root = ROOT / 'tests' / ('.baka-host-source-' + uuid.uuid4().hex)
+        self.source = self.root / 'source'
+        self.source.mkdir(parents=True)
+        self.addCleanup(self.cleanup)
+        self.git('init', '--quiet')
+        self.git('config', 'core.autocrlf', 'false')
+        self.git('remote', 'add', 'origin', 'https://github.com/Baka-SU/BakaSU.git')
+        for relative in boot.protected_host_sources('BakaSU'):
+            self.write(relative, ('// opaque native protected input: ' + relative + '\n').encode())
+        self.write('userspace/ksud/src/main.rs',
+                   b'#[cfg(target_os = "android")]\nmod android;\n'
+                   b'#[cfg(target_os = "android")]\nmod anykernel3;\n'
+                   b'#[cfg(not(target_os = "android"))]\nmod cli_non_android;\n')
+        self.write('kernel/Kbuild',
+                   b'KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)\n'
+                   b'KSU_VERSION := $(shell expr 30000 + $(KSU_LOCAL_VERSION) + 700)\n')
+        self.write('userspace/ksud/bin/aarch64/.keep', b'opaque asset directory placeholder\n')
+        self.write('userspace/ksuinit/src/lib.rs', b'// opaque native init source\n')
+        self.relative = 'userspace/ksud/src/android/cli.rs'
+        self.before = b'// opaque Android CLI fixture\nfn before() {}\n'
+        self.after = self.before + b'// audited additive KPM CLI fixture\n'
+        self.write(self.relative, self.before)
+        self.git('add', '.')
+        self.git('-c', 'user.name=Host source test', '-c', 'user.email=test@example.invalid',
+                 '-c', 'commit.gpgsign=false', 'commit', '--quiet', '-m', 'native synthetic source')
+        self.reference = self.git('rev-parse', 'HEAD')
+        patch = ('diff --git a/' + self.relative + ' b/' + self.relative + '\n'
+                 + ''.join(difflib.unified_diff(self.before.decode().splitlines(keepends=True),
+                       self.after.decode().splitlines(keepends=True), fromfile='a/' + self.relative,
+                       tofile='b/' + self.relative))).encode()
+        port_root = self.root / 'port'
+        patch_path = port_root / 'tools/patches/bakasu-kpm.patch'
+        patch_path.parent.mkdir(parents=True)
+        patch_path.write_bytes(patch)
+        manifest = {'schema_version': 1, 'repository': kpm_port.REPOSITORY,
+                    'audited_ref': kpm_port.AUDITED_REF, 'api': dict(kpm_port.API),
+                    'patch': {'filename': 'bakasu-kpm.patch', 'size': len(patch), 'sha256': kpm_port.digest(patch)},
+                    'files': [{'path': self.relative, 'kind': 'update',
+                               'before_sha256': kpm_port.digest(self.before),
+                               'after_sha256': kpm_port.digest(self.after), 'after_size': len(self.after)}]}
+        config = port_root / 'config/bakasu-kpm-port.json'
+        config.parent.mkdir()
+        config.write_text(json.dumps(manifest), encoding='utf-8')
+        self.port_root = mock.patch.object(kpm_port, 'ROOT', port_root)
+        self.port_root.start()
+        self.addCleanup(self.port_root.stop)
+        self.variant = mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'})
+        self.variant.start()
+        self.addCleanup(self.variant.stop)
+        self.receipt = kpm_port.restore_bakasu_kpm(self.source, self.reference)
+
+    def cleanup(self):
+        # Git object files can be read-only on Windows. Touch only this
+        # test's unique, already bounded directory.
+        def writable(function, path, error):
+            if not isinstance(error, PermissionError):
+                raise error
+            os.chmod(path, stat.S_IWRITE | stat.S_IREAD)
+            function(path)
+        shutil.rmtree(self.root, onexc=writable)
+
+    def git(self, *arguments):
+        result = subprocess.run(['git', '-C', str(self.source), *arguments], check=True,
+                                capture_output=True, text=True, encoding='utf-8', timeout=30)
+        return result.stdout.strip()
+
+    def write(self, relative, raw):
+        path = self.source / relative
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(raw)
+        return path
+
+    def test_audited_android_cli_port_is_accepted_but_unknown_rust_is_rejected(self):
+        self.assertEqual(self.after, (self.source / self.relative).read_bytes())
+        boot.validate_native_sources(self.source, self.reference)
+        self.write('userspace/ksud/src/unexpected.rs', b'// unknown Rust input\n')
+        with self.assertRaisesRegex(boot.VerificationError, 'audited KPM port.*unexpected.rs'):
+            boot.validate_native_sources(self.source, self.reference)
+
+    def test_native_patcher_dependency_or_cli_bytes_cannot_be_changed(self):
+        for relative in (*boot.protected_host_sources('BakaSU'), 'userspace/ksuinit/src/lib.rs'):
+            path = self.source / relative
+            original = path.read_bytes()
+            path.write_bytes(original + b'// unexpected native change\n')
+            with self.subTest(file=relative), self.assertRaises((boot.VerificationError, boot.SnapshotError)):
+                boot.validate_native_sources(self.source, self.reference)
+            path.write_bytes(original)
+        path = self.source / self.relative
+        path.write_bytes(self.after + b'// changed port\n')
+        with self.assertRaisesRegex(boot.VerificationError, 'audited KPM port'):
+            boot.validate_native_sources(self.source, self.reference)
+
+    def test_android_manager_build_edits_do_not_replace_native_source_validation(self):
+        self.write('manager/app/build.gradle.kts', b'// known caller-owned ABI/signing edits are outside native scope\n')
+        boot.validate_native_sources(self.source, self.reference)
+        for relative in ('userspace/ksuinit/src/unexpected.rs',):
+            path = self.write(relative, b'// unknown init source\n')
+            with self.subTest(file=relative), self.assertRaisesRegex(boot.VerificationError, 'audited KPM port'):
+                boot.validate_native_sources(self.source, self.reference)
+            path.unlink()
+
+    def test_host_copy_reapplies_same_port_and_public_origin_without_changing_android_build(self):
+        protected = {name: (self.source / name).read_bytes() for name in boot.protected_host_sources('BakaSU')}
+        original_identity = boot.selected_source(self.source, self.reference)
+        original_status = self.git('status', '--porcelain', '--untracked-files=all')
+        destination = self.root / 'host'
+        modules = {kmi: ('opaque non-loadable module: ' + kmi).encode() for kmi in boot.KMIS}
+        init = b'opaque non-executable init fixture'
+        self.assertEqual([], boot.prepare_host_copy(self.source, destination, self.reference, modules, init))
+        self.assertEqual(original_identity, boot.selected_source(destination, self.reference))
+        self.assertEqual(self.receipt, kpm_port.verify_bakasu_kpm_port(destination, self.reference,
+                         scope=('kernel', 'uapi', 'userspace/ksud/src', 'userspace/ksuinit/src',
+                                'userspace/ksuinit/build.rs', *protected)))
+        boot.validate_native_sources(destination, self.reference)
+        self.assertEqual('https://github.com/Baka-SU/BakaSU.git',
+                         boot.git(destination, 'remote', 'get-url', 'origin'))
+        self.assertEqual(self.after, (destination / self.relative).read_bytes())
+        for relative, raw in protected.items():
+            self.assertEqual(raw, (destination / relative).read_bytes())
+        for kmi, raw in modules.items():
+            self.assertEqual(raw, (destination / 'userspace/ksud/bin/aarch64' / (kmi + '_kernelsu.ko')).read_bytes())
+        self.assertEqual(init, (destination / 'userspace/ksud/bin/aarch64/ksuinit').read_bytes())
+        self.assertEqual(original_status, self.git('status', '--porcelain', '--untracked-files=all'))
+        self.assertEqual(original_identity, boot.selected_source(self.source, self.reference))
+
+    def test_invalid_original_source_is_rejected_before_clone(self):
+        self.write('userspace/ksud/src/unexpected.rs', b'// unknown Rust input\n')
+        destination = self.root / 'never-created'
+        with self.assertRaisesRegex(boot.VerificationError, 'audited KPM port'):
+            boot.prepare_host_copy(self.source, destination, self.reference, {}, b'opaque init')
+        self.assertFalse(destination.exists())
 
 
 if __name__ == "__main__":

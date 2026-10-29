@@ -156,7 +156,7 @@ def validate_patch(patch: bytes, files: list[dict]) -> None:
         if new:
             allowed.add('new file mode 100644')
         for line in header:
-            if line in allowed or re.fullmatch(r'index [0-9a-f]{7,40}\.\.[0-9a-f]{7,40}(?: 100644)?', line):
+            if line in allowed or re.fullmatch(r'index [0-9a-f]{7,40}\.\.[0-9a-f]{7,40}(?: 100(?:644|755))?', line):
                 continue
             raise KpmPortError('Binary, renamed, deleted or mode-changing BakaSU KPM patches are forbidden')
         if (header.count(f'--- {"/dev/null" if new else "a/" + name}') != 1
@@ -206,8 +206,10 @@ def head_file(source: Path, reference: str, relative: str) -> bytes | None:
     if len(records) != 1:
         raise KpmPortError('Ambiguous frozen BakaSU KPM source file')
     metadata, name = records[0].split(b'\t', 1)
-    if name.decode('utf-8') != relative or not re.fullmatch(rb'100644 blob [0-9a-f]{40}', metadata):
-        raise KpmPortError('BakaSU KPM source input must be a regular text Git blob')
+    # Git tracks executable text sources as 100755 as well as 100644. Keep
+    # their original mode; neither is a symlink (120000) or submodule (160000).
+    if name.decode('utf-8') != relative or not re.fullmatch(rb'100(?:644|755) blob [0-9a-f]{40}', metadata):
+        raise KpmPortError('BakaSU KPM source input must be a regular text Git blob: ' + relative)
     data = git(source, 'show', reference + ':' + relative)
     if len(data) > MAX_FILE or b'\0' in data:
         raise KpmPortError('Invalid bounded frozen BakaSU KPM source file')
@@ -300,6 +302,8 @@ def check_applied(source: Path, before: dict, after: dict, scope: tuple[str, ...
     # Index edits are never part of this working-tree-only port.
     if git(source, 'diff', '--cached', '--name-only', 'HEAD', '-z', '--', *scope):
         raise KpmPortError('BakaSU KPM port must not alter or conceal staged source changes')
+    if git(source, 'diff', '--no-ext-diff', '--no-renames', '--summary', 'HEAD', '--', *scope).strip():
+        raise KpmPortError('BakaSU KPM port must preserve the original tracked source file modes')
 
 
 def verify_bakasu_kpm_port(source: Path, reference: str, *, scope=None) -> dict:

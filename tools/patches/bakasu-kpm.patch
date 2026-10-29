@@ -1430,7 +1430,7 @@ index 7324a1d..a69d261 100644
  #undef DEFINE_KSU_UAPI_CONST
  #endif
 diff --git a/userspace/ksud/src/android/cli.rs b/userspace/ksud/src/android/cli.rs
-index 545cbed..c178e93 100644
+index 545cbed..c178e93 100755
 --- a/userspace/ksud/src/android/cli.rs
 +++ b/userspace/ksud/src/android/cli.rs
 @@ -135,6 +135,10 @@ enum Commands {

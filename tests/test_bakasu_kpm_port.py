@@ -125,6 +125,69 @@ class BakaKpmPortTests(unittest.TestCase):
         self.assertNotEqual(result['files'][self.relative]['after_sha256'], self.manifest['files'][0]['after_sha256'])
         self.assertEqual(result, port.verify_bakasu_kpm_port(self.source, self.reference))
 
+    def test_executable_official_text_blob_is_preserved_through_apply_and_verify(self):
+        source = self.source / self.relative
+        source.chmod(0o755)
+        self.command('update-index', '--chmod=+x', self.relative)
+        self.reference = self.commit('official source with executable text mode')
+        native_tree = self.command('rev-parse', 'HEAD^{tree}')
+        self.assertTrue(self.command('ls-tree', 'HEAD', '--', self.relative).startswith('100755 blob '))
+        self.assertEqual(self.before, port.head_file(self.source, self.reference, self.relative))
+        # Match the production Rust CLI patch: its index header must carry
+        # the executable mode from the real official Git tree.
+        self.patch = self.patch.replace(('diff --git a/' + self.relative + ' b/' + self.relative + '\n').encode(),
+            ('diff --git a/' + self.relative + ' b/' + self.relative + '\nindex aaaaaaa..bbbbbbb 100755\n').encode(), 1)
+        self.patch_file.write_bytes(self.patch)
+        self.manifest['patch'].update(size=len(self.patch), sha256=port.digest(self.patch))
+        self.save_manifest()
+        result = self.restore()
+        self.assertEqual(self.after, source.read_bytes())
+        self.assertEqual(result, self.restore())
+        self.assertEqual(result, port.verify_bakasu_kpm_port(self.source, self.reference))
+        self.assertEqual(native_tree, self.command('rev-parse', 'HEAD^{tree}'))
+        self.assertEqual('', self.command('diff', '--cached', '--name-only'))
+        self.assertEqual('', self.command('diff', '--summary'))
+        if os.name != 'nt':
+            self.assertEqual(0o755, stat.S_IMODE(source.stat().st_mode))
+
+    def test_production_patch_retains_the_official_rust_cli_executable_mode(self):
+        # setUp redirects ROOT to the synthetic transaction fixture. Read
+        # production locks explicitly for this native metadata regression.
+        with mock.patch.object(port, 'ROOT', ROOT):
+            manifest, patch = port.load_port_manifest()
+        header = ('diff --git a/userspace/ksud/src/android/cli.rs b/userspace/ksud/src/android/cli.rs\n'
+                  'index 545cbed..c178e93 100755\n').encode()
+        self.assertIn(header, patch)
+        self.assertEqual(len(patch), manifest['patch']['size'])
+
+    def test_head_blob_rejects_links_submodules_wrong_paths_and_binary_text(self):
+        original = port.git
+        for mode in (b'120000', b'160000', b'040000', b'100664'):
+            record = mode + b' blob ' + b'a' * 40 + b'\t' + self.relative.encode() + b'\0'
+            with self.subTest(mode=mode), mock.patch.object(port, 'git', return_value=record), \
+                    self.assertRaisesRegex(ValueError, 'regular text Git blob'):
+                port.head_file(self.source, self.reference, self.relative)
+        record = b'100755 blob ' + b'a' * 40 + b'\tother/file.c\0'
+        with mock.patch.object(port, 'git', return_value=record), self.assertRaises(ValueError):
+            port.head_file(self.source, self.reference, self.relative)
+        def binary(source, *args, **kwargs):
+            if args[0] == 'show':
+                return b'not\0text'
+            return original(source, *args, **kwargs)
+        with mock.patch.object(port, 'git', side_effect=binary), self.assertRaisesRegex(ValueError, 'bounded frozen'):
+            port.head_file(self.source, self.reference, self.relative)
+
+    def test_mode_only_change_on_an_already_ported_file_cannot_hide_in_content_changes(self):
+        self.restore()
+        original = port.git
+        def changed_mode(source, *args, **kwargs):
+            if args[:4] == ('diff', '--no-ext-diff', '--no-renames', '--summary'):
+                return b' mode change 100644 => 100755 kernel/port_fixture.c\n'
+            return original(source, *args, **kwargs)
+        with mock.patch.object(port, 'git', side_effect=changed_mode), \
+                self.assertRaisesRegex(ValueError, 'original tracked source file modes'):
+            port.verify_bakasu_kpm_port(self.source, self.reference)
+
     def test_conflicting_upstream_context_and_partial_application_fail_without_further_edits(self):
         self.write(self.relative, self.before.replace(b'return 0;', b'return 99;'))
         self.command('add', self.relative)

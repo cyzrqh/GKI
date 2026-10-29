@@ -1,0 +1,8 @@
+{
+  "repository": "Baka-SU/BakaSU",
+  "ref": "d5e9e025b8b49155f8014684d64c91742b465f65",
+  "source_path": "kernel/Kbuild",
+  "ported_Kbuild_sha256": "c98674c254016a6e16b2a79aeb07f9d5efde568b1793a5f2e86adf85996de34d",
+  "fixture_sha256": "b4b414bd35d1d00989aa6c63eeaec588ccba41ee09401045973a22ad4432bb44",
+  "note": "Exact CONFIG_KPM conditional and version compiler flag rules from the reviewed native source plus additive KPM port; no replacement implementation."
+}

@@ -36,7 +36,12 @@ NATIVE_BUILD_INPUTS = {
 NATIVE_BUILD_OUTPUTS = frozenset((
     'kernel/check_symbol', 'kernel/compile_commands.json', 'kernel/compat/syscall_no.h',
     'kernel/tools/code_generation/syscall_no/syscall_no', 'kernel/preinit/runner.elf',
+    'kernel/kernelsu.lds',
 ))
+CFI_LINKER_PREFIX = ('SECTIONS {\n'
+                     '\t__patchable_function_entries : { *(__patchable_function_entries) }\n'
+                     '\t.text : {\n')
+CFI_LINKER_SUFFIX = '\t}\n}\n'
 SYSCALL_HEADER_PREFIX = ('/** Auto generated file. DO NOT EDIT **/\n\n#ifndef KSU_NR_COMPAT_H\n'
                          '#define KSU_NR_COMPAT_H\n\n#include <asm/unistd.h>\n\n')
 SYSCALL_COMPAT_TAIL = ('#define ksu_get_syscall_no(name) (is_compat_task() ? __NR_compat32_##name : __NR_##name)\n'
@@ -244,7 +249,7 @@ def scopes(scope) -> tuple[str, ...]:
 
 
 def native_build_contract(source: Path) -> None:
-    """Bind the five outputs to the unchanged, reviewed official generators."""
+    """Bind recognized outputs to the unchanged, reviewed official build inputs."""
     reference = os.fsdecode(git(source, 'rev-parse', '--verify', 'HEAD')).strip()
     for name, expected in NATIVE_BUILD_INPUTS.items():
         original = head_file(source, reference, name)
@@ -293,6 +298,8 @@ def native_build_output(source: Path, name: str) -> None:
     data = regular(safe_path(source, name), MAX_FILE)
     if name == 'kernel/compat/syscall_no.h':
         native_syscall_header(data)
+    elif name == 'kernel/kernelsu.lds':
+        native_cfi_linker_script(data)
     elif name == 'kernel/compile_commands.json':
         database = json.loads(data)
         if (not isinstance(database, list) or not 1 <= len(database) <= 4096
@@ -307,6 +314,28 @@ def native_build_output(source: Path, name: str) -> None:
                 or struct.unpack_from('<HH', data, 16) not in ((2, machine), (3, machine))
                 or struct.unpack_from('<H', data, 52)[0] != 64):
             raise KpmPortError('Native BakaSU build output is not its expected bounded ELF: ' + name)
+
+
+def native_cfi_linker_script(data: bytes) -> None:
+    """Recognize Android 5.10 generate_cfi_kallsyms.pl --module output only.
+
+    Makefile.modfinal creates this file after linking an ARM64 CFI module.
+    It preserves patchable entries and adds missing CFI jump-table aliases;
+    it is not a general-purpose linker script or an additional source file.
+    """
+    # The native formatter returns without writing anything when all jump
+    # aliases already exist. Shell redirection can still create an empty file.
+    if data == b'':
+        return
+    if len(data) > 1024 * 1024:
+        raise KpmPortError('Native BakaSU CFI linker output is oversized')
+    text = data.decode('ascii').replace('\r\n', '\n')
+    if not text.startswith(CFI_LINKER_PREFIX) or not text.endswith(CFI_LINKER_SUFFIX):
+        raise KpmPortError('Unknown native BakaSU CFI linker script layout')
+    lines = text[len(CFI_LINKER_PREFIX):-len(CFI_LINKER_SUFFIX)].splitlines()
+    if not 1 <= len(lines) <= 16384 or any(not re.fullmatch(
+            r'\t\t[A-Za-z_.$][A-Za-z0-9_.$]*\.cfi_jt = \. \+ 0x[0-9a-f]{1,16};', line) for line in lines):
+        raise KpmPortError('Native BakaSU CFI linker script requires only constant jump-table aliases')
 
 
 def changes(source: Path, scope: tuple[str, ...]) -> set[str]:

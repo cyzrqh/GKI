@@ -4,8 +4,8 @@
   "audited_ref": "d5e9e025b8b49155f8014684d64c91742b465f65",
   "patch": {
     "filename": "bakasu-kpm.patch",
-    "size": 78104,
-    "sha256": "1eb5554754ab269b7ede7ec2145158aeca51dcc2417172810f5ff1f3ef393d9f"
+    "size": 77025,
+    "sha256": "2e2de88cb1f00fc3f85da631986c73a5c2ed171766928398e31828f7c9b0615d"
   },
   "files": [
     {
@@ -100,32 +100,25 @@
       "after_size": 831
     },
     {
-      "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt",
+      "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/component/NavigationBar.kt",
       "kind": "update",
-      "before_sha256": "8029eced472dc70d62b074b9793e08f7033905d7c5672b924264157a2eecac01",
-      "after_sha256": "94c0dbc7036c7bac4f6830a887b24783c4dc3478b1c1a33a7450e905614c6946",
-      "after_size": 37028
+      "before_sha256": "8827e9672e46f854fb4de02d62d3549af2c6d1610033c588d95b95309e8509c5",
+      "after_sha256": "8cc228cebc83a490455969c62b2a5efffb2db5c055f393736aa1257f230a4f48",
+      "after_size": 12106
     },
     {
-      "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt",
+      "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/screen/BottomBarDestination.kt",
       "kind": "update",
-      "before_sha256": "e435896e9e04d2f1b43c436fc65f69133ccb393126e2cd1fcede476544fcdf9b",
-      "after_sha256": "9ed3a82900528e41989c4209af645bcc854212cf6fe4012a73b440b55deec290",
-      "after_size": 4725
+      "before_sha256": "996c953355e72e050a9ccd09e3fe482d68c801175721346c8da943d89eff332e",
+      "after_sha256": "cc7a78c7fb46bc1fe5caed3d02e107849a9f71ff58a0596b0259ebdf9ec455b4",
+      "after_size": 2304
     },
     {
       "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "fd8f9066c767e4c65ea2372488949c62be0c74fa38662f42b69ce0e9cfc902c9",
-      "after_size": 12118
-    },
-    {
-      "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt",
-      "kind": "update",
-      "before_sha256": "87d4e77fd2cd94124c7876ede4f32597a5aa01ecdf6d788468d7445ccdd98eb1",
-      "after_sha256": "5fc2a8ff9ce44846cec8ae2b0aff8c10bd04f6eb0db91285f2020013c16f4196",
-      "after_size": 35998
+      "after_sha256": "c0e04bd2bc8ea15439218d6dca143a855d633e31d35df4f849459dd081b4581f",
+      "after_size": 12105
     },
     {
       "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt",
@@ -138,15 +131,15 @@
       "path": "manager/app/src/main/res/values-zh-rCN/strings.xml",
       "kind": "update",
       "before_sha256": "1cd558a879d9c2f0d25459a7daf7237b2f3e20ad87741a5f8ff85228ade445b7",
-      "after_sha256": "6ddc31dd783e5aa8b1c4798b6d931154b391fc6b9dfca3f05c1b8526395a37d4",
-      "after_size": 54044
+      "after_sha256": "547857ab4fa93bee68151b7a7f7e6034220c7ac92dc518263e7c7310353417e7",
+      "after_size": 53992
     },
     {
       "path": "manager/app/src/main/res/values/strings.xml",
       "kind": "update",
       "before_sha256": "6e05000429612802291b1fdaebe89bdb6fbaa21bdfd4b33714caf1e84b6abff0",
-      "after_sha256": "50f9a938ca38fca3342e676f32ad2b8d7d9ed30719fb023f92d99cf1dc1a0ed4",
-      "after_size": 55847
+      "after_sha256": "9fd5b0e747e8da1588dded68af56d57220e2591c4588f639e23248586dacb249",
+      "after_size": 55792
     },
     {
       "path": "uapi/feature.h",

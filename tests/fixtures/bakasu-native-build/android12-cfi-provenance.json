@@ -1,0 +1,17 @@
+{
+  "repository": "https://android.googlesource.com/kernel/common",
+  "ref": "bda27102b55da8daa0a6012e795ac85e38ffba74",
+  "note": "Exact Android official source bytes. The script is generated only under CONFIG_CFI_CLANG in Makefile.modfinal. Files encoded as hex to preserve original bytes.",
+  "files": {
+    "android12-scripts_Makefile.modfinal.hex": {
+      "path": "scripts/Makefile.modfinal",
+      "sha256": "395552b9dddc1dca7ebf9603aacd6465d9622ddf8136d8c0ce804dc01ee8aaef",
+      "size": 2981
+    },
+    "android12-scripts_generate_cfi_kallsyms.pl.hex": {
+      "path": "scripts/generate_cfi_kallsyms.pl",
+      "sha256": "a4a8eb23cdbca209fb8846d153e7cc03a5d438cd239c0cf7852f2206de25164e",
+      "size": 6293
+    }
+  }
+}

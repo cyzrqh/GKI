@@ -404,6 +404,66 @@ class ManagerLkmTests(unittest.TestCase):
             self.assertEqual(2, self.record()['compiler_records'])
             self.assertEqual(['android13-5.15'], self.stage()['supported_kmis'])
 
+    def test_bakasu_native_version_full_and_consistent_macro_forms_pass_record_and_stage(self):
+        self.bakasu_source()
+        variants = (
+            self.kpm_command + ' -DKSU_VERSION_FULL=\\"v4.2.0-rc3-d5e9e025-dirty@HEAD\\"',
+            self.kpm_command.replace('-DCONFIG_KPM=1', '-DCONFIG_KPM')
+                + ' -DKSU_VERSION_FULL=\\"v4.2.0-rc3\\"',
+            self.kpm_command.replace('-DCONFIG_KPM=1', '-D CONFIG_KPM=1')
+                .replace('-DKSU_VERSION=' + str(self.version), '-D KSU_VERSION=' + str(self.version)),
+            self.kpm_command + ' -DCONFIG_KPM=1 -DKSU_VERSION=' + str(self.version),
+            self.kpm_command.replace('-DCONFIG_KPM=1', '-Wp,-D,CONFIG_KPM=1'),
+            self.kpm_command.replace('-DCONFIG_KPM=1', '-Xpreprocessor -D -Xpreprocessor CONFIG_KPM=1'),
+        )
+        for number, command in enumerate(variants):
+            self.kpm_record.write_text('savedcmd_/source/kernel/kpm/kpm.o := ' + command + '\n', encoding='utf-8')
+            output = self.artifacts / ('macro-form-' + str(number))
+            report = self.root / ('macro-form-' + str(number) + '.json')
+            with self.subTest(command=command), mock.patch.dict(os.environ, {'KSU_VARIANT': 'BakaSU'}):
+                metadata = lkm.record(self.source, self.module(), 'android13-5.15', self.identity_file,
+                                      self.reference, output, lkm.locked_ddk('android13-5.15')['image'])
+                # Cache consumers restore a fresh source checkout, without
+                # the producer's .cmd files. The stored bounded command must
+                # remain sufficient with its exact source/ELF/port binding.
+                records = {path: path.read_bytes() for path in (self.kpm_record, self.compiler_record)}
+                for path in records:
+                    path.unlink()
+                try:
+                    staged = lkm.stage(self.source, output, self.identity_file, self.reference,
+                                       'android13-5.15', report)
+                finally:
+                    for path, raw in records.items():
+                        path.write_bytes(raw)
+                self.assertEqual(metadata, staged['modules'][0])
+                self.assertEqual(command, metadata['kpm_compiler_proof']['command'])
+
+    def test_bakasu_macro_prefixes_conflicts_and_hidden_overrides_cannot_satisfy_proof(self):
+        self.bakasu_source()
+        current_version = '-DKSU_VERSION=' + str(self.version)
+        invalid = (
+            self.kpm_command.replace(current_version, '-DKSU_VERSION_FULL=' + str(self.version)),
+            self.kpm_command.replace('-DCONFIG_KPM=1', '-DCONFIG_KPM_OTHER=1'),
+            self.kpm_command + ' -DCONFIG_KPM=0',
+            self.kpm_command + ' -DKSU_VERSION=35251',
+            self.kpm_command + ' -U CONFIG_KPM',
+            self.kpm_command + ' -U KSU_VERSION',
+            self.kpm_command + ' -Wp,-U,CONFIG_KPM',
+            self.kpm_command + ' -Xpreprocessor -U -Xpreprocessor KSU_VERSION',
+            self.kpm_command + ' -DCONFIG_KPM()=1',
+            self.kpm_command + ' @unchecked-definitions.rsp',
+        )
+        for command in invalid:
+            with self.subTest(command=command), self.assertRaises(lkm.LkmError):
+                lkm.validate_kpm_command(command, self.version)
+
+    def test_bakasu_proof_diagnostic_identifies_the_failed_predicate_without_command_contents(self):
+        self.bakasu_source()
+        command = self.kpm_command.replace('-DCONFIG_KPM=1', '-DCONFIG_KPM=0') + ' -DPRIVATE=private-fixture-secret'
+        with self.assertRaisesRegex(lkm.LkmError, 'conflicting or disabled macro: CONFIG_KPM') as context:
+            lkm.validate_kpm_command(command, self.version)
+        self.assertNotIn('private-fixture-secret', str(context.exception))
+
     def test_bakasu_version_formula_drift_and_cross_manager_package_are_refused(self):
         self.bakasu_source()
         path = self.source / 'kernel/Kbuild'

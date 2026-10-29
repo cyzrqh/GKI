@@ -168,6 +168,8 @@ def validate_kpm_command(command: str, version: int) -> None:
     if (not isinstance(command, str) or not 0 < len(command.encode('utf-8')) <= MAX_KPM_COMMAND
             or any(character in command for character in ('\0', '\n', '\r'))):
         raise LkmError('BakaSU LKM KPM compiler command is missing or unsafe')
+    if type(version) is not int or not 1 <= version <= 2_100_000_000:
+        raise LkmError('BakaSU LKM KPM compiler evidence requires a pinned numeric version')
     try:
         lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|')
         lexer.whitespace_split, lexer.commenters = True, ''
@@ -177,15 +179,64 @@ def validate_kpm_command(command: str, version: int) -> None:
     # Kbuild may append an objtool command after the actual C compilation.
     end = next((index for index, token in enumerate(tokens) if token in (';', '&&', '||', '|', '&')), len(tokens))
     compile_tokens = tokens[:end]
-    definitions = [token for token in compile_tokens if token.startswith(('-DCONFIG_KPM', '-UCONFIG_KPM'))]
-    versions = [token for token in compile_tokens if token.startswith(('-DKSU_VERSION', '-UKSU_VERSION'))]
+    # Match the preprocessor identifier, not an option prefix: native BakaSU
+    # emits both KSU_VERSION and the unrelated KSU_VERSION_FULL string.
+    # Repeated identical defines are harmless; undefines or conflicting
+    # values cannot establish the pinned translation unit's configuration.
+    macros = {'CONFIG_KPM': [], 'KSU_VERSION': []}
+    options, forwarded = [], False
+    for token in compile_tokens:
+        if token == '-Xpreprocessor':
+            if forwarded:
+                raise LkmError('BakaSU LKM KPM compiler evidence has an incomplete preprocessor option')
+            forwarded = True
+            continue
+        if token.startswith('@'):
+            raise LkmError('BakaSU LKM KPM compiler evidence has an unexpanded response file')
+        if token.startswith('-Wp,'):
+            options.extend(token[4:].split(','))
+        else:
+            options.append(token)
+        forwarded = False
+    if forwarded:
+        raise LkmError('BakaSU LKM KPM compiler evidence has an incomplete preprocessor option')
+    index = 0
+    while index < len(options):
+        token = options[index]
+        index += 1
+        if token in ('-D', '-U'):
+            if index == len(options):
+                raise LkmError('BakaSU LKM KPM compiler evidence has an incomplete macro option')
+            body = options[index]
+            index += 1
+            operation = token
+        elif token.startswith(('-D', '-U')):
+            operation, body = token[:2], token[2:]
+        else:
+            continue
+        identifier = re.match(r'[A-Za-z_][A-Za-z0-9_]*', body)
+        if identifier is None or identifier[0] not in macros:
+            continue
+        name = identifier[0]
+        suffix = body[len(name):]
+        if operation == '-U':
+            raise LkmError('BakaSU LKM KPM compiler evidence undefines a required macro: ' + name)
+        value = '1' if not suffix else suffix[1:] if suffix.startswith('=') else ''
+        macros[name].append(value)
+    for name, expected in (('CONFIG_KPM', '1'), ('KSU_VERSION', str(version))):
+        values = macros[name]
+        if not values:
+            raise LkmError('BakaSU LKM KPM compiler evidence is missing the required macro: ' + name)
+        if any(value != expected for value in values):
+            raise LkmError('BakaSU LKM KPM compiler evidence has a conflicting or disabled macro: ' + name)
     outputs = [compile_tokens[index + 1] for index, token in enumerate(compile_tokens[:-1]) if token == '-o']
     sources = [token for token in compile_tokens if token == 'kpm/kpm.c' or token.endswith('/kpm/kpm.c')]
-    if (definitions != ['-DCONFIG_KPM=1'] or versions != ['-DKSU_VERSION=' + str(version)]
-            or compile_tokens.count('-c') != 1 or len(outputs) != 1
-            or not (outputs[0] == 'kpm/kpm.o' or outputs[0].endswith('/kpm/kpm.o'))
-            or len(sources) != 1):
-        raise LkmError('BakaSU LKM requires actual KPM C compilation with CONFIG_KPM=1 and its pinned version')
+    if compile_tokens.count('-c') != 1:
+        raise LkmError('BakaSU LKM KPM compiler evidence is missing one C compilation operation')
+    if len(outputs) != 1 or not (outputs[0] == 'kpm/kpm.o' or outputs[0].endswith('/kpm/kpm.o')):
+        raise LkmError('BakaSU LKM KPM compiler evidence has a different output object')
+    if len(sources) != 1:
+        raise LkmError('BakaSU LKM KPM compiler evidence is missing its native source translation unit')
 
 
 def kpm_proof_binding(proof: dict, metadata: dict) -> str:

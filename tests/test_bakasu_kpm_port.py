@@ -307,6 +307,8 @@ class BakaKpmPortTests(unittest.TestCase):
                                'file': 'kernel/core/init.c', 'command': 'clang -c kernel/core/init.c'}]).encode()
         for name in port.NATIVE_BUILD_OUTPUTS:
             data = (header if name.endswith('syscall_no.h') else database if name.endswith('.json')
+                    else (port.CFI_LINKER_PREFIX + '\t\tnative_target.cfi_jt = . + 0x0;\n'
+                          + port.CFI_LINKER_SUFFIX).encode() if name.endswith('.lds')
                     else elf(183 if name.endswith('runner.elf') else 62))
             self.write(name, data)
 
@@ -372,6 +374,85 @@ class BakaKpmPortTests(unittest.TestCase):
             with self.subTest(path=path):
                 changed = real.replace(b'/opt/ddk/kdir/android14-6.1/arch/arm64/include/asm/unistd32.h', path.encode())
                 port.native_syscall_header(changed)
+
+    def test_android12_cfi_module_rule_and_native_formatter_are_preserved(self):
+        fixtures = ROOT / 'tests/fixtures/bakasu-native-build'
+        proof = json.loads((fixtures / 'android12-cfi-provenance.json').read_bytes())
+        files = {}
+        for name, item in proof['files'].items():
+            raw = bytes.fromhex((fixtures / name).read_text('ascii'))
+            self.assertEqual(item['sha256'], port.digest(raw))
+            self.assertEqual(item['size'], len(raw))
+            files[item['path']] = raw.decode('ascii')
+        rule = files['scripts/Makefile.modfinal']
+        self.assertIn('ifdef CONFIG_CFI_CLANG', rule)
+        self.assertIn('scripts/generate_cfi_kallsyms.pl --module', rule)
+        self.assertIn('$@ > $(@:.ko=.lds)', rule)
+        script = files['scripts/generate_cfi_kallsyms.pl']
+        self.assertIn('push(@symbols, "\\t\\t$cfi_jt_symbol = . + 0x$last_branch_addr;")', script)
+        self.assertIn('if (!scalar(@symbols)) {\n\t\treturn;\n\t}', script)
+        self.assertIn('print "SECTIONS {\\n"', script)
+        self.assertIn('__patchable_function_entries : { *(__patchable_function_entries) }', script)
+
+    def test_cfi_generated_script_rejects_extra_linker_features_and_wrong_names(self):
+        script = (port.CFI_LINKER_PREFIX + '\t\tnative_target.llvm.123.cfi_jt = . + 0x10;\n'
+                  + port.CFI_LINKER_SUFFIX).encode()
+        port.native_cfi_linker_script(script)
+        port.native_cfi_linker_script(script.replace(b'\n', b'\r\n'))
+        port.native_cfi_linker_script(b'')
+        cases = [script + b'INCLUDE unreviewed.lds\n',
+                 script.replace(b' = . + 0x10;', b' = evil_symbol;'),
+                 script.replace(b'.cfi_jt = ', b' = '),
+                 script.replace(b' = . + 0x10;', b' = . + 0x10; INCLUDE unreviewed.lds;'),
+                 script.replace(b'0x10', b'0x10000000000000000'),
+                 script.replace(b'native_target.llvm.123', b'unsafe"symbol'),
+                 script.replace(b'\t\tnative_target.llvm.123.cfi_jt = . + 0x10;\n', b''),
+                 b'\0' + script, b'\n', b' \n']
+        for raw in cases:
+            with self.subTest(raw=raw[:90]), self.assertRaises(ValueError):
+                port.native_cfi_linker_script(raw)
+        self.native_build_inputs()
+        self.restore()
+        self.write('kernel/kernelsu.lds', script)
+        port.verify_bakasu_kpm_port(self.source, self.reference)
+        self.write('kernel/kernelsu.lds', b'')
+        port.verify_bakasu_kpm_port(self.source, self.reference)
+        self.write('kernel/unreviewed.lds', script)
+        with self.assertRaisesRegex(ValueError, 'Additional source changes.*kernel/unreviewed.lds'):
+            port.verify_bakasu_kpm_port(self.source, self.reference)
+
+    def test_cfi_alias_script_links_a_real_relocatable_module(self):
+        compiler = os.environ.get('BAKASU_NATIVE_CC') or shutil.which('cc')
+        if not compiler:
+            self.skipTest('Requires a native C compiler and ELF linker')
+        source = self.directory / 'cfi-input.c'
+        source.write_bytes(b'void native_target(void) {}\n'
+                           b'__attribute__((used, section("__patchable_function_entries")))\n'
+                           b'void *native_entry = (void *)native_target;\n')
+        linker = self.directory / 'kernelsu.lds'
+        command = [compiler]
+        if Path(compiler).stem.lower() == 'zig':
+            command += ['cc', '-target', 'aarch64-linux-musl']
+        obj = self.directory / 'cfi-input.o'
+        module = self.directory / 'cfi-linked.ko'
+        subprocess.run(command + ['-c', str(source), '-o', str(obj)], check=True,
+                       capture_output=True, timeout=120)
+        alias_script = (port.CFI_LINKER_PREFIX + '\t\tnative_target.cfi_jt = . + 0x0;\n'
+                        + port.CFI_LINKER_SUFFIX).encode()
+        for script in (alias_script, b''):
+            with self.subTest(empty=not bool(script)):
+                linker.write_bytes(script)
+                port.native_cfi_linker_script(script)
+                result = subprocess.run(command + ['-r', '-nostdlib', '-no-pie', str(obj), '-Wl,-T,' + str(linker),
+                                                  '-o', str(module)], capture_output=True, timeout=120)
+                self.assertEqual(0, result.returncode, result.stderr.decode('utf-8', errors='replace'))
+                data = module.read_bytes()
+                self.assertEqual(b'\x7fELF\x02\x01\x01', data[:7])
+                self.assertEqual(1, struct.unpack_from('<H', data, 16)[0])
+                if script:
+                    self.assertIn(b'native_target.cfi_jt\0', data)
+                else:
+                    self.assertNotIn(b'native_target.cfi_jt\0', data)
 
     def test_actual_native_generator_runs_for_arm64_compat_and_legacy_table(self):
         compiler = os.environ.get('BAKASU_NATIVE_CC') or shutil.which('cc')

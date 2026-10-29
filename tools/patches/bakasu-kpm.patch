@@ -783,54 +783,54 @@ index 0000000..eac95e6
 +class ControlKpmUseCase(private val repository: KpmRepository) {
 +    suspend operator fun invoke(moduleId: String, args: String) = repository.control(moduleId, args)
 +}
-diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt
-index 8608e4d..7332f92 100644
---- a/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt
-+++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/NavContainer.kt
-@@ -90,6 +90,7 @@ import org.bakasu.bakasu.ui.screen.UmountManagerScreen
- import org.bakasu.bakasu.ui.screen.about.AboutScreen
- import org.bakasu.bakasu.ui.screen.about.OpenSourceLicenseScreen
- import org.bakasu.bakasu.ui.screen.kernelFlash.KernelFlashScreen
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/component/NavigationBar.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/component/NavigationBar.kt
+index 4c1d91c..ec5ae90 100644
+--- a/manager/app/src/main/java/org/bakasu/bakasu/ui/component/NavigationBar.kt
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/component/NavigationBar.kt
+@@ -98,7 +98,7 @@ fun NavigationBar(
+                     FloatingBottomBarItem(
+                         selected = index == pagerState.targetPage,
+                         onClick = { activateTab(index) },
+-                        modifier = Modifier.defaultMinSize(minWidth = 76.dp),
++                        modifier = Modifier.defaultMinSize(minWidth = if (destinations.size > 4) 56.dp else 76.dp),
+                     ) {
+                         val contentColor = LocalContentColor.current
+                         BadgedBox(
+diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/BottomBarDestination.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/BottomBarDestination.kt
+index 6e3f11a..22d8b7c 100644
+--- a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/BottomBarDestination.kt
++++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/BottomBarDestination.kt
+@@ -5,11 +5,13 @@ import androidx.compose.material.icons.Icons
+ import androidx.compose.material.icons.twotone.AdminPanelSettings
+ import androidx.compose.material.icons.twotone.Extension
+ import androidx.compose.material.icons.twotone.Home
++import androidx.compose.material.icons.twotone.Memory
+ import androidx.compose.material.icons.twotone.Settings
+ import androidx.compose.runtime.Composable
+ import androidx.compose.ui.graphics.vector.ImageVector
+ import androidx.compose.ui.unit.Dp
+ import org.bakasu.bakasu.R
 +import org.bakasu.bakasu.ui.screen.kpm.KpmScreen
- import org.bakasu.bakasu.ui.screen.main.MainScreen
- import org.bakasu.bakasu.ui.screen.moduleRepo.AddRepositoryScreen
- import org.bakasu.bakasu.ui.screen.moduleRepo.ModuleRepoScreen
-@@ -566,6 +567,17 @@ fun NavContainer(
-                     SuSFSConfigScreen()
-                 }
-             }
-+            entry<Route.Kpm>(swipeDismiss = swipeBackDirection) {
-+                ManagerNavEntry(
-+                    interceptPredictiveBack = interceptPredictiveBack,
-+                    onBack = onBack,
-+                    themeConfig = themeConfig,
-+                    backgroundRenderState = backgroundRenderState,
-+                    useBlur = useBlur,
-+                ) {
-+                    KpmScreen()
-+                }
-+            }
-             entry<Route.UmountManager>(swipeDismiss = swipeBackDirection) {
-                 ManagerNavEntry(
-                     interceptPredictiveBack = interceptPredictiveBack,
-diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt
-index 7493628..72a4282 100644
---- a/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt
-+++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/navigation/Routes.kt
-@@ -163,6 +163,10 @@ sealed interface Route :
-     @Serializable
-     data object UmountManager : Route
- 
-+    @Parcelize
-+    @Serializable
-+    data object Kpm : Route
-+
-     @Parcelize
-     @Serializable
-     data object DynamicManager : Route
+ import org.bakasu.bakasu.ui.screen.main.HomePage
+ import org.bakasu.bakasu.ui.screen.main.ModulePage
+ import org.bakasu.bakasu.ui.screen.main.SettingsPage
+@@ -29,6 +31,13 @@ enum class BottomBarDestination(
+         Icons.TwoTone.Home,
+         false,
+     ),
++    Kpm(
++        { bottomPadding -> KpmScreen(bottomPadding) },
++        R.string.kpm_tab,
++        Icons.TwoTone.Memory,
++        Icons.TwoTone.Memory,
++        false,
++    ),
+     SuperUser(
+         { bottomPadding -> SuperUserPage(bottomPadding) },
+         R.string.superuser,
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt
 new file mode 100644
-index 0000000..9193e51
+index 0000000..1925159
 --- /dev/null
 +++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt
 @@ -0,0 +1,270 @@
@@ -874,6 +874,7 @@ index 0000000..9193e51
 +import androidx.compose.ui.graphics.Color
 +import androidx.compose.ui.platform.LocalContext
 +import androidx.compose.ui.res.stringResource
++import androidx.compose.ui.unit.Dp
 +import androidx.compose.ui.unit.dp
 +import androidx.lifecycle.compose.collectAsStateWithLifecycle
 +import kotlinx.coroutines.launch
@@ -882,11 +883,9 @@ index 0000000..9193e51
 +import org.bakasu.bakasu.ui.component.SwipeableSnackbarHost
 +import org.bakasu.bakasu.ui.component.rememberConfirmDialog
 +import org.bakasu.bakasu.ui.component.rememberCustomDialog
-+import org.bakasu.bakasu.ui.component.settings.AppBackButton
 +import org.bakasu.bakasu.ui.component.settings.SegmentedColumn
 +import org.bakasu.bakasu.ui.component.settings.SettingsBaseWidget
 +import org.bakasu.bakasu.ui.component.settings.lazySegmentColumn
-+import org.bakasu.bakasu.ui.navigation.LocalNavigator
 +import org.bakasu.bakasu.ui.theme.blurSource
 +import org.bakasu.bakasu.ui.util.ActivityResumeEffect
 +import org.bakasu.bakasu.ui.util.LocalSnackbarHost
@@ -897,11 +896,10 @@ index 0000000..9193e51
 +
 +@OptIn(ExperimentalMaterial3Api::class, ExperimentalMaterial3ExpressiveApi::class)
 +@Composable
-+fun KpmScreen() {
++fun KpmScreen(bottomPadding: Dp) {
 +    val viewModel = koinViewModel<KpmViewModel>()
 +    val state by viewModel.state.collectAsStateWithLifecycle()
 +    val context = LocalContext.current
-+    val navigator = LocalNavigator.current
 +    val snackbar = LocalSnackbarHost.current
 +    val scope = rememberCoroutineScope()
 +    val confirmDialog = rememberConfirmDialog()
@@ -1024,12 +1022,11 @@ index 0000000..9193e51
 +    }
 +
 +    Scaffold(
-+        contentWindowInsets = adaptiveScaffoldWindowInsets(),
++        contentWindowInsets = adaptiveScaffoldWindowInsets(includeBottom = false),
 +        containerColor = Color.Transparent,
 +        topBar = {
 +            LargeFlexibleTopAppBar(
 +                title = { Text(stringResource(R.string.kpm_title)) },
-+                navigationIcon = { AppBackButton(onClick = { navigator.pop() }) },
 +                actions = {
 +                    IconButton(enabled = !state.busy, onClick = viewModel::refresh) {
 +                        Icon(Icons.TwoTone.Refresh, contentDescription = stringResource(R.string.kpm_refresh))
@@ -1040,12 +1037,15 @@ index 0000000..9193e51
 +        snackbarHost = { SwipeableSnackbarHost(hostState = snackbar) },
 +        floatingActionButton = {
 +            if (state.available) {
-+                FloatingActionButton(onClick = {
-+                    if (!state.busy && !pickingFile) {
-+                        pickingFile = true
-+                        picker.launch("*/*")
-+                    }
-+                }) {
++                FloatingActionButton(
++                    modifier = Modifier.padding(bottom = bottomPadding + 5.dp),
++                    onClick = {
++                        if (!state.busy && !pickingFile) {
++                            pickingFile = true
++                            picker.launch("*/*")
++                        }
++                    },
++                ) {
 +                    Icon(Icons.TwoTone.Add, contentDescription = stringResource(R.string.kpm_load))
 +                }
 +            }
@@ -1055,7 +1055,7 @@ index 0000000..9193e51
 +            modifier = Modifier.fillMaxSize().blurSource(),
 +            contentPadding = PaddingValues(
 +                top = padding.calculateTopPadding() + 8.dp,
-+                bottom = padding.calculateBottomPadding() + 88.dp,
++                bottom = padding.calculateBottomPadding() + bottomPadding + 88.dp,
 +            ),
 +        ) {
 +            item {
@@ -1104,25 +1104,6 @@ index 0000000..9193e51
 +        }
 +    }
 +}
-diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt
-index 845acac..1b3f603 100644
---- a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt
-+++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/main/SettingsPage.kt
-@@ -193,6 +193,14 @@ fun SettingsPage(bottomPadding: Dp) {
-                     SegmentedColumn(
-                         title = stringResource(R.string.configuration),
-                         content = {
-+                            item {
-+                                SettingsJumpPageWidget(
-+                                    icon = Icons.TwoTone.Settings,
-+                                    title = stringResource(R.string.kpm_title),
-+                                    description = stringResource(R.string.kpm_entry_summary),
-+                                    onClick = { navigator.push(Route.Kpm) },
-+                                )
-+                            }
-                             item {
-                                 // 配置文件模板入口
-                                 SettingsJumpPageWidget(
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt
 new file mode 100644
 index 0000000..b28c2cf
@@ -1286,7 +1267,7 @@ index 0000000..b28c2cf
 +    }
 +}
 diff --git a/manager/app/src/main/res/values-zh-rCN/strings.xml b/manager/app/src/main/res/values-zh-rCN/strings.xml
-index 0efeaed..9f5cddf 100644
+index 0efeaed..525b913 100644
 --- a/manager/app/src/main/res/values-zh-rCN/strings.xml
 +++ b/manager/app/src/main/res/values-zh-rCN/strings.xml
 @@ -671,4 +671,31 @@
@@ -1295,8 +1276,8 @@ index 0efeaed..9f5cddf 100644
      <string name="superuser_packages_load_failed">从 RootService 加载应用列表失败，请重试。</string>
 +
 +    <!-- Manual KPM management; capability is probed from the paired runtime. -->
++    <string name="kpm_tab">KPM</string>
 +    <string name="kpm_title">KPM 管理</string>
-+    <string name="kpm_entry_summary">加载、查看、控制和卸载内核模块</string>
 +    <string name="kpm_version">KPM %1$s</string>
 +    <string name="kpm_manual_only">此处仅手动加载模块，重启后不会自动加载。</string>
 +    <string name="kpm_checking">正在检查配套内核与 KPM 运行状态…</string>
@@ -1322,7 +1303,7 @@ index 0efeaed..9f5cddf 100644
 +    <string name="kpm_command_failed_detail">KPM 操作失败：%1$s</string>
  </resources>
 diff --git a/manager/app/src/main/res/values/strings.xml b/manager/app/src/main/res/values/strings.xml
-index 76c96a9..c33d861 100644
+index 76c96a9..78501d8 100644
 --- a/manager/app/src/main/res/values/strings.xml
 +++ b/manager/app/src/main/res/values/strings.xml
 @@ -675,4 +675,31 @@
@@ -1331,8 +1312,8 @@ index 76c96a9..c33d861 100644
      <string name="superuser_packages_load_failed">Failed to load applications from RootService. Please retry.</string>
 +
 +    <!-- Manual KPM management; capability is probed from the paired runtime. -->
++    <string name="kpm_tab">KPM</string>
 +    <string name="kpm_title">KPM management</string>
-+    <string name="kpm_entry_summary">Load, inspect, control and unload kernel modules</string>
 +    <string name="kpm_version">KPM %1$s</string>
 +    <string name="kpm_manual_only">Modules loaded here are temporary and are not automatically loaded after reboot.</string>
 +    <string name="kpm_checking">Checking the paired kernel and KPM runtime…</string>

@@ -1,4 +1,6 @@
 import contextlib
+import copy
+import difflib
 import hashlib
 import io
 import json
@@ -10,11 +12,13 @@ import stat
 import subprocess
 import sys
 import unittest
+from unittest import mock
 import uuid
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import ensure_bakasu_symbol_lookup as lookup
+import restore_bakasu_kpm as port
 
 FIXTURE = ROOT / 'tests/fixtures/bakasu-symbol-lookup'
 COMPILER = shutil.which('cc') or shutil.which('clang') or shutil.which('gcc')
@@ -66,6 +70,154 @@ class BakaSUSymbolLookupTests(unittest.TestCase):
         text = path.read_text(encoding='utf-8')
         self.assertIn(old, text)
         path.write_text(text.replace(old, new, 1), encoding='utf-8', newline='\n')
+
+    def apply_port_fixture(self):
+        """Exercise real Git replay/receipts with a small locked caller port.
+
+        The complete production 26-file port is separately tested against
+        official Git sources. This fixture isolates the caller guard without
+        embedding another copy of the manager and KPM implementation.
+        """
+        self.git('remote', 'add', 'origin', 'https://github.com/Baka-SU/BakaSU.git')
+        before = {name: (self.repository / name).read_bytes()
+                  for name in ('kernel/Kbuild', 'kernel/supercall/dispatch.c')}
+        after = dict(before)
+        after['kernel/Kbuild'] += b'\nifeq ($(CONFIG_KPM),y)\nkernelsu-objs += kpm/kpm.o\nendif\n'
+        after['kernel/supercall/dispatch.c'] = (b'#include "kpm/kpm.h"\n'
+            + before['kernel/supercall/dispatch.c'] + b'\nstatic const struct ksu_ioctl_cmd_map fixture_kpm_handler = {\n'
+            b'    .cmd = KSU_IOCTL_KPM,\n    .name = "KPM",\n'
+            b'    .handler = do_kpm,\n    .perm_check = manager_or_root\n};\n')
+        patch = ''.join('diff --git a/' + name + ' b/' + name + '\n'
+            + ''.join(difflib.unified_diff(before[name].decode().splitlines(keepends=True),
+                data.decode().splitlines(keepends=True), fromfile='a/' + name, tofile='b/' + name))
+            for name, data in after.items()).encode()
+        manifest = {'schema_version': 1, 'repository': port.REPOSITORY,
+            'audited_ref': port.AUDITED_REF, 'api': dict(port.API),
+            'patch': {'filename': 'bakasu-kpm.patch', 'size': len(patch), 'sha256': port.digest(patch)},
+            'files': [{'path': name, 'kind': 'update', 'before_sha256': port.digest(before[name]),
+                       'after_sha256': port.digest(data), 'after_size': len(data)} for name, data in after.items()]}
+        lock_root = self.root / 'port-lock'
+        (lock_root / 'config').mkdir(parents=True)
+        (lock_root / 'tools/patches').mkdir(parents=True)
+        (lock_root / 'config/bakasu-kpm-port.json').write_text(json.dumps(manifest), encoding='utf-8')
+        (lock_root / 'tools/patches/bakasu-kpm.patch').write_bytes(patch)
+        override = mock.patch.object(port, 'ROOT', lock_root)
+        override.start()
+        self.addCleanup(override.stop)
+        receipt = port.restore_bakasu_kpm(self.repository, self.reference)
+        return before, after, receipt
+
+    def test_exact_reviewed_kpm_caller_is_accepted_without_changing_sources(self):
+        self.apply_port_fixture()
+        before = self.state()
+        self.assertTrue(lookup.validate_native_symbol_lookup(self.root, self.reference))
+        self.assertTrue(lookup.validate_native_symbol_lookup(self.repository, self.reference, Path('kernel')))
+        self.assertEqual(before, self.state())
+
+    def test_port_caller_accepts_later_susfs_and_manager_signature_configuration(self):
+        self.apply_port_fixture()
+        # GKI and Oplus run this guard after their different downstream
+        # integration stages, when a complete port-only tree check is invalid.
+        build = self.ksu / 'Kbuild'
+        build.write_text(build.read_text() + '\nKSU_MANAGER_PACKAGE := org.bakasu.bakasu\n'
+                         'KSU_EXPECTED_SIZE := 0x123\nKSU_VERSION := 35252\n', encoding='utf-8')
+        (self.ksu / 'Kconfig').write_text('config KSU_SUSFS\n    bool "SUSFS"\n    default y\n', encoding='utf-8')
+        before = self.state()
+        self.assertTrue(lookup.validate_native_symbol_lookup(self.root, self.reference))
+        self.assertEqual(before, self.state())
+
+    def test_reviewed_port_caller_cannot_be_tampered_or_rolled_back(self):
+        original, after, _receipt = self.apply_port_fixture()
+        path = self.ksu / 'supercall/dispatch.c'
+        for data in (after['kernel/supercall/dispatch.c'] + b'/* unreviewed extra change */\n',
+                     original['kernel/supercall/dispatch.c'],
+                     after['kernel/supercall/dispatch.c'].replace(b'.handler = do_kpm', b'.handler = NULL'),
+                     after['kernel/supercall/dispatch.c'].replace(lookup.SYMBOL.encode(), b'unreviewed_lookup')):
+            with self.subTest(digest=port.digest(data)):
+                path.write_bytes(data)
+                before = self.state()
+                with self.assertRaisesRegex(ValueError, 'exact audited KPM port'):
+                    lookup.validate_native_symbol_lookup(self.root, self.reference)
+                self.assertEqual(before, self.state())
+
+    def test_modified_dispatch_requires_an_authentic_port_receipt(self):
+        self.apply_port_fixture()
+        receipt = self.repository / port.RECEIPT
+        receipt.unlink()
+        before = self.state()
+        with self.assertRaisesRegex(ValueError, 'without an audited KPM port receipt'):
+            lookup.validate_native_symbol_lookup(self.root, self.reference)
+        self.assertEqual(before, self.state())
+
+    def test_port_receipt_binds_all_files_source_tree_patch_and_strict_types(self):
+        _before, _after, original = self.apply_port_fixture()
+        receipt = self.repository / port.RECEIPT
+        variants = []
+        for field, value in (('source_ref', 'f' * 40), ('source_tree', 'e' * 40), ('schema_version', True)):
+            changed = copy.deepcopy(original)
+            changed[field] = value
+            variants.append(changed)
+        changed = copy.deepcopy(original)
+        changed['files']['kernel/Kbuild']['after_sha256'] = 'a' * 64
+        variants.append(changed)
+        changed = copy.deepcopy(original)
+        changed['patch']['sha256'] = 'b' * 64
+        variants.append(changed)
+        for value in variants:
+            with self.subTest(receipt=value):
+                receipt.write_text(json.dumps(value), encoding='utf-8')
+                before = self.state()
+                with self.assertRaisesRegex(ValueError, 'receipt differs'):
+                    lookup.validate_native_symbol_lookup(self.root, self.reference)
+                self.assertEqual(before, self.state())
+
+    def test_malformed_and_nonregular_port_receipts_are_rejected(self):
+        self.apply_port_fixture()
+        receipt = self.repository / port.RECEIPT
+        for raw in (b'[]', b'{"schema_version":1,"schema_version":1}', b'{"schema_version":NaN}'):
+            with self.subTest(raw=raw):
+                receipt.write_bytes(raw)
+                with self.assertRaises(ValueError):
+                    lookup.validate_native_symbol_lookup(self.root, self.reference)
+        receipt.unlink()
+        receipt.mkdir()
+        with self.assertRaisesRegex(ValueError, 'bounded regular'):
+            lookup.validate_native_symbol_lookup(self.root, self.reference)
+
+    def test_port_receipt_symlink_is_rejected(self):
+        self.apply_port_fixture()
+        receipt = self.repository / port.RECEIPT
+        target = self.root / 'receipt-copy.json'
+        receipt.replace(target)
+        try:
+            receipt.symlink_to(target)
+        except OSError:
+            self.skipTest('File symlinks are not available')
+        with self.assertRaisesRegex(ValueError, 'symlink or junction'):
+            lookup.validate_native_symbol_lookup(self.root, self.reference)
+
+    def test_audited_caller_never_allows_native_resolver_or_link_rule_changes(self):
+        self.apply_port_fixture()
+        for relative in ('infra/symbol_resolver.c', 'infra/symbol_resolver.h', 'Kbuild'):
+            path = self.ksu / relative
+            original = path.read_bytes()
+            modified = (original.replace(b'kernelsu-objs += infra/symbol_resolver.o', b'# removed resolver object')
+                        if relative == 'Kbuild' else original + b'/* unreviewed native change */\n')
+            path.write_bytes(modified)
+            with self.subTest(relative=relative), self.assertRaises(ValueError):
+                lookup.validate_native_symbol_lookup(self.root, self.reference)
+            path.write_bytes(original)
+
+    def test_audited_caller_requires_official_origin_and_fixed_patch_bytes(self):
+        self.apply_port_fixture()
+        self.git('remote', 'set-url', 'origin', 'https://github.com/example/unreviewed.git')
+        with self.assertRaisesRegex(ValueError, 'official BakaSU repository'):
+            lookup.validate_native_symbol_lookup(self.root, self.reference)
+        self.git('remote', 'set-url', 'origin', 'https://github.com/Baka-SU/BakaSU.git')
+        patch = port.ROOT / 'tools/patches/bakasu-kpm.patch'
+        patch.write_bytes(patch.read_bytes() + b'\n')
+        with self.assertRaisesRegex(ValueError, 'fixed size/SHA256'):
+            lookup.validate_native_symbol_lookup(self.root, self.reference)
 
     def test_exact_official_fixture_and_read_only_validation(self):
         provenance = json.loads((FIXTURE / 'provenance.json').read_text())

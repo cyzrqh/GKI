@@ -779,6 +779,12 @@ fi
 python3 tools/snapshot_ksu_source.py --source "$GITHUB_WORKSPACE/ksu-snapshot-source" \\
   --output "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" --root "$GITHUB_WORKSPACE" \\
   --susfs "$ENABLE_SUSFS" --tier "$KSU_TIER" "${snapshot_args[@]}"
+if [ "$KSU_VARIANT" = BakaSU ]; then
+  python3 tools/checkout_ksu_snapshot.py --input "$GITHUB_WORKSPACE/ksu-source-bundle" \\
+    --output "$RUNNER_TEMP/bakasu-symbol-preflight" --expected-ref "$KSU_REF" --variant BakaSU
+  python3 tools/ensure_bakasu_symbol_lookup.py --kernel-root "$RUNNER_TEMP/bakasu-symbol-preflight" \\
+    --ksu-dir kernel --expected-ref "$KSU_REF"
+fi
 python3 - <<'PY'
 import os,sys
 sys.path.insert(0,'tools')

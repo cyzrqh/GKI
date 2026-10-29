@@ -4,12 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
 
+import restore_bakasu_kpm as kpm_port
 from validate_susfs_hooks import strip_comments_and_literals
 
 
@@ -97,12 +99,41 @@ def _git(directory: Path, *arguments: str) -> bytes:
     return result.stdout
 
 
+def _validate_dispatch(repository: Path, expected_ref: str, path: Path, original: bytes) -> None:
+    """Accept the native caller or the exact, source-bound reviewed KPM caller.
+
+    Later SUSFS and manager-signature integration may legitimately change
+    Kbuild/Kconfig, so replay the fixed port against immutable Git objects;
+    don't revalidate every already-integrated working-tree file here. The
+    receipt still binds the complete port, while this guard checks its caller.
+    """
+    receipt_path = repository / kpm_port.RECEIPT
+    actual = path.read_bytes()
+    if not receipt_path.exists() and not kpm_port.is_link(receipt_path):
+        if actual == original:
+            return
+        raise ValueError("Compiled BakaSU supercall/dispatch.c differs from the selected official commit "
+                         "without an audited KPM port receipt; preserve the native source")
+    source, tree = kpm_port.checked_source(repository, expected_ref)
+    manifest, patch = kpm_port.load_port_manifest()
+    before, after = kpm_port.expected_port(source, expected_ref, manifest, patch)
+    receipt = kpm_port.strict_json(kpm_port.regular(kpm_port.safe_path(source, kpm_port.RECEIPT), 262144))
+    expected_receipt = kpm_port.receipt_for(expected_ref, tree, manifest, before, after)
+    if json.dumps(receipt, sort_keys=True) != json.dumps(expected_receipt, sort_keys=True):
+        raise ValueError("BakaSU KPM receipt differs from the actual frozen source and port")
+    relative = path.relative_to(repository).as_posix()
+    if (relative != 'kernel/supercall/dispatch.c' or before.get(relative) != original
+            or relative not in after or actual != after[relative]):
+        raise ValueError("Compiled BakaSU supercall/dispatch.c differs from the exact audited KPM port")
+
+
 def validate_native_symbol_lookup(kernel_root: Path, expected_ref: str, ksu_dir: Path | None = None) -> bool:
     """Check the native provider/caller/link contract without writing sources.
 
     The selected official commit is the algorithm's source of truth. Compare
-    the actual compiled files with those immutable Git blobs rather than
+    the actual compiled resolver with those immutable Git blobs rather than
     constraining future official function signatures or implementation details.
+    The dispatch caller may also contain the exact reviewed KPM port.
     """
     if not isinstance(expected_ref, str) or not re.fullmatch(r'[0-9a-fA-F]{40}', expected_ref):
         raise ValueError("Expected BakaSU ref must be a full immutable commit SHA")
@@ -126,7 +157,9 @@ def validate_native_symbol_lookup(kernel_root: Path, expected_ref: str, ksu_dir:
         _read(path)
         blob = _git(repository, 'show', f'{expected_ref}:{path.relative_to(repository).as_posix()}')
         originals[relative] = blob.decode('utf-8')
-        if relative != 'Kbuild' and path.read_bytes() != blob:
+        if relative == 'supercall/dispatch.c':
+            _validate_dispatch(repository, expected_ref, path, blob)
+        elif relative != 'Kbuild' and path.read_bytes() != blob:
             raise ValueError(f"Compiled BakaSU {relative} differs from the selected official commit; preserve the native source")
     build = _read(ksu / 'Kbuild')
     original_build = originals['Kbuild']
@@ -150,7 +183,7 @@ def main(argv: list[str] | None = None) -> int:
     except (OSError, UnicodeError, ValueError) as error:
         print(f"::error::Native BakaSU symbol lookup validation failed: {error}", file=sys.stderr)
         return 1
-    print("Native BakaSU symbol lookup contract passed; official source was preserved"
+    print("Native BakaSU symbol lookup contract passed; official resolver was preserved"
           + (" (including batch lookup)." if batch else " (legacy native API)."))
     return 0
 

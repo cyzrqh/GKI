@@ -4,6 +4,7 @@ import itertools
 import json
 import os
 import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -527,6 +528,79 @@ class WorkflowTests(unittest.TestCase):
                 self.assertIn('integrate_sukisu.py', body)
                 for unstable in ('git clone', 'git pull', 'curl ', 'setup.sh'):
                     self.assertNotIn(unstable, body)
+
+    def test_frozen_bakasu_symbol_contract_blocks_all_fanout_before_source_publication(self):
+        from oplus_workflow import create_workflow as create_oplus
+        for document in (self.workflow, create_oplus(ROOT, self.workflow)):
+            with self.subTest(workflow=document['name']):
+                prepare = document['jobs']['prepare-matrix']
+                steps = prepare['steps']
+                snapshot = next(step for step in steps if step.get('id') == 'source-snapshot')
+                script = snapshot['run']
+                freeze = script.index('python3 tools/snapshot_ksu_source.py ')
+                restore = script.index('python3 tools/checkout_ksu_snapshot.py ')
+                guard = script.index('python3 tools/ensure_bakasu_symbol_lookup.py ')
+                outputs = script.index('python3 - <<\'PY\'')
+                self.assertLess(freeze, restore)
+                self.assertLess(restore, guard)
+                self.assertLess(guard, outputs)
+                self.assertIn('if [ "$KSU_VARIANT" = BakaSU ]; then\n', script[freeze:restore])
+                self.assertIn('--input "$GITHUB_WORKSPACE/ksu-source-bundle"', script[restore:guard])
+                self.assertIn('--output "$RUNNER_TEMP/bakasu-symbol-preflight"', script[restore:guard])
+                self.assertIn('--expected-ref "$KSU_REF" --variant BakaSU', script[restore:guard])
+                self.assertIn('--kernel-root "$RUNNER_TEMP/bakasu-symbol-preflight"', script[guard:outputs])
+                self.assertIn('--ksu-dir kernel --expected-ref "$KSU_REF"', script[guard:outputs])
+                self.assertIn('\nfi\n', script[guard:outputs])
+                self.assertTrue(script.startswith('set -euo pipefail\n'))
+                for forbidden in ('continue-on-error', '|| true', 'git clone', 'git fetch', 'git pull', 'curl ', 'wget '):
+                    self.assertNotIn(forbidden, script[restore:outputs])
+                self.assertNotIn('continue-on-error', snapshot)
+                identity = next(step for step in steps if step.get('id') == 'source-identity')
+                cache = next(step for step in steps if step.get('uses') == 'actions/cache/save@v5')
+                self.assertLess(steps.index(snapshot), steps.index(identity))
+                self.assertLess(steps.index(identity), steps.index(cache))
+                for name, job in document['jobs'].items():
+                    if name.startswith('build-'):
+                        self.assertIn('prepare-matrix', job['needs'])
+
+    def test_actual_prepare_script_stops_on_freeze_restore_or_symbol_failure_and_skips_suki(self):
+        from oplus_workflow import create_workflow as create_oplus
+        shell = shutil.which('bash') or shutil.which('sh')
+        if not shell and (git := shutil.which('git')):
+            candidate = Path(git).parent.parent / 'usr/bin/sh.exe'
+            shell = str(candidate) if candidate.is_file() else None
+        if not shell:
+            self.skipTest('Bash is required for inert source preflight sequencing')
+        commands = ['tools/snapshot_ksu_source.py', 'tools/checkout_ksu_snapshot.py',
+                    'tools/ensure_bakasu_symbol_lookup.py']
+        stub = '''python3() {
+  if [ "$1" = - ]; then
+    while IFS= read -r line; do :; done
+    printf 'publish-source-cache-key\\n'
+  else
+    printf '%s\\n' "$1"
+  fi
+  if [ "$1" = "$FAIL_COMMAND" ]; then return 91; fi
+  return 0
+}
+'''
+        scenarios = [('BakaSU', '', commands + ['publish-source-cache-key'], 0),
+                     ('SukiSU', commands[2], commands[:1] + ['publish-source-cache-key'], 0)]
+        scenarios += [('BakaSU', command, commands[:index + 1], 91)
+                      for index, command in enumerate(commands)]
+        for document in (self.workflow, create_oplus(ROOT, self.workflow)):
+            script = next(step['run'] for step in document['jobs']['prepare-matrix']['steps']
+                          if step.get('id') == 'source-snapshot')
+            for variant, failure, expected, status in scenarios:
+                with self.subTest(workflow=document['name'], variant=variant, failure=failure):
+                    environment = {**os.environ, 'KSU_VARIANT': variant, 'KSU_REF': 'a' * 40,
+                                   'KSU_TIER': 'Latest', 'ENABLE_SUSFS': 'false',
+                                   'GITHUB_WORKSPACE': '/inert-workspace', 'RUNNER_TEMP': '/inert-temp',
+                                   'FAIL_COMMAND': failure}
+                    result = subprocess.run([shell, '-c', stub + script], env=environment,
+                                            capture_output=True, text=True, encoding='utf-8', timeout=15)
+                    self.assertEqual(status, result.returncode, result.stdout + result.stderr)
+                    self.assertEqual(expected, result.stdout.splitlines(), result.stderr)
 
     def test_public_files_are_never_uploaded_with_duplicate_release_wrappers(self):
         for job in self.workflow['jobs'].values():

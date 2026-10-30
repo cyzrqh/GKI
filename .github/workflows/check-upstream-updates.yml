@@ -94,6 +94,14 @@ jobs:
             output.write(f"has_updates={str(changed).lower()}\nheads_marker=<!-- gki-official-heads:sha256={digest} -->\n")
             output.write(f"partial_failure={str(not (official_ok and catalog_ok)).lower()}\n")
         PY
+    - name: 恢复管理器版本号的官方 Git 历史
+      uses: actions/cache/restore@v5
+      if: steps.probe.outputs.has_updates == 'true'
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/gki-manager-version-history
+        key: gki-manager-version-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: gki-manager-version-history-v1-
     - name: 检查更新分支归属和已有 PR
       id: guard
       if: steps.probe.outputs.has_updates == 'true'
@@ -122,6 +130,7 @@ jobs:
         python3 tools/official_sync_report.py --root . --base-ref HEAD \
           --report-json "$RUNNER_TEMP/official-sync-report.json" \
           --report-markdown "$RUNNER_TEMP/official-sync-report.md" \
+          --observe-manager-versions --manager-cache "$RUNNER_TEMP/gki-manager-version-history" \
           --official-result "$OFFICIAL_RESULT" --catalog-result "$CATALOG_RESULT"
         python3 - <<'PY'
         import json,os,pathlib
@@ -141,6 +150,13 @@ jobs:
         with open(os.environ['GITHUB_OUTPUT'],'a') as output:
             output.write(f'has_updates=true\nbody_path={path}\ntitle=Update official sources and GKI kernel catalog\n')
         PY
+    - name: 缓存管理器版本号的官方 Git 历史
+      uses: actions/cache/save@v5
+      if: always() && !cancelled() && steps.update.outcome == 'success'
+      continue-on-error: true
+      with:
+        path: ${{ runner.temp }}/gki-manager-version-history
+        key: gki-manager-version-history-v1-${{ github.run_id }}-${{ github.run_attempt }}
     - name: 检查更新令牌
       if: steps.update.outputs.has_updates == 'true'
       env:

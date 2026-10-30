@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Describe the exact local official-data delta before creating its update PR.
 
-This helper is offline and read-only apart from its explicitly requested report
-files. Candidate observations, verified build pins and built APKs are separate
-facts; none is presented as a successful kernel build.
+This helper is offline by default and read-only apart from its explicitly
+requested report files. An opt-in official-source observation can read native
+manager version codes. Candidate observations, verified build pins and built
+APKs remain separate facts; none is presented as a successful kernel build.
 """
 from __future__ import annotations
 
@@ -25,6 +26,12 @@ FILES = ('data/upstream-candidates.json', 'data/kernels.json', 'build-compatibil
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 MAX_FILE = 512 * 1024
 CHECK_STATES = frozenset(('success', 'failure', 'skipped', 'cancelled', 'unknown'))
+MANAGERS = (('sukisu', 'SukiSU'), ('bakasu', 'BakaSU'))
+MANAGER_CHANNELS = ('正式版', '测试版')
+LEGACY_VERSION_OBSERVATION = {
+    'status': 'not-observed',
+    'reason': 'APK versionCode requires the selected frozen source and build metadata; release labels are recorded separately.',
+}
 
 
 class ReportError(ValueError):
@@ -165,8 +172,89 @@ def compatibility_state(document: dict) -> dict:
             'profile_sha256': hashlib.sha256(canonical(document)).hexdigest()}
 
 
+def manager_candidates(snapshot: dict | None) -> dict[tuple[str, str], set[tuple[str, str]]]:
+    """Bind informational numeric versions to this report's exact source refs."""
+    result = {}
+    if snapshot is None:
+        return result
+    for key, name in MANAGERS:
+        if key not in snapshot:
+            continue
+        item = snapshot[key]
+        release = item.get('release')
+        result[(name, '正式版')] = {(release['tag'], release['commit'])} if release else set()
+        latest = {(item['branch'], item['head'])}
+        if key == 'sukisu' and item.get('development'):
+            development = item['development']
+            latest.add((development['branch'], development['head']))
+        result[(name, '测试版')] = latest
+    return result
+
+
+def unobserved_manager_versions(before: dict | None, after: dict | None) -> dict:
+    result = {**LEGACY_VERSION_OBSERVATION, 'before': [], 'after': []}
+    for side, snapshot in (('before', before), ('after', after)):
+        for (name, channel), candidates in manager_candidates(snapshot).items():
+            selected = next(iter(candidates)) if len(candidates) == 1 else (None, None)
+            result[side].append({'source': name, 'channel': channel,
+                                 'ref': selected[0], 'commit': selected[1], 'version_code': None,
+                                 'status': 'unknown' if candidates else 'unavailable'})
+    return result
+
+
+def manager_versions(value: dict | None, before: dict | None, after: dict | None) -> dict:
+    if value is None:
+        return unobserved_manager_versions(before, after)
+    if (not isinstance(value, dict) or set(value) != {'status', 'before', 'after'}
+            or value['status'] not in ('observed', 'partial', 'not-observed')):
+        raise ReportError('Invalid manager version observation')
+    result = {'status': value['status']}
+    states = []
+    fields = {'source', 'channel', 'ref', 'commit', 'version_code', 'status'}
+    for side, snapshot in (('before', before), ('after', after)):
+        allowed = manager_candidates(snapshot)
+        rows = value[side]
+        if not isinstance(rows, list) or len(rows) != len(allowed):
+            raise ReportError('Manager version observations do not cover the fixed source snapshot')
+        seen, validated = set(), []
+        for row in rows:
+            if (not isinstance(row, dict) or set(row) != fields
+                    or not isinstance(row['source'], str) or not isinstance(row['channel'], str)
+                    or row['status'] not in ('observed', 'unavailable', 'unknown')):
+                raise ReportError('Invalid manager version observation row')
+            key = row['source'], row['channel']
+            if key not in allowed or key in seen:
+                raise ReportError('Manager version observation has an unknown or duplicate channel')
+            seen.add(key)
+            ref, commit, number, status = (row[field] for field in ('ref', 'commit', 'version_code', 'status'))
+            if status == 'unavailable':
+                if allowed[key] or any(item is not None for item in (ref, commit, number)):
+                    raise ReportError('An available official manager cannot be described as unavailable')
+            elif status == 'unknown' and ref is None and commit is None:
+                if number is not None or not allowed[key]:
+                    raise ReportError('An unresolved manager source cannot contain a version code')
+            else:
+                if (not isinstance(ref, str) or not isinstance(commit, str)
+                        or (ref, commit) not in allowed[key]):
+                    raise ReportError('Manager version observation differs from the fixed official source')
+                if status == 'observed':
+                    if type(number) is not int or not 1 <= number <= 2_100_000_000:
+                        raise ReportError('Invalid native manager version code')
+                elif number is not None:
+                    raise ReportError('An unverified manager version code cannot be reported')
+            states.append(status)
+            validated.append(dict(row))
+        result[side] = sorted(validated, key=lambda row: (row['source'], MANAGER_CHANNELS.index(row['channel'])))
+    expected = ('partial' if 'observed' in states and 'unknown' in states else
+                'not-observed' if 'unknown' in states else 'observed')
+    if result['status'] != expected:
+        raise ReportError('Manager version observation status is inconsistent')
+    return result
+
+
 def build_report(before_candidate, after_candidate, before_catalog, after_catalog,
-                 before_profile, after_profile, *, base_ref: str, checks: dict | None = None) -> dict:
+                 before_profile, after_profile, *, base_ref: str, checks: dict | None = None,
+                 manager_version_observations: dict | None = None) -> dict:
     if not isinstance(base_ref, str) or not SHA.fullmatch(base_ref):
         raise ReportError('Official report requires a fixed base commit')
     checks = checks or {'official': 'success', 'catalog': 'success'}
@@ -181,15 +269,19 @@ def build_report(before_candidate, after_candidate, before_catalog, after_catalo
     report = {'schema_version': 1, 'base_ref': base_ref, 'checks': checks,
               'source_changes': sources, 'source_observations': observations, 'catalog': catalog,
               'compatibility': {'changed': old_profile != new_profile, 'before': old_profile, 'after': new_profile},
-              'manager_version_codes': {'status': 'not-observed',
-                                       'reason': 'APK versionCode requires the selected frozen source and build metadata; release labels are recorded separately.'},
+              'manager_version_codes': manager_versions(manager_version_observations,
+                                                       source_snapshot(before_candidate), source_snapshot(after_candidate)),
               'build_performed': False}
     report['has_changes'] = bool(sources or any(catalog[key] for key in ('added', 'removed', 'updated'))
                                  or report['compatibility']['changed'])
     # The repository base is audit context, not an official-source change.
     # Unrelated code commits must not create duplicate update notifications.
-    report['digest'] = hashlib.sha256(canonical({key: value for key, value in report.items()
-                                                if key != 'base_ref'})).hexdigest()
+    semantic = {key: value for key, value in report.items() if key != 'base_ref'}
+    # A transient failure reading a numeric code must not send another update
+    # notice for the same official source delta. Preserve the existing digest
+    # contract, including its constant legacy unobserved-version descriptor.
+    semantic['manager_version_codes'] = LEGACY_VERSION_OBSERVATION
+    report['digest'] = hashlib.sha256(canonical(semantic)).hexdigest()
     report['summary_markdown'] = render_report(report)
     return report
 
@@ -210,12 +302,63 @@ def target_label(row: dict | None) -> str:
     return '无' if row is None else code(row['android_version'] + '-' + row['kernel'] + '-' + row['date'])
 
 
+def manager_version_label(row: dict | None) -> str:
+    if row is None:
+        return '此前未记录／本次未观测'
+    if row['status'] == 'unavailable':
+        return '官方尚未提供正式版'
+    if row['status'] == 'unknown':
+        return '未能确认版本号'
+    return code(str(row['version_code']))
+
+
+def manager_selection(row: dict | None):
+    if row is None:
+        return ('not-observed',)
+    if row['status'] == 'unavailable':
+        return ('unavailable',)
+    return (row['ref'], row['commit']) if row['ref'] is not None else None
+
+
+def render_manager_versions(observations: dict) -> list[str]:
+    old = {(row['source'], row['channel']): row for row in observations['before']}
+    new = {(row['source'], row['channel']): row for row in observations['after']}
+    changed, unresolved = [], False
+    for key in sorted(old.keys() | new.keys(), key=lambda item: (item[0], MANAGER_CHANNELS.index(item[1]))):
+        before, after = old.get(key), new.get(key)
+        if before is None and after is not None and after['status'] == 'unavailable':
+            # First learning that no formal release exists is not a release
+            # update, matching the source-delta handling of older snapshots.
+            continue
+        previous, current = manager_selection(before), manager_selection(after)
+        if previous is None or current is None:
+            # A failed latest-source comparison cannot be advertised either as
+            # a new test build or as proof that no manager update exists.
+            unresolved = True
+        elif previous != current:
+            changed.append((key, before, after))
+    lines = []
+    if changed:
+        lines.extend(['', '### 本次变化的管理器版本', '',
+                      '| 管理器 | 类型 | 同步前版本号 | 本次版本号 |', '| --- | --- | --- | --- |'])
+        for (name, channel), before, after in changed:
+            label = '测试版（最新版）' if channel == '测试版' else channel
+            lines.append(f'| {name} | {label} | {manager_version_label(before)} | {manager_version_label(after)} |')
+        lines.extend(['', '数字版本号按对应固定官方源码的原生规则读取；本次没有编译 APK，最终以该次实际 APK 元数据为准。'])
+    elif not unresolved:
+        lines.extend(['', '本次无管理器正式版或测试版的版本变化。'])
+    if unresolved:
+        lines.extend(['', '部分管理器测试版的实际源码选择未能确认，不能据此判断其版本是否变化。'])
+    return lines
+
+
 def render_report(report: dict) -> str:
     lines = ['## 本次同步的具体变化', '', '以下比较本次检查前的记录与准备提交的数据，不代表已编译或已通过真机验证。', '',
              '| 来源 | 检查结果 |', '| --- | --- |']
     for key, label in (('official', 'SukiSU / BakaSU / SUSFS'), ('catalog', 'Android GKI 目录')):
         value = report['checks'][key]
         lines.append('| ' + label + ' | ' + ('完成' if value == 'success' else '未完成（' + value + '），不能确认有无更新') + ' |')
+    lines.extend(render_manager_versions(report['manager_version_codes']))
     if report['source_changes']:
         lines.extend(['', '### 官方源码和版本标签', '', '| 来源 | 分支／版本 | 之前 | 本次 |', '| --- | --- | --- | --- |'])
         for item in report['source_changes']:
@@ -288,7 +431,9 @@ def read_worktree_document(root: Path, path: str, *, missing: bool = False):
     return parse_document(target.read_bytes())
 
 
-def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None = None) -> dict:
+def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None = None,
+                      manager_version_observations: dict | None = None,
+                      observe_manager_versions: bool = False, manager_cache: Path | None = None) -> dict:
     root = root.resolve()
     if base_ref != 'HEAD' and not SHA.fullmatch(base_ref):
         raise ReportError('Report baseline must be HEAD or a fixed full commit SHA')
@@ -297,7 +442,19 @@ def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None
         raise ReportError('Invalid fixed Git report baseline')
     before = [read_git_document(root, resolved, path, missing=path == FILES[0]) for path in FILES]
     after = [read_worktree_document(root, path, missing=path == FILES[0]) for path in FILES]
-    return build_report(before[0], after[0], before[1], after[1], before[2], after[2], base_ref=resolved, checks=checks)
+    if observe_manager_versions:
+        if manager_version_observations is not None or manager_cache is None:
+            raise ReportError('An online manager observation requires only an explicit source cache')
+        from official_manager_versions import observe_versions
+        old_snapshot, new_snapshot = source_snapshot(before[0]), source_snapshot(after[0])
+        try:
+            manager_version_observations = observe_versions(old_snapshot, new_snapshot, manager_cache)
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            # Source versions are supplementary. A lookup outage must neither
+            # fabricate a numeric code nor prevent the verified data sync.
+            print('::warning::Native manager version lookup did not complete; numeric versions remain unconfirmed')
+    return build_report(before[0], after[0], before[1], after[1], before[2], after[2], base_ref=resolved, checks=checks,
+                        manager_version_observations=manager_version_observations)
 
 
 def main(argv=None) -> int:
@@ -308,9 +465,14 @@ def main(argv=None) -> int:
     parser.add_argument('--report-markdown', type=Path, required=True)
     parser.add_argument('--official-result', choices=sorted(CHECK_STATES), default='success')
     parser.add_argument('--catalog-result', choices=sorted(CHECK_STATES), default='success')
+    parser.add_argument('--observe-manager-versions', action='store_true')
+    parser.add_argument('--manager-cache', type=Path)
     args = parser.parse_args(argv)
+    if args.observe_manager_versions != (args.manager_cache is not None):
+        parser.error('--observe-manager-versions and --manager-cache must be used together')
     try:
-        report = repository_report(args.root, args.base_ref, checks={'official': args.official_result, 'catalog': args.catalog_result})
+        report = repository_report(args.root, args.base_ref, checks={'official': args.official_result, 'catalog': args.catalog_result},
+                                   observe_manager_versions=args.observe_manager_versions, manager_cache=args.manager_cache)
         for path, content in ((args.report_json, json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + '\n'),
                               (args.report_markdown, report['summary_markdown'])):
             if path.is_symlink() or path.exists() and not path.is_file():

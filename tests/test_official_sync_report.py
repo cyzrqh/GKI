@@ -8,6 +8,7 @@ import shutil
 import stat
 import subprocess
 import sys
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 import uuid
@@ -40,6 +41,28 @@ def entry(kernel='6.1.75', date='2024-05', ref=BASE):
             'date': date, 'ref': ref, 'revision': 'r1'}
 
 
+def version_observations(before, after):
+    result = {'status': 'observed', 'before': [], 'after': []}
+    for side, document in (('before', before), ('after', after)):
+        if document is None:
+            continue
+        source = document['sources']
+        for key, name, code in (('sukisu', 'SukiSU', 41074), ('bakasu', 'BakaSU', 35252)):
+            if key not in source:
+                continue
+            item = source[key]
+            release = item['release']
+            result[side].append({'source': name, 'channel': '正式版',
+                                 'ref': release['tag'] if release else None,
+                                 'commit': release['commit'] if release else None,
+                                 'version_code': code if release else None,
+                                 'status': 'observed' if release else 'unavailable'})
+            selected = item.get('development') or {'branch': item['branch'], 'head': item['head']}
+            result[side].append({'source': name, 'channel': '测试版', 'ref': selected['branch'],
+                                 'commit': selected['head'], 'version_code': code + 1, 'status': 'observed'})
+    return result
+
+
 class OfficialSyncReportTests(unittest.TestCase):
     def setUp(self):
         self.before = record(snapshot())
@@ -49,13 +72,14 @@ class OfficialSyncReportTests(unittest.TestCase):
             'source_ref': '1' * 40, 'version': 'v2.3.0',
             'pins': {target: '2' * 40 for target in reports.TARGETS}}}
 
-    def report(self, *, old=None, new=None, old_catalog=None, new_catalog=None, old_profile=None, new_profile=None, checks=None):
+    def report(self, *, old=None, new=None, old_catalog=None, new_catalog=None, old_profile=None, new_profile=None, checks=None,
+               versions=None):
         return reports.build_report(self.before if old is None else old, self.after if new is None else new,
                                     self.catalog if old_catalog is None else old_catalog,
                                     self.catalog if new_catalog is None else new_catalog,
                                     self.profile if old_profile is None else old_profile,
                                     self.profile if new_profile is None else new_profile,
-                                    base_ref=BASE, checks=checks)
+                                    base_ref=BASE, checks=checks, manager_version_observations=versions)
 
     def refresh(self):
         self.after['acknowledged_heads'] = head_state(self.after['sources'])
@@ -137,6 +161,113 @@ class OfficialSyncReportTests(unittest.TestCase):
         self.assertEqual('v4.2.1-r2', report['source_changes'][0]['after']['version'])
         self.assertEqual('not-observed', report['manager_version_codes']['status'])
         self.assertIn('以该次实际 APK 元数据为准', report['summary_markdown'])
+
+    def test_only_changed_test_tier_shows_its_exact_numeric_version_delta(self):
+        self.after['sources']['sukisu']['development']['head'] = NEW
+        self.refresh()
+        versions = version_observations(self.before, self.after)
+        versions['before'][1]['version_code'] = 41074
+        versions['after'][1]['version_code'] = 41075
+        report = self.report(versions=versions)
+        body = report['summary_markdown']
+        section = body.split('### 本次变化的管理器版本', 1)[1].split('### 官方源码和版本标签', 1)[0]
+        self.assertIn('| SukiSU | 测试版（最新版） | `41074` | `41075` |', section)
+        self.assertNotIn('| SukiSU | 正式版', section)
+        self.assertNotIn('| BakaSU |', section)
+        self.assertIn('本次没有编译 APK', section)
+        self.assertFalse(report['build_performed'])
+
+    def test_only_changed_formal_tier_is_shown_even_when_its_numeric_code_is_equal(self):
+        self.after['sources']['sukisu']['release']['tag'] = 'v4.2.1-r2'
+        self.refresh()
+        report = self.report(versions=version_observations(self.before, self.after))
+        section = report['summary_markdown'].split('### 本次变化的管理器版本', 1)[1].split('### 官方源码和版本标签', 1)[0]
+        self.assertIn('| SukiSU | 正式版 | `41074` | `41074` |', section)
+        self.assertNotIn('| SukiSU | 测试版', section)
+        self.assertNotIn('| BakaSU |', section)
+
+    def test_default_branch_change_does_not_claim_a_test_update_when_dev_is_still_selected(self):
+        self.after['sources']['sukisu']['head'] = NEW
+        self.refresh()
+        report = self.report(versions=version_observations(self.before, self.after))
+        self.assertTrue(report['has_changes'])
+        self.assertNotIn('### 本次变化的管理器版本', report['summary_markdown'])
+        self.assertIn('本次无管理器正式版或测试版的版本变化', report['summary_markdown'])
+
+    def test_changed_selected_commit_can_report_an_unknown_code_without_guessing(self):
+        self.after['sources']['sukisu']['development']['head'] = NEW
+        self.refresh()
+        versions = version_observations(self.before, self.after)
+        versions['status'] = 'partial'
+        versions['after'][1].update(status='unknown', version_code=None)
+        report = self.report(versions=versions)
+        self.assertIn('| SukiSU | 测试版（最新版） | `41075` | 未能确认版本号 |', report['summary_markdown'])
+        self.assertNotIn('`41076`', report['summary_markdown'])
+
+    def test_unresolved_latest_selection_cannot_claim_changed_or_unchanged_test_version(self):
+        versions = version_observations(self.before, self.after)
+        versions['status'] = 'partial'
+        versions['after'][1].update(status='unknown', ref=None, commit=None, version_code=None)
+        body = self.report(versions=versions)['summary_markdown']
+        self.assertNotIn('### 本次变化的管理器版本', body)
+        self.assertNotIn('本次无管理器正式版或测试版的版本变化', body)
+        self.assertIn('实际源码选择未能确认', body)
+
+    def test_baka_new_formal_release_is_not_confused_with_existing_prerelease(self):
+        self.after['sources']['bakasu']['release'] = {'tag': 'v4.2.0', 'commit': NEW}
+        self.refresh()
+        report = self.report(versions=version_observations(self.before, self.after))
+        self.assertIn('| BakaSU | 正式版 | 官方尚未提供正式版 | `35252` |', report['summary_markdown'])
+        self.assertNotIn('| BakaSU | 测试版（最新版） |', report['summary_markdown'])
+
+    def test_informational_version_availability_never_changes_notification_identity(self):
+        self.after['sources']['sukisu']['development']['head'] = NEW
+        self.refresh()
+        baseline = self.report()
+        versions = version_observations(self.before, self.after)
+        observed = self.report(versions=versions)
+        versions['status'] = 'partial'
+        versions['after'][1].update(status='unknown', version_code=None)
+        partial = self.report(versions=versions)
+        self.assertEqual(baseline['digest'], observed['digest'])
+        self.assertEqual(observed['digest'], partial['digest'])
+        self.assertEqual(baseline['has_changes'], partial['has_changes'])
+
+    def test_unrelated_version_observation_does_not_create_a_source_update(self):
+        versions = version_observations(self.before, self.after)
+        observed = self.report(versions=versions)
+        self.assertFalse(observed['has_changes'])
+        self.assertEqual(self.report()['digest'], observed['digest'])
+        self.assertNotIn('### 本次变化的管理器版本', observed['summary_markdown'])
+
+    def test_version_observations_reject_wrong_source_channel_commit_or_number(self):
+        changes = [{'source': 'Other'}, {'channel': '预发行版'}, {'commit': NEW},
+                   {'ref': 'unrelated'}, {'version_code': True}, {'version_code': '41074'},
+                   {'version_code': 0}, {'version_code': 2_100_000_001},
+                   {'status': 'unavailable', 'ref': None, 'commit': None, 'version_code': None},
+                   {'status': 'unknown', 'version_code': 41074}]
+        for change in changes:
+            with self.subTest(change=change):
+                versions = version_observations(self.before, self.after)
+                versions['after'][0].update(change)
+                with self.assertRaises(reports.ReportError):
+                    self.report(versions=versions)
+        versions = version_observations(self.before, self.after)
+        versions['after'][1] = copy.deepcopy(versions['after'][0])
+        with self.assertRaisesRegex(reports.ReportError, 'duplicate'):
+            self.report(versions=versions)
+        versions = version_observations(self.before, self.after)
+        versions['after'].pop()
+        with self.assertRaisesRegex(reports.ReportError, 'cover'):
+            self.report(versions=versions)
+
+    def test_missing_previous_manager_observation_is_not_invented_as_a_formal_release(self):
+        del self.before['sources']['bakasu']
+        self.before['acknowledged_heads'] = head_state(self.before['sources'])
+        versions = version_observations(self.before, self.after)
+        body = self.report(versions=versions)['summary_markdown']
+        self.assertNotIn('| BakaSU | 正式版 |', body)
+        self.assertIn('| BakaSU | 测试版（最新版） | 此前未记录／本次未观测 | `35253` |', body)
 
     def test_catalog_lists_exact_additions_removals_and_changed_month_selection(self):
         old = {'schema_version': 1, 'entries': [entry(date='2024-04'), entry()]}
@@ -253,6 +384,48 @@ class OfficialSyncReportGitTests(unittest.TestCase):
         self.assertEqual(data['summary_markdown'],markdown.read_text('utf-8'))
         self.assertIn('report_digest='+data['digest'],output.read_text('utf-8'))
         self.assertEqual('false',dict(line.split('=',1) for line in output.read_text('utf-8').splitlines())['report_has_changes'])
+
+    def test_cli_opt_in_observes_only_the_fixed_before_and_after_snapshots(self):
+        self.after['sources']['sukisu']['development']['head'] = NEW
+        self.refresh()
+        self.write(reports.FILES[0], self.after)
+        versions = version_observations(self.before, self.after)
+        observer = SimpleNamespace(observe_versions=lambda old, new, cache: self.observe(old, new, cache, versions))
+        report, markdown, cache = self.root/'report.json', self.root/'report.md', self.root/'source-cache'
+        self.observed = []
+        with patch.dict(sys.modules, {'official_manager_versions': observer}), \
+                redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = reports.main(['--root', str(self.root), '--base-ref', self.base,
+                                   '--report-json', str(report), '--report-markdown', str(markdown),
+                                   '--observe-manager-versions', '--manager-cache', str(cache)])
+        self.assertEqual(0, result)
+        self.assertEqual([(self.before['sources'], self.after['sources'], cache)], self.observed)
+        data = json.loads(report.read_text(encoding='utf-8'))
+        self.assertEqual('observed', data['manager_version_codes']['status'])
+        self.assertIn('| SukiSU | 测试版（最新版） | `41075` | `41075` |', markdown.read_text(encoding='utf-8'))
+        self.assertFalse(data['build_performed'])
+
+    def observe(self, old, new, cache, versions):
+        self.observed.append((old, new, cache))
+        return versions
+
+    def test_lookup_outage_does_not_block_sync_or_leak_upstream_errors(self):
+        self.after['sources']['sukisu']['release']['tag'] = 'v4.2.1-r2'
+        self.refresh()
+        self.write(reports.FILES[0], self.after)
+        baseline = reports.repository_report(self.root, self.base)
+        def unavailable(*args):
+            raise RuntimeError('https://user:fake-secret@example.invalid/private')
+        observer = SimpleNamespace(observe_versions=unavailable)
+        with patch.dict(sys.modules, {'official_manager_versions': observer}), redirect_stdout(io.StringIO()) as output:
+            report = reports.repository_report(self.root, self.base, observe_manager_versions=True,
+                                                manager_cache=self.root/'source-cache')
+        self.assertTrue(report['has_changes'])
+        self.assertEqual(baseline['digest'], report['digest'])
+        self.assertEqual('not-observed', report['manager_version_codes']['status'])
+        self.assertIn('| SukiSU | 正式版 | 未能确认版本号 | 未能确认版本号 |', report['summary_markdown'])
+        self.assertNotIn('fake-secret', output.getvalue() + report['summary_markdown'])
+        self.assertIn('::warning::', output.getvalue())
 
     def test_missing_previous_candidate_is_legitimate_but_symlink_data_is_not(self):
         self.git('rm','--',reports.FILES[0])

@@ -4,8 +4,8 @@
   "audited_ref": "d5e9e025b8b49155f8014684d64c91742b465f65",
   "patch": {
     "filename": "bakasu-kpm.patch",
-    "size": 77025,
-    "sha256": "2e2de88cb1f00fc3f85da631986c73a5c2ed171766928398e31828f7c9b0615d"
+    "size": 99721,
+    "sha256": "e42b2ac5d77d777ab985ba2b9be92f4fd707ff4236e72acfeb301cdcfc21aa68"
   },
   "files": [
     {
@@ -75,8 +75,8 @@
       "path": "manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "638ab2e85439fba6518b80a232e10e3fb0c5a8968a3e682700195670d0aadada",
-      "after_size": 7602
+      "after_sha256": "9a3ef18db770b1ad34af110d063becf5b3fab78a3fd9172972c2643a5b8713fd",
+      "after_size": 8628
     },
     {
       "path": "manager/app/src/main/java/org/bakasu/bakasu/di/AppModules.kt",
@@ -89,15 +89,15 @@
       "path": "manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "d3f5f322f9dc4a1d7ee140999f5db861200908c0b7a12488ebd98d0c1b6d253b",
-      "after_size": 725
+      "after_sha256": "97f30c83ee0355c6801b5b963b2ba7c54028c768bdd56494987d85e8ecd3e3d7",
+      "after_size": 792
     },
     {
       "path": "manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "160575965ea999cfc61d7a4c6f079cd29e718d48646df5a1d70a8fd1f4ecf4fa",
-      "after_size": 831
+      "after_sha256": "57c7007ce895665be2c6d97541a8916a541c199f91422c6f7b61737f7a412260",
+      "after_size": 862
     },
     {
       "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/component/NavigationBar.kt",
@@ -117,29 +117,29 @@
       "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "c0e04bd2bc8ea15439218d6dca143a855d633e31d35df4f849459dd081b4581f",
-      "after_size": 12105
+      "after_sha256": "a1fa99229c0208dd14846b4019b1e6615eb391c5ab28b7650cb1fdc3b4a6078d",
+      "after_size": 13052
     },
     {
       "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "c3ee8b01514002230ef0c138e9769b07fccaed3db87dbdbed62de1bb36f41963",
-      "after_size": 6101
+      "after_sha256": "2f61bb3bb85d6a3286567caca18cb3331ac6a844305f8c7b06ecd38a5950f226",
+      "after_size": 6170
     },
     {
       "path": "manager/app/src/main/res/values-zh-rCN/strings.xml",
       "kind": "update",
       "before_sha256": "1cd558a879d9c2f0d25459a7daf7237b2f3e20ad87741a5f8ff85228ade445b7",
-      "after_sha256": "547857ab4fa93bee68151b7a7f7e6034220c7ac92dc518263e7c7310353417e7",
-      "after_size": 53992
+      "after_sha256": "c119a614f8423515f738b114b022db949cf2910623d2411dcaed0fb606ec0a28",
+      "after_size": 54577
     },
     {
       "path": "manager/app/src/main/res/values/strings.xml",
       "kind": "update",
       "before_sha256": "6e05000429612802291b1fdaebe89bdb6fbaa21bdfd4b33714caf1e84b6abff0",
-      "after_sha256": "9fd5b0e747e8da1588dded68af56d57220e2591c4588f639e23248586dacb249",
-      "after_size": 55792
+      "after_sha256": "92f9224f62419b4c07eb3d1f642e1ce6857b34bb311806181f71c57bb45ee424",
+      "after_size": 56385
     },
     {
       "path": "uapi/feature.h",
@@ -170,11 +170,25 @@
       "after_size": 30363
     },
     {
+      "path": "userspace/ksud/src/android/init_event.rs",
+      "kind": "update",
+      "before_sha256": "8cf325811d0c6cb369e8a61f1fb56542a0b0aea1879e09738cff15abeadb0378",
+      "after_sha256": "27772476e26de2c7ff5bc9ca7b26d8726eb7a84948793d5318efba9c4b93ff6f",
+      "after_size": 7654
+    },
+    {
       "path": "userspace/ksud/src/android/kpm.rs",
       "kind": "new",
       "before_sha256": null,
-      "after_sha256": "9c72f0d6a654d620efc034c7471182c99c77dcf63b87c82e9a1412ade1a5389e",
-      "after_size": 14369
+      "after_sha256": "b3709b2c37b8e9eed5865b072d5c73dcc5c5672d002ee5c58d7d121a28f7f69f",
+      "after_size": 17810
+    },
+    {
+      "path": "userspace/ksud/src/android/kpm_store.rs",
+      "kind": "new",
+      "before_sha256": null,
+      "after_sha256": "b1c85b91cfecbdf9d46762bcc229942d38318ccfd77a11781188d2e8723d8127",
+      "after_size": 14835
     },
     {
       "path": "userspace/ksud/src/android/ksucalls.rs",
@@ -187,8 +201,8 @@
       "path": "userspace/ksud/src/android/mod.rs",
       "kind": "update",
       "before_sha256": "69db3bdbe4c2501471c074950cef054cd767b8be33c9285e0a784358b78540dd",
-      "after_sha256": "2582943ff1ec96041146c4baa27324fe365a13dca2f136bb04669dcf87ab0cb6",
-      "after_size": 426
+      "after_sha256": "5a1d293ecc7e76a91aeb9937c181c6a9c2ec1c7a12b21d84309f509442fe7825",
+      "after_size": 473
     }
   ],
   "api": {

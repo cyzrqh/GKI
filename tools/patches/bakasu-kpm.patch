@@ -443,10 +443,10 @@ index 0000000..932a267
 +}
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt b/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt
 new file mode 100644
-index 0000000..4d224b0
+index 0000000..8ab6d5c
 --- /dev/null
 +++ b/manager/app/src/main/java/org/bakasu/bakasu/data/kpm/KpmRepository.kt
-@@ -0,0 +1,191 @@
+@@ -0,0 +1,220 @@
 +package org.bakasu.bakasu.data.kpm
 +
 +import android.app.Application
@@ -460,6 +460,7 @@ index 0000000..4d224b0
 +import kotlinx.coroutines.sync.withLock
 +import kotlinx.coroutines.withContext
 +import org.bakasu.bakasu.Natives
++import org.bakasu.bakasu.R
 +import org.bakasu.bakasu.data.kpm.KpmProtocol.MAX_ARGUMENT_BYTES
 +import org.bakasu.bakasu.data.kpm.KpmProtocol.shellQuote
 +import org.bakasu.bakasu.data.kpm.KpmProtocol.validateArgs
@@ -488,20 +489,29 @@ index 0000000..4d224b0
 +
 +    suspend fun refresh(): Result<KpmSnapshot> = operation {
 +        val version = requireReady()
-+        val names = parse { JSONArray(command("list", "--json")) }
-+        val ids = (0 until names.length()).map { index ->
-+            parse { names.getString(index) }.also(::validateName)
-+        }.distinct().sorted()
-+        KpmSnapshot(version, ids.map(::readInfo))
++        val loaded = names("list").toSet()
++        val embedded = names("installed").toSet()
++        KpmSnapshot(
++            version,
++            (loaded + embedded).sorted().map { id ->
++                if (id in loaded) readInfo(id).copy(embedded = id in embedded) else savedModule(id)
++            },
++        )
 +    }
 +
 +    suspend fun info(moduleId: String): Result<KpmModule> = operation {
 +        requireReady()
 +        validateName(moduleId)
-+        readInfo(moduleId)
++        if (moduleId in names("list")) {
++            readInfo(moduleId).copy(embedded = moduleId in names("installed"))
++        } else if (moduleId in names("installed")) {
++            savedModule(moduleId)
++        } else {
++            throw KpmInputException()
++        }
 +    }
 +
-+    suspend fun load(uri: String, args: String): Result<Unit> = operation {
++    suspend fun load(uri: String, args: String, embed: Boolean = false): Result<Unit> = operation {
 +        requireReady()
 +        validateArgs(args, allowEmpty = true)
 +        val staged = File.createTempFile("kpm-", ".kpm", application.cacheDir)
@@ -527,10 +537,11 @@ index 0000000..4d224b0
 +                throw KpmInputException()
 +            }
 +            requireAuthorization()
++            val action = if (embed) "install" else "load"
 +            if (args.isEmpty()) {
-+                command("load", "--", staged.absolutePath)
++                command(action, "--", staged.absolutePath)
 +            } else {
-+                command("load", "--", staged.absolutePath, args)
++                command(action, "--", staged.absolutePath, args)
 +            }
 +        } finally {
 +            // libsu exec is blocking; this runs only after the loader has
@@ -543,7 +554,7 @@ index 0000000..4d224b0
 +    suspend fun unload(moduleId: String): Result<Unit> = operation {
 +        requireReady()
 +        validateName(moduleId)
-+        command("unload", "--", moduleId)
++        command("remove", "--", moduleId)
 +        Unit
 +    }
 +
@@ -596,6 +607,24 @@ index 0000000..4d224b0
 +            throw KpmProbeException(error)
 +        }
 +    }
++
++    private fun names(action: String): List<String> {
++        val array = parse { JSONArray(command(action, "--json")) }
++        return (0 until array.length()).map { index ->
++            parse { array.getString(index) }.also(::validateName)
++        }.distinct()
++    }
++
++    private fun savedModule(moduleId: String) = KpmModule(
++        id = moduleId,
++        name = moduleId,
++        version = "",
++        author = "",
++        description = application.getString(R.string.kpm_embedded_not_loaded),
++        rawInfo = application.getString(R.string.kpm_embedded_not_loaded),
++        embedded = true,
++        loaded = false,
++    )
 +
 +    private fun readInfo(moduleId: String): KpmModule {
 +        val json = parse { JSONObject(command("info", "--json", "--", moduleId)) }
@@ -724,10 +753,10 @@ index abadb98..4c61f5e 100644
      viewModelOf(::KernelFlashViewModel)
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt b/manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt
 new file mode 100644
-index 0000000..61e2c01
+index 0000000..2545a6b
 --- /dev/null
 +++ b/manager/app/src/main/java/org/bakasu/bakasu/domain/model/KpmModule.kt
-@@ -0,0 +1,26 @@
+@@ -0,0 +1,28 @@
 +package org.bakasu.bakasu.domain.model
 +
 +import java.io.IOException
@@ -739,6 +768,8 @@ index 0000000..61e2c01
 +    val author: String,
 +    val description: String,
 +    val rawInfo: String,
++    val embedded: Boolean = false,
++    val loaded: Boolean = true,
 +)
 +
 +data class KpmSnapshot(
@@ -756,7 +787,7 @@ index 0000000..61e2c01
 +class KpmProbeException(cause: Throwable) : IOException(cause)
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt b/manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt
 new file mode 100644
-index 0000000..eac95e6
+index 0000000..a578130
 --- /dev/null
 +++ b/manager/app/src/main/java/org/bakasu/bakasu/domain/usecase/KpmUseCases.kt
 @@ -0,0 +1,23 @@
@@ -773,7 +804,7 @@ index 0000000..eac95e6
 +}
 +
 +class LoadKpmUseCase(private val repository: KpmRepository) {
-+    suspend operator fun invoke(uri: String, args: String) = repository.load(uri, args)
++    suspend operator fun invoke(uri: String, args: String, embed: Boolean = false) = repository.load(uri, args, embed)
 +}
 +
 +class UnloadKpmUseCase(private val repository: KpmRepository) {
@@ -830,10 +861,10 @@ index 6e3f11a..22d8b7c 100644
          R.string.superuser,
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt
 new file mode 100644
-index 0000000..1925159
+index 0000000..0f571fe
 --- /dev/null
 +++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/screen/kpm/KpmScreen.kt
-@@ -0,0 +1,270 @@
+@@ -0,0 +1,288 @@
 +package org.bakasu.bakasu.ui.screen.kpm
 +
 +import androidx.activity.compose.rememberLauncherForActivityResult
@@ -916,33 +947,47 @@ index 0000000..1925159
 +                loadArgs = ""
 +                dismiss()
 +            },
-+            title = { Text(stringResource(R.string.kpm_load)) },
++            title = { Text(stringResource(R.string.kpm_install_mode)) },
 +            text = {
-+                OutlinedTextField(
-+                    value = loadArgs,
-+                    onValueChange = { loadArgs = it },
-+                    label = { Text(stringResource(R.string.kpm_args)) },
-+                    supportingText = { Text(stringResource(R.string.kpm_load_args_hint)) },
-+                    maxLines = 4,
-+                )
++                Column {
++                    Text(stringResource(R.string.kpm_install_mode_hint))
++                    OutlinedTextField(
++                        value = loadArgs,
++                        onValueChange = { loadArgs = it },
++                        label = { Text(stringResource(R.string.kpm_args)) },
++                        supportingText = { Text(stringResource(R.string.kpm_load_args_hint)) },
++                        maxLines = 4,
++                    )
++                }
 +            },
 +            confirmButton = {
 +                TextButton(
 +                    enabled = state.available && !state.busy && importUri != null,
 +                    onClick = {
-+                        importUri?.let { viewModel.load(it, loadArgs) }
++                        importUri?.let { viewModel.load(it, loadArgs, embed = true) }
 +                        importUri = null
 +                        loadArgs = ""
 +                        dismiss()
 +                    },
-+                ) { Text(stringResource(R.string.kpm_load)) }
++                ) { Text(stringResource(R.string.kpm_embed)) }
 +            },
 +            dismissButton = {
-+                TextButton(onClick = {
-+                    importUri = null
-+                    loadArgs = ""
-+                    dismiss()
-+                }) { Text(stringResource(R.string.cancel)) }
++                Column {
++                    TextButton(
++                        enabled = state.available && !state.busy && importUri != null,
++                        onClick = {
++                            importUri?.let { viewModel.load(it, loadArgs, embed = false) }
++                            importUri = null
++                            loadArgs = ""
++                            dismiss()
++                        },
++                    ) { Text(stringResource(R.string.kpm_load)) }
++                    TextButton(onClick = {
++                        importUri = null
++                        loadArgs = ""
++                        dismiss()
++                    }) { Text(stringResource(R.string.cancel)) }
++                }
 +            },
 +        )
 +    }
@@ -969,7 +1014,7 @@ index 0000000..1925159
 +                            maxLines = 4,
 +                        )
 +                        TextButton(
-+                            enabled = state.available && !state.busy && controlArgs.isNotEmpty(),
++                            enabled = state.available && !state.busy && module.loaded && controlArgs.isNotEmpty(),
 +                            onClick = { viewModel.control(module.id, controlArgs) },
 +                        ) { Text(stringResource(R.string.kpm_control)) }
 +                        TextButton(
@@ -1092,7 +1137,11 @@ index 0000000..1925159
 +            lazySegmentColumn(items = state.modules, key = { _, module -> module.id }) { _, module ->
 +                SettingsBaseWidget(
 +                    title = module.name,
-+                    description = module.description.ifBlank { module.id },
++                    description = if (module.embedded && module.loaded) {
++                        stringResource(R.string.kpm_embedded_status) + " · " + module.description.ifBlank { module.id }
++                    } else {
++                        module.description.ifBlank { module.id }
++                    },
 +                    enabled = state.available && !state.busy,
 +                    onClick = {
 +                        controlArgs = ""
@@ -1106,7 +1155,7 @@ index 0000000..1925159
 +}
 diff --git a/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt b/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt
 new file mode 100644
-index 0000000..b28c2cf
+index 0000000..02d08fd
 --- /dev/null
 +++ b/manager/app/src/main/java/org/bakasu/bakasu/ui/viewmodel/KpmViewModel.kt
 @@ -0,0 +1,156 @@
@@ -1163,9 +1212,9 @@ index 0000000..b28c2cf
 +
 +    fun refresh() = operation { reload() }
 +
-+    fun load(uri: String, args: String) = operation {
-+        loadKpm(uri, args).onSuccess {
-+            mutableEvents.emit(context.getString(R.string.kpm_loaded))
++    fun load(uri: String, args: String, embed: Boolean = false) = operation {
++        loadKpm(uri, args, embed).onSuccess {
++            mutableEvents.emit(context.getString(if (embed) R.string.kpm_embedded else R.string.kpm_loaded))
 +            reload()
 +        }.onFailure { failed(it) }
 +    }
@@ -1267,24 +1316,22 @@ index 0000000..b28c2cf
 +    }
 +}
 diff --git a/manager/app/src/main/res/values-zh-rCN/strings.xml b/manager/app/src/main/res/values-zh-rCN/strings.xml
-index 0efeaed..525b913 100644
+index 0efeaed..38b0941 100644
 --- a/manager/app/src/main/res/values-zh-rCN/strings.xml
 +++ b/manager/app/src/main/res/values-zh-rCN/strings.xml
-@@ -671,4 +671,31 @@
-     <string name="superuser_root_access_required">加载应用列表需要 Root 权限。</string>
-     <string name="superuser_service_start_failed">RootService 启动失败，请重试以加载应用列表。</string>
+@@ -673,2 +673,35 @@
      <string name="superuser_packages_load_failed">从 RootService 加载应用列表失败，请重试。</string>
 +
 +    <!-- Manual KPM management; capability is probed from the paired runtime. -->
 +    <string name="kpm_tab">KPM</string>
 +    <string name="kpm_title">KPM 管理</string>
 +    <string name="kpm_version">KPM %1$s</string>
-+    <string name="kpm_manual_only">此处仅手动加载模块，重启后不会自动加载。</string>
++    <string name="kpm_manual_only">加载仅本次开机有效；嵌入会保存模块与参数，并在重启后自动加载。</string>
 +    <string name="kpm_checking">正在检查配套内核与 KPM 运行状态…</string>
 +    <string name="kpm_refresh">刷新 KPM 状态</string>
 +    <string name="kpm_load">加载模块</string>
 +    <string name="kpm_unload">卸载模块</string>
-+    <string name="kpm_unload_confirm">要从当前运行的内核中卸载 %1$s 吗？</string>
++    <string name="kpm_unload_confirm">将卸载 %1$s，并移除已嵌入的副本，防止重启后再次加载。</string>
 +    <string name="kpm_control">发送控制命令</string>
 +    <string name="kpm_args">参数</string>
 +    <string name="kpm_load_args_hint">可留空，最多 1023 个 UTF-8 字节。</string>
@@ -1301,26 +1348,30 @@ index 0efeaed..525b913 100644
 +    <string name="kpm_import_limit">此应用最多导入 32 MiB 的 KPM 文件，所选文件超出导入限制。</string>
 +    <string name="kpm_command_failed">KPM 操作失败。</string>
 +    <string name="kpm_command_failed_detail">KPM 操作失败：%1$s</string>
++    <string name="kpm_install_mode">安装模式</string>
++    <string name="kpm_install_mode_hint">加载：临时加载，重启失效。嵌入：保存到系统，重启自动加载，不修改 boot 镜像。</string>
++    <string name="kpm_embed">嵌入</string>
++    <string name="kpm_embedded">模块已嵌入，重启后会自动加载</string>
++    <string name="kpm_embedded_status">已嵌入</string>
++    <string name="kpm_embedded_not_loaded">已嵌入，当前未加载；可卸载以取消开机加载。</string>
  </resources>
 diff --git a/manager/app/src/main/res/values/strings.xml b/manager/app/src/main/res/values/strings.xml
-index 76c96a9..78501d8 100644
+index 76c96a9..e084132 100644
 --- a/manager/app/src/main/res/values/strings.xml
 +++ b/manager/app/src/main/res/values/strings.xml
-@@ -675,4 +675,31 @@
-     <string name="superuser_root_access_required">Root access is required to load applications.</string>
-     <string name="superuser_service_start_failed">RootService failed to start. Retry to load applications.</string>
+@@ -677,2 +677,35 @@
      <string name="superuser_packages_load_failed">Failed to load applications from RootService. Please retry.</string>
 +
 +    <!-- Manual KPM management; capability is probed from the paired runtime. -->
 +    <string name="kpm_tab">KPM</string>
 +    <string name="kpm_title">KPM management</string>
 +    <string name="kpm_version">KPM %1$s</string>
-+    <string name="kpm_manual_only">Modules loaded here are temporary and are not automatically loaded after reboot.</string>
++    <string name="kpm_manual_only">Load lasts until reboot. Embed saves the module and arguments for automatic loading after reboot.</string>
 +    <string name="kpm_checking">Checking the paired kernel and KPM runtime…</string>
 +    <string name="kpm_refresh">Refresh KPM status</string>
 +    <string name="kpm_load">Load module</string>
 +    <string name="kpm_unload">Unload module</string>
-+    <string name="kpm_unload_confirm">Unload %1$s from the running kernel?</string>
++    <string name="kpm_unload_confirm">Unload %1$s and remove its embedded copy so it will not load again after reboot.</string>
 +    <string name="kpm_control">Send control command</string>
 +    <string name="kpm_args">Arguments</string>
 +    <string name="kpm_load_args_hint">Optional; up to 1023 UTF-8 bytes.</string>
@@ -1337,6 +1388,12 @@ index 76c96a9..78501d8 100644
 +    <string name="kpm_import_limit">This app imports KPM files up to 32 MiB. The selected file exceeds that import limit.</string>
 +    <string name="kpm_command_failed">The KPM operation failed.</string>
 +    <string name="kpm_command_failed_detail">KPM operation failed: %1$s</string>
++    <string name="kpm_install_mode">Installation mode</string>
++    <string name="kpm_install_mode_hint">Load: temporary until reboot. Embed: save and load on every boot; the boot image is unchanged.</string>
++    <string name="kpm_embed">Embed</string>
++    <string name="kpm_embedded">Module embedded; it will load automatically after reboot</string>
++    <string name="kpm_embedded_status">Embedded</string>
++    <string name="kpm_embedded_not_loaded">Embedded but currently not loaded. Uninstall to disable loading at boot.</string>
  </resources>
 diff --git a/uapi/feature.h b/uapi/feature.h
 index 55d0a7c..e3b296c 100644
@@ -1435,23 +1492,47 @@ index 545cbed..c178e93 100755
          Commands::Debug { command } => match command {
              Debug::SetManager { apk } => debug::set_manager(&apk),
              Debug::GetSign { apk } => {
+diff --git a/userspace/ksud/src/android/init_event.rs b/userspace/ksud/src/android/init_event.rs
+index c45a2e8..268b63f 100644
+--- a/userspace/ksud/src/android/init_event.rs
++++ b/userspace/ksud/src/android/init_event.rs
+@@ -107,6 +107,15 @@
+-
++
+     // Load susfs config entries that must capture metadata before mounts/overlays.
+     crate::android::susfs::init_event::on_post_fs_data();
++
++    // Persistent KPM installation uses the authorized native loader after
++    // /data is available. Never load these modules in native safe mode.
++    #[cfg(target_arch = "aarch64")]
++    if !is_safe_mode() {
++        if let Err(error) = crate::android::kpm::booted_load() {
++            warn!("KPM: embedded modules could not load: {error}");
++        }
++    }
+-
++
+     // execute metamodule post-fs-data script first (priority)
+     if let Err(e) = metamodule::exec_stage_script("post-fs-data", wait) {
 diff --git a/userspace/ksud/src/android/kpm.rs b/userspace/ksud/src/android/kpm.rs
 new file mode 100644
-index 0000000..8f006a0
+index 0000000..18d5ec5
 --- /dev/null
 +++ b/userspace/ksud/src/android/kpm.rs
-@@ -0,0 +1,383 @@
+@@ -0,0 +1,458 @@
 +/*
 + * Manual KPM management, adapted from the official SukiSU 96ceb4a4 userspace
 + * implementation to BakaSU's additive, manager/root-authorized ioctl 201.
-+ * No automatic loading, shell execution or persistent feature writes.
++ * Runtime loading and persistent installation use the same audited bridge.
 + */
 +use std::{collections::BTreeMap, ffi::CString, io, path::Path};
 +
 +use anyhow::{Context, Result, bail};
 +use clap::{Args, Subcommand};
 +
-+use super::{ksucalls, uapi};
++use super::{kpm_store, ksucalls, uapi};
++
++const KPM_DIR: &str = "/data/adb/kpm";
 +
 +const BRIDGE_ABI: u32 = 2;
 +const TEXT_CAPACITY: usize = 4096;
@@ -1499,6 +1580,18 @@ index 0000000..8f006a0
 +        path: std::path::PathBuf,
 +        args: Option<String>,
 +    },
++    /// Persist a module and its literal arguments for loading after reboot
++    Install {
++        path: std::path::PathBuf,
++        args: Option<String>,
++    },
++    /// List persistently installed module names, including not-yet-loaded ones
++    Installed {
++        #[arg(long)]
++        json: bool,
++    },
++    /// Remove an installed module and unload its current runtime instance
++    Remove { name: String },
 +    /// Unload a currently loaded module
 +    Unload { name: String },
 +    /// Send one uninterpreted argument string to a module
@@ -1649,6 +1742,43 @@ index 0000000..8f006a0
 +    Ok(())
 +}
 +
++fn loaded_names() -> Result<Vec<String>> {
++    module_names(&read_text(uapi::SUKISU_KPM_LIST, TEXT_CAPACITY)?)
++}
++
++#[cfg(target_os = "android")]
++fn ensure_boot_daemon() -> Result<()> {
++    // Opening a paired full-featured manager normally deploys its native
++    // daemon already. Confirm that exact executable before reporting a
++    // persistent installation; an APK-only update must survive reboot too.
++    let expected = std::fs::read("/proc/self/exe")?;
++    if std::fs::read(crate::defs::DAEMON_PATH).ok().as_deref() != Some(expected.as_slice()) {
++        super::utils::install(None, None)?;
++    }
++    anyhow::ensure!(std::fs::read(crate::defs::DAEMON_PATH)? == expected,
++                    "The boot daemon does not match this manager's KPM installer");
++    Ok(())
++}
++
++pub fn booted_load() -> Result<()> {
++    booted_load_with(Path::new(KPM_DIR), super::utils::is_safe_mode(),
++        || supported_with(version), loaded_names, |path, args| load(path, Some(args)))
++}
++
++pub(super) fn booted_load_with<P, L, F>(directory: &Path, safe_mode: bool, probe: P, names: L, mut loader: F) -> Result<()>
++where P: FnOnce() -> Result<bool>, L: FnOnce() -> Result<Vec<String>>, F: FnMut(&Path, &str) -> Result<()> {
++    // Return before even probing or touching persistent files in safe mode.
++    if safe_mode || !probe()? { return Ok(()); }
++    let loaded = names()?;
++    for module in kpm_store::modules(directory)? {
++        if loaded.contains(&module.name) { continue; }
++        if let Err(error) = loader(&module.path, &module.args) {
++            eprintln!("KPM: embedded module {} could not load: {error}", module.name);
++        }
++    }
++    Ok(())
++}
++
 +fn control(name: &str, args: &str) -> Result<i32> {
 +    let name_c = module_name(name)?;
 +    let args_c = bounded_cstring(args.as_bytes(), ARG_CAPACITY, "control arguments", false)?;
@@ -1698,6 +1828,30 @@ index 0000000..8f006a0
 +            }
 +        }
 +        KpmCommand::Load { path, args } => load(&path, args.as_deref())?,
++        KpmCommand::Install { path, args } => {
++            if !supported_with(version)? { bail!("KPM loader is unsupported"); }
++            let loaded = loaded_names()?;
++            kpm_store::install(Path::new(KPM_DIR), &path, args.as_deref().unwrap_or_default(),
++                |file, arguments, name| {
++                    #[cfg(target_os = "android")]
++                    ensure_boot_daemon()?;
++                    if loaded.iter().any(|item| item == name) { return Ok(()); }
++                    load(file, Some(arguments))
++                })?;
++        }
++        KpmCommand::Installed { json } => {
++            let names: Vec<_> = kpm_store::modules(Path::new(KPM_DIR))?.into_iter().map(|item| item.name).collect();
++            if json { println!("{}", serde_json::to_string(&names)?); }
++            else { for name in names { println!("{name}"); } }
++        }
++        KpmCommand::Remove { name } => {
++            module_name(&name)?;
++            // Disable persistence before unloading. If unload fails, reboot
++            // must still remove the module rather than silently reload it.
++            let removed = kpm_store::remove(Path::new(KPM_DIR), &name)?;
++            if loaded_names()?.contains(&name) { unload(&name)?; }
++            else if !removed { bail!("KPM module is neither loaded nor embedded"); }
++        }
 +        KpmCommand::Unload { name } => unload(&name)?,
 +        KpmCommand::Control { name, args } => println!("{}", control(&name, &args)?),
 +    }
@@ -1824,6 +1978,330 @@ index 0000000..8f006a0
 +        assert!(TestCli::try_parse_from(["kpm", "unknown"]).is_err());
 +    }
 +}
+diff --git a/userspace/ksud/src/android/kpm_store.rs b/userspace/ksud/src/android/kpm_store.rs
+new file mode 100644
+index 0000000..dbe4523
+--- /dev/null
++++ b/userspace/ksud/src/android/kpm_store.rs
+@@ -0,0 +1,318 @@
++/* Persistent KPM installation follows SukiSU's /data/adb/kpm boot-loading
++ * model. This never writes boot, Image, init_boot or a block device. */
++use std::{fs, io::Read, path::{Path, PathBuf}, time::{SystemTime, UNIX_EPOCH}};
++use anyhow::{Context, Result, bail, ensure};
++#[cfg(unix)]
++use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
++
++const MAX_MODULE: usize = 32 * 1024 * 1024;
++const MAX_ARGS: usize = 1023;
++
++pub(super) struct EmbeddedModule {
++    pub name: String,
++    pub path: PathBuf,
++    pub args: String,
++}
++
++fn secure_directory(path: &Path, create: bool) -> Result<bool> {
++    if !path.exists() && !path.is_symlink() {
++        if !create { return Ok(false); }
++        fs::create_dir(path).context("Cannot create KPM installation directory")?;
++    }
++    let metadata = fs::symlink_metadata(path)?;
++    ensure!(metadata.is_dir() && !metadata.file_type().is_symlink(), "KPM directory must be a real directory");
++    #[cfg(unix)]
++    {
++        ensure!(metadata.uid() == unsafe { libc::geteuid() }, "KPM directory has an unexpected owner");
++        fs::set_permissions(path, fs::Permissions::from_mode(0o700))?;
++    }
++    Ok(true)
++}
++
++fn read_regular(path: &Path, limit: usize, installed: bool) -> Result<Vec<u8>> {
++    let before = fs::symlink_metadata(path)?;
++    ensure!(before.is_file() && !before.file_type().is_symlink(), "KPM input must be a regular file");
++    let mut options = fs::OpenOptions::new();
++    options.read(true);
++    #[cfg(unix)]
++    options.custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
++    let file = options.open(path)?;
++    let metadata = file.metadata()?;
++    ensure!(metadata.is_file() && metadata.len() <= limit as u64, "KPM input exceeds its size limit");
++    #[cfg(unix)]
++    if installed {
++        ensure!(metadata.uid() == unsafe { libc::geteuid() } && metadata.mode() & 0o022 == 0,
++                "Installed KPM files must be owned and writable only by their owner");
++    }
++    #[cfg(not(unix))]
++    let _ = installed;
++    let mut bytes = Vec::new();
++    file.take(limit as u64 + 1).read_to_end(&mut bytes)?;
++    ensure!(bytes.len() <= limit, "KPM input exceeds its size limit");
++    Ok(bytes)
++}
++
++fn region(bytes: &[u8], start: usize, size: usize) -> Result<&[u8]> {
++    bytes.get(start..start.checked_add(size).context("Invalid KPM ELF extent")?)
++        .context("Truncated KPM ELF section")
++}
++
++fn u16_at(bytes: &[u8], offset: usize) -> Result<u16> {
++    Ok(u16::from_le_bytes(region(bytes, offset, 2)?.try_into()?))
++}
++
++fn u64_at(bytes: &[u8], offset: usize) -> Result<usize> {
++    usize::try_from(u64::from_le_bytes(region(bytes, offset, 8)?.try_into()?))
++        .context("KPM ELF extent does not fit this platform")
++}
++
++pub(super) fn module_name(bytes: &[u8]) -> Result<String> {
++    ensure!(bytes.len() >= 64 && &bytes[..7] == b"\x7fELF\x02\x01\x01"
++            && u16_at(bytes, 16)? == 1 && u16_at(bytes, 18)? == 183,
++            "KPM installation requires an ARM64 little-endian ELF64 relocatable module");
++    let table = u64_at(bytes, 40)?;
++    let count = usize::from(u16_at(bytes, 60)?);
++    let strings_index = usize::from(u16_at(bytes, 62)?);
++    ensure!(u16_at(bytes, 58)? == 64 && count > 0 && count <= 4096 && strings_index < count,
++            "Unsupported KPM ELF section table");
++    region(bytes, table, count * 64)?;
++    let strings_header = table + strings_index * 64;
++    let strings = region(bytes, u64_at(bytes, strings_header + 24)?, u64_at(bytes, strings_header + 32)?)?;
++    let mut name = None;
++    for index in 0..count {
++        let header = table + index * 64;
++        let offset = u32::from_le_bytes(region(bytes, header, 4)?.try_into()?) as usize;
++        let tail = strings.get(offset..).context("Invalid KPM ELF section name")?;
++        let end = tail.iter().position(|byte| *byte == 0).context("Unterminated KPM ELF section name")?;
++        if &tail[..end] != b".kpm.info" { continue; }
++        let info = region(bytes, u64_at(bytes, header + 24)?, u64_at(bytes, header + 32)?)?;
++        ensure!(info.last() == Some(&0), "Unterminated KPM module information");
++        for field in info.split(|byte| *byte == 0) {
++            if let Some(value) = field.strip_prefix(b"name=") {
++                let value = std::str::from_utf8(value).context("KPM name is not UTF-8")?;
++                ensure!(!value.is_empty() && value.len() < 32 && value != "." && value != ".."
++                        && !value.contains(['/', '\\']) && !value.chars().any(char::is_control),
++                        "Invalid KPM module name");
++                ensure!(name.replace(value.to_owned()).is_none(), "Duplicate KPM module names");
++            }
++        }
++    }
++    name.context("KPM module has no .kpm.info name")
++}
++
++fn directory_name(name: &str) -> String {
++    name.bytes().map(|byte| format!("{byte:02x}")).collect()
++}
++
++fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
++    use std::io::Write;
++    let mut options = fs::OpenOptions::new();
++    options.write(true).create_new(true);
++    #[cfg(unix)]
++    options.mode(0o600).custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC);
++    let mut file = options.open(path)?;
++    file.write_all(bytes)?;
++    file.sync_all()?;
++    Ok(())
++}
++
++pub(super) fn install<F>(directory: &Path, input: &Path, args: &str, mut load: F) -> Result<String>
++where F: FnMut(&Path, &str, &str) -> Result<()> {
++    ensure!(args.len() <= MAX_ARGS && !args.as_bytes().contains(&0), "Invalid KPM load arguments");
++    let bytes = read_regular(input, MAX_MODULE, false)?;
++    let name = module_name(&bytes)?;
++    secure_directory(directory, true)?;
++    let target = directory.join(directory_name(&name));
++    ensure!(!target.exists() && !target.is_symlink(), "KPM is already embedded; remove it before reinstalling");
++    let token = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
++    let pending = directory.join(format!(".install-{}-{token}", std::process::id()));
++    fs::create_dir(&pending)?;
++    let result = (|| {
++        secure_directory(&pending, false)?;
++        let module = pending.join("module.kpm");
++        write_private(&module, &bytes)?;
++        write_private(&pending.join("args.json"), &serde_json::to_vec(args)?)?;
++        load(&module, args, &name)?;
++        ensure!(!target.exists() && !target.is_symlink(), "KPM installation appeared concurrently");
++        fs::rename(&pending, &target)?;
++        Ok(name)
++    })();
++    if pending.exists() { let _ = fs::remove_dir_all(&pending); }
++    result
++}
++
++pub(super) fn modules(directory: &Path) -> Result<Vec<EmbeddedModule>> {
++    if !secure_directory(directory, false)? { return Ok(Vec::new()); }
++    let mut modules = Vec::new();
++    for entry in fs::read_dir(directory)? {
++        let entry = entry?;
++        let key = entry.file_name().to_string_lossy().into_owned();
++        if key.starts_with('.') { continue; }
++        // Existing official SukiSU's loose .kpm files are not this port's
++        // installation records, and are never deleted or implicitly enabled.
++        if key.is_empty() || key.len() >= 64 || key.len() % 2 != 0
++            || !key.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase()) { continue; }
++        let path = entry.path();
++        let inspected = (|| -> Result<EmbeddedModule> {
++            secure_directory(&path, false)?;
++            let module = path.join("module.kpm");
++            let name = module_name(&read_regular(&module, MAX_MODULE, true)?)?;
++            ensure!(directory_name(&name) == key, "KPM installation identity differs from its module");
++            let args: String = serde_json::from_slice(&read_regular(&path.join("args.json"), 8192, true)?)?;
++            ensure!(args.len() <= MAX_ARGS && !args.as_bytes().contains(&0), "Invalid stored KPM arguments");
++            Ok(EmbeddedModule { name, path: module, args })
++        })();
++        match inspected {
++            Ok(module) => modules.push(module),
++            Err(error) => eprintln!("KPM: skipping invalid embedded module: {error}"),
++        }
++    }
++    modules.sort_by(|left, right| left.name.cmp(&right.name));
++    Ok(modules)
++}
++
++pub(super) fn remove(directory: &Path, name: &str) -> Result<bool> {
++    // All caller-supplied names become hex directory names, never path syntax.
++    ensure!(!name.is_empty() && name.len() < 32, "Invalid KPM installation name");
++    if !secure_directory(directory, false)? { return Ok(false); }
++    let target = directory.join(directory_name(name));
++    if !target.exists() && !target.is_symlink() { return Ok(false); }
++    secure_directory(&target, false)?;
++    fs::remove_dir_all(target)?;
++    Ok(true)
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++
++    fn elf(name: &str) -> Vec<u8> {
++        let names = b"\0.shstrtab\0.kpm.info\0";
++        let info = format!("name={name}\0version=1\0").into_bytes();
++        let mut bytes = vec![0; 256];
++        bytes[..7].copy_from_slice(b"\x7fELF\x02\x01\x01");
++        bytes[16..18].copy_from_slice(&1u16.to_le_bytes());
++        bytes[18..20].copy_from_slice(&183u16.to_le_bytes());
++        bytes[40..48].copy_from_slice(&64u64.to_le_bytes());
++        bytes[58..60].copy_from_slice(&64u16.to_le_bytes());
++        bytes[60..62].copy_from_slice(&3u16.to_le_bytes());
++        bytes[62..64].copy_from_slice(&1u16.to_le_bytes());
++        bytes[128..132].copy_from_slice(&1u32.to_le_bytes());
++        bytes[152..160].copy_from_slice(&256u64.to_le_bytes());
++        bytes[160..168].copy_from_slice(&(names.len() as u64).to_le_bytes());
++        bytes[192..196].copy_from_slice(&11u32.to_le_bytes());
++        bytes[216..224].copy_from_slice(&(256u64 + names.len() as u64).to_le_bytes());
++        bytes[224..232].copy_from_slice(&(info.len() as u64).to_le_bytes());
++        bytes.extend_from_slice(names);
++        bytes.extend_from_slice(&info);
++        bytes
++    }
++
++    struct Temporary(PathBuf);
++    impl Drop for Temporary { fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); } }
++    fn temporary() -> Temporary {
++        let token = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
++        let path = std::env::temp_dir().join(format!("bakasu-kpm-store-{}-{token}", std::process::id()));
++        fs::create_dir(&path).unwrap();
++        Temporary(path)
++    }
++
++    #[test]
++    fn install_survives_source_removal_preserves_arguments_and_can_be_removed() {
++        let temporary = temporary();
++        let store = temporary.0.join("installed");
++        let input = temporary.0.join("literal module.kpm");
++        let bytes = elf("DitPro-KPM");
++        fs::write(&input, &bytes).unwrap();
++        let arguments = "quote ' and $(literal) 中文";
++        install(&store, &input, arguments, |path, args, name| {
++            assert_eq!(bytes, fs::read(path)?);
++            assert_eq!(arguments, args);
++            assert_eq!("DitPro-KPM", name);
++            Ok(())
++        }).unwrap();
++        fs::remove_file(input).unwrap();
++        let installed = modules(&store).unwrap();
++        assert_eq!(1, installed.len());
++        assert_eq!("DitPro-KPM", installed[0].name);
++        assert_eq!(arguments, installed[0].args);
++        assert_eq!(bytes, fs::read(&installed[0].path).unwrap());
++        let mut boots = 0;
++        super::super::kpm::booted_load_with(&store, false, || Ok(true), || Ok(Vec::new()), |path, args| {
++            assert_eq!(bytes, fs::read(path)?);
++            assert_eq!(arguments, args);
++            boots += 1;
++            Ok(())
++        }).unwrap();
++        assert_eq!(1, boots, "reboot must load saved bytes and literal arguments");
++        assert!(remove(&store, "DitPro-KPM").unwrap());
++        assert!(modules(&store).unwrap().is_empty());
++        assert!(!remove(&store, "DitPro-KPM").unwrap());
++        super::super::kpm::booted_load_with(&store, false, || Ok(true), || Ok(Vec::new()), |_, _| {
++            panic!("uninstalled modules must never load on the next boot")
++        }).unwrap();
++    }
++
++    #[test]
++    fn failed_kernel_load_leaves_no_embedded_record_and_keeps_unrelated_file() {
++        let temporary = temporary();
++        let store = temporary.0.join("installed");
++        let input = temporary.0.join("module.kpm");
++        fs::write(&input, elf("test")).unwrap();
++        fs::create_dir(&store).unwrap();
++        fs::write(store.join("keep.kpm"), b"unrelated").unwrap();
++        assert!(install(&store, &input, "", |_, _, _| bail!("real loader rejected module")).is_err());
++        assert_eq!(1, fs::read_dir(&store).unwrap().count());
++        assert_eq!(b"unrelated", &*fs::read(store.join("keep.kpm")).unwrap());
++        assert!(modules(&store).unwrap().is_empty());
++    }
++
++    #[test]
++    fn invalid_or_traversing_module_metadata_is_rejected_before_loading() {
++        for name in ["", "../outside", "a/b", "a\\b", "..", "bad\nname"] {
++            assert!(module_name(&elf(name)).is_err(), "accepted invalid name {name:?}");
++        }
++        let mut bytes = elf("test");
++        bytes[40..48].copy_from_slice(&u64::MAX.to_le_bytes());
++        assert!(module_name(&bytes).is_err());
++        assert!(module_name(b"not ELF").is_err());
++    }
++
++    #[test]
++    fn duplicate_installation_preserves_previous_module_and_arguments() {
++        let temporary = temporary();
++        let store = temporary.0.join("installed");
++        let input = temporary.0.join("module.kpm");
++        fs::write(&input, elf("test")).unwrap();
++        install(&store, &input, "first", |_, _, _| Ok(())).unwrap();
++        assert!(install(&store, &input, "second", |_, _, _| panic!("must not load twice")).is_err());
++        assert_eq!("first", modules(&store).unwrap()[0].args);
++    }
++
++    #[test]
++    fn safe_mode_and_missing_loader_never_touch_saved_modules() {
++        let missing = Path::new("/inert-no-module-access");
++        super::super::kpm::booted_load_with(missing, true, || panic!("safe mode must not probe"),
++            || panic!("safe mode must not query modules"), |_, _| panic!("safe mode must not load")).unwrap();
++        super::super::kpm::booted_load_with(missing, false, || Ok(false),
++            || panic!("unsupported kernel must not query modules"), |_, _| panic!("unsupported kernel must not load")).unwrap();
++    }
++
++    #[test]
++    fn loaded_modules_are_not_loaded_twice_and_one_error_does_not_skip_other_modules() {
++        let temporary = temporary();
++        let store = temporary.0.join("installed");
++        for name in ["alpha", "beta", "gamma"] {
++            let input = temporary.0.join(name);
++            fs::write(&input, elf(name)).unwrap();
++            install(&store, &input, name, |_, _, _| Ok(())).unwrap();
++        }
++        let mut seen = Vec::new();
++        super::super::kpm::booted_load_with(&store, false, || Ok(true), || Ok(vec!["alpha".into()]), |_, args| {
++            seen.push(args.to_owned());
++            if args == "beta" { bail!("actual module load failed"); }
++            Ok(())
++        }).unwrap();
++        assert_eq!(vec!["beta", "gamma"], seen);
++    }
++}
 diff --git a/userspace/ksud/src/android/ksucalls.rs b/userspace/ksud/src/android/ksucalls.rs
 index 8b3760e..ea93472 100644
 --- a/userspace/ksud/src/android/ksucalls.rs
@@ -1849,15 +2327,13 @@ index 8b3760e..ea93472 100644
  pub fn get_info() -> uapi::ksu_get_info_cmd {
      *INFO_CACHE.get_or_init(|| {
 diff --git a/userspace/ksud/src/android/mod.rs b/userspace/ksud/src/android/mod.rs
-index bd14904..9703233 100644
+index bd14904..c3f603e 100644
 --- a/userspace/ksud/src/android/mod.rs
 +++ b/userspace/ksud/src/android/mod.rs
-@@ -5,6 +5,8 @@ mod feature;
- mod hot_install;
- mod init_event;
+@@ -7,2 +7,6 @@
  mod ksucalls;
 +#[cfg(target_arch = "aarch64")]
 +mod kpm;
++#[cfg(target_arch = "aarch64")]
++mod kpm_store;
  mod late_load;
- mod module;
- mod preinit;

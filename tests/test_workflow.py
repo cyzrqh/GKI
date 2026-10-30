@@ -289,6 +289,21 @@ class WorkflowTests(unittest.TestCase):
         notify = next(item for item in steps if item.get('id') == 'notify')
         self.assertEqual(notify['env']['GH_TOKEN'], '${{ github.token }}')
         self.assertIn('notify_official_sync.py', notify['run'])
+        self.assertEqual(notify['env']['NOTICE_STATE'], 'pending')
+        for merged, outcome, cancelled, expected in (
+                ('true', 'success', False, False),
+                ('false', 'success', False, True),
+                ('', 'success', False, True),
+                ('', 'failure', False, False),
+                ('', 'success', True, False)):
+            expression = notify['if'].replace('always()', 'True').replace('!cancelled()', repr(not cancelled))
+            values = {'steps.update.outcome': outcome, 'steps.sync.outputs.merged': merged,
+                      'steps.pr.outputs.pull-request-number': '12', 'steps.guard.outputs.already_pending': 'false'}
+            for name, value in values.items():
+                expression = expression.replace(name, repr(value))
+            expression = expression.replace('&&', ' and ').replace('||', ' or ')
+            with self.subTest(notice_merged=merged, update_outcome=outcome, cancelled=cancelled):
+                self.assertEqual(expected, bool(eval(expression.strip(), {'__builtins__': {}}, {})))
         for event in ('schedule', 'workflow_dispatch'):
             for operation in ('', '仅检查并提醒', '同步官方更新'):
                 for pending in (False, True):

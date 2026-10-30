@@ -169,16 +169,14 @@ PY
 number="${CREATED_PR_NUMBER:-${EXISTING_PR_URL##*/}}"
 python3 tools/auto_merge_official_update.py --pull-request "$number" --base "$DEFAULT_BRANCH"
 '''},
-            {'name': '发送去重的 GitHub 邮件提醒', 'id': 'notify',
-             'if': "always() && !cancelled() && steps.update.outcome == 'success' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending == 'true')",
+            {'name': '仅发送待手动同步的更新提醒', 'id': 'notify',
+             'if': "always() && !cancelled() && steps.update.outcome == 'success' && steps.sync.outputs.merged != 'true' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending == 'true')",
              'env': {'GH_TOKEN': '${{ github.token }}',
                      'PR_REFERENCE': '${{ steps.pr.outputs.pull-request-number || steps.guard.outputs.pull_request_url }}',
-                     'NOTICE_STATE': "${{ steps.sync.outputs.merged == 'true' && 'synced' || 'pending' }}",
-                     'SYNC_COMMIT': '${{ steps.sync.outputs.merge_commit }}',
+                     'NOTICE_STATE': 'pending',
                      'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
              'run': '''python3 tools/notify_official_sync.py --report "$RUNNER_TEMP/official-sync-report.json" \\
-  --pull-request "$PR_REFERENCE" --state "$NOTICE_STATE" --base "$DEFAULT_BRANCH" \\
-  --commit "$SYNC_COMMIT"
+  --pull-request "$PR_REFERENCE" --state "$NOTICE_STATE" --base "$DEFAULT_BRANCH"
 '''},
             {'name': '记录检查结果',
              'if': 'always() && !cancelled()',

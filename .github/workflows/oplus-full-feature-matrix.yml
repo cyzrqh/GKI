@@ -1483,7 +1483,7 @@ jobs:
       AK3_REF: ${{ needs.prepare-matrix.outputs.ak3_ref }}
       PATCHES_REF: ${{ needs.prepare-matrix.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
-      CCACHE_MAXSIZE: 3G
+      CCACHE_MAXSIZE: 1536M
     steps:
     - name: 检出独立构建工具
       uses: actions/checkout@v6
@@ -1606,8 +1606,22 @@ jobs:
         python3 tools/kernel_compile_cache.py install \
           --output "$RUNNER_TEMP/gki-ccache-ecs" \
           --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
+    - name: 恢复独立仓库编译缓存（ccache）
+      id: persistent-ccache-restore
+      if: success()
+      continue-on-error: true
+      timeout-minutes: 8
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-objects
+        OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
     - name: 恢复本平台与内核的编译对象缓存
       id: oplus-ccache
+      if: steps.persistent-ccache-restore.outputs.restored != 'true'
       uses: actions/cache/restore@v5
       timeout-minutes: 2
       continue-on-error: true
@@ -1695,9 +1709,22 @@ jobs:
           cat "$report"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+    - name: 保存独立仓库编译缓存（ccache）
+      id: persistent-ccache-save
+      if: always() && !cancelled() && steps.oplus-build.outcome == 'success'
+      continue-on-error: true
+      timeout-minutes: 8
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-objects
+        OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
     - name: 保存已成功编译的平台缓存
       if: always() && !cancelled() && steps.oplus-build.outcome == 'success' && steps.oplus-ccache.outputs.cache-primary-key
-        != ''
+        != '' && steps.persistent-ccache-save.outputs.saved != 'true'
       uses: actions/cache/save@v5
       timeout-minutes: 2
       continue-on-error: true

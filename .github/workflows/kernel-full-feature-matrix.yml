@@ -1583,7 +1583,7 @@ jobs:
       CCACHE_NOHASHDIR: 'true'
       CCACHE_NOHARDLINK: 'true'
       CCACHE_COMPRESS: 'true'
-      CCACHE_MAXSIZE: 2G
+      CCACHE_MAXSIZE: 1536M
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
     steps:
     - name: 构建信息摘要
@@ -6680,9 +6680,22 @@ jobs:
           echo "BAZEL_DISK_CACHE=$cache_dir" >> "$GITHUB_ENV"
           echo 'enabled=true' >> "$GITHUB_OUTPUT"
         fi
+    - name: 恢复独立仓库编译缓存（bazel）
+      id: persistent-bazel-restore
+      if: steps.bazel-cache-config.outputs.enabled == 'true'
+      continue-on-error: true
+      timeout-minutes: 8
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version
+          }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ inputs.kernelsu_variant }}
+        OBJECT_CACHE_DIRECTORY: ${{ env.BAZEL_DISK_CACHE }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind bazel --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
     - name: 恢复 Bazel 磁盘缓存
       id: bazel-cache
-      if: steps.bazel-cache-config.outputs.enabled == 'true'
+      if: steps.bazel-cache-config.outputs.enabled == 'true' && steps.persistent-bazel-restore.outputs.restored != 'true'
       uses: actions/cache/restore@v5
       continue-on-error: true
       timeout-minutes: 3
@@ -6695,7 +6708,6 @@ jobs:
         restore-keys: |
           gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
           gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
-          gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
     - name: 选择 build.sh 编译缓存
       id: ccache-config
       run: |
@@ -6714,9 +6726,24 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/kernel_compile_cache.py" install \
           --output "$RUNNER_TEMP/gki-ccache-ecs" \
           --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
+    - name: 恢复独立仓库编译缓存（ccache）
+      id: persistent-ccache-restore
+      if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
+      continue-on-error: true
+      timeout-minutes: 8
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
+          }}-${{ matrix.os_patch_level }}-${{ inputs.kernelsu_variant }}
+        OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
     - name: 恢复 ccache 缓存
       id: ccache-restore
-      if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
+      if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true' && steps.persistent-ccache-restore.outputs.restored
+        != 'true'
       uses: actions/cache/restore@v5
       continue-on-error: true
       timeout-minutes: 3
@@ -6730,7 +6757,6 @@ jobs:
         restore-keys: |
           gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
           gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
-          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
     - name: 开始记录实际 ccache 命中
       id: ccache-measurement
       if: steps.ccache-config.outputs.enabled == 'true'
@@ -7046,6 +7072,8 @@ jobs:
       timeout-minutes: 1
       run: |
         set -euo pipefail
+        ccache --max-size "$CCACHE_MAXSIZE"
+        ccache --cleanup
         report="$RUNNER_TEMP/gki-ccache-statistics.txt"
         ccache --show-stats --verbose | tee "$report"
         {
@@ -7057,10 +7085,26 @@ jobs:
           cat "$report"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
-    - name: 保存本次 ccache 编译结果
+    - name: 保存独立仓库编译缓存（ccache）
+      id: persistent-ccache-save
       if: always() && !cancelled() && steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
         && env.CCACHE_COMPILE_STARTED == 'true' && (steps.compile-kernel.outcome == 'success' || steps.compile-kernel.outcome
         == 'failure')
+      continue-on-error: true
+      timeout-minutes: 8
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
+          }}-${{ matrix.os_patch_level }}-${{ inputs.kernelsu_variant }}
+        OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
+    - name: 保存本次 ccache 编译结果
+      if: always() && !cancelled() && steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
+        && env.CCACHE_COMPILE_STARTED == 'true' && (steps.compile-kernel.outcome == 'success' || steps.compile-kernel.outcome
+        == 'failure') && steps.persistent-ccache-save.outputs.saved != 'true'
       uses: actions/cache/save@v5
       continue-on-error: true
       timeout-minutes: 3
@@ -7076,7 +7120,7 @@ jobs:
       continue-on-error: true
       timeout-minutes: 2
       env:
-        BAZEL_CACHE_MAX_BYTES: '2147483648'
+        BAZEL_CACHE_MAX_BYTES: '1610612736'
       run: |
         set -euo pipefail
         # Stop idle Bazel writes before pruning; never cache its output tree.
@@ -7113,9 +7157,23 @@ jobs:
             output.write(f'ready={str(total > 0).lower()}\n')
         print(f'Bazel cache upload: {total / 1024**2:.1f} MiB (before trimming: {original / 1024**2:.1f} MiB)')
         PY
-    - name: 保存 Bazel 磁盘缓存
+    - name: 保存独立仓库编译缓存（bazel）
+      id: persistent-bazel-save
       if: always() && !cancelled() && steps.bazel-cache-trim.outputs.ready == 'true' && steps.bazel-cache.outputs.cache-primary-key
         != '' && steps.bazel-cache.outputs.cache-hit != 'true'
+      continue-on-error: true
+      timeout-minutes: 8
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version
+          }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ inputs.kernelsu_variant }}
+        OBJECT_CACHE_DIRECTORY: ${{ env.BAZEL_DISK_CACHE }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind bazel --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
+    - name: 保存 Bazel 磁盘缓存
+      if: always() && !cancelled() && steps.bazel-cache-trim.outputs.ready == 'true' && steps.bazel-cache.outputs.cache-primary-key
+        != '' && steps.bazel-cache.outputs.cache-hit != 'true' && steps.persistent-bazel-save.outputs.saved != 'true'
       uses: actions/cache/save@v5
       continue-on-error: true
       timeout-minutes: 3

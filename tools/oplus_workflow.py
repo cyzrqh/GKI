@@ -130,6 +130,7 @@ def prepare_job(base: dict) -> dict:
 
 
 def kernel_job() -> dict:
+    from kernel_cache_workflow import persistent_step
     prefix = ("oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-"
               "${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-"
               '${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-')
@@ -173,7 +174,10 @@ python3 tools/kernel_compile_cache.py install \\
   --output "$RUNNER_TEMP/gki-ccache-ecs" \\
   --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
 '''},
+        persistent_step('ccache', 'restore', '${{ env.CCACHE_DIR }}', prefix + 'objects',
+                        "success()"),
         {'name': '恢复本平台与内核的编译对象缓存', 'id': 'oplus-ccache',
+         'if': "steps.persistent-ccache-restore.outputs.restored != 'true'",
          'uses': 'actions/cache/restore@v5', 'timeout-minutes': 2, 'continue-on-error': True,
          'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '1'},
          'with': {'path': '${{ env.CCACHE_DIR }}',
@@ -230,8 +234,10 @@ ccache --show-stats --verbose | tee "$report"
   echo '```'
 } >> "$GITHUB_STEP_SUMMARY"
 '''},
+        persistent_step('ccache', 'save', '${{ env.CCACHE_DIR }}', prefix + 'objects',
+                        "always() && !cancelled() && steps.oplus-build.outcome == 'success'"),
         {'name': '保存已成功编译的平台缓存',
-         'if': "always() && !cancelled() && steps.oplus-build.outcome == 'success' && steps.oplus-ccache.outputs.cache-primary-key != ''",
+         'if': "always() && !cancelled() && steps.oplus-build.outcome == 'success' && steps.oplus-ccache.outputs.cache-primary-key != '' && steps.persistent-ccache-save.outputs.saved != 'true'",
          'uses': 'actions/cache/save@v5', 'timeout-minutes': 2, 'continue-on-error': True,
          'with': {'path': '${{ env.CCACHE_DIR }}', 'key': '${{ steps.oplus-ccache.outputs.cache-primary-key }}'}},
     ]
@@ -250,7 +256,7 @@ ccache --show-stats --verbose | tee "$report"
                 'SUSFS_SOURCES': '${{ needs.prepare-matrix.outputs.susfs_sources }}',
                 'AK3_REF': '${{ needs.prepare-matrix.outputs.ak3_ref }}',
                 'PATCHES_REF': '${{ needs.prepare-matrix.outputs.patches_ref }}',
-                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '3G'},
+                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '1536M'},
         'steps': steps,
     }
 

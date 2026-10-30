@@ -10,12 +10,14 @@ import generate_workflow as generator
 
 
 def condition_value(expression, *, enabled='true', local='false', started='true',
-                    outcome='success', cancelled=False):
+                    outcome='success', cancelled=False, restored='false', saved='false'):
     values = {
         'steps.ccache-config.outputs.enabled': enabled,
         'env.ABK_LOCAL_CACHE_ENABLED': local,
         'env.CCACHE_COMPILE_STARTED': started,
         'steps.compile-kernel.outcome': outcome,
+        'steps.persistent-ccache-restore.outputs.restored': restored,
+        'steps.persistent-ccache-save.outputs.saved': saved,
     }
     for name, value in values.items():
         expression = expression.replace(name, repr(value))
@@ -78,7 +80,8 @@ class KernelCacheTests(unittest.TestCase):
         self.assertNotIn('github.sha', key)
         prefixes = self.find('恢复 ccache 缓存')['with']['restore-keys'].splitlines()
         self.assertTrue(reference.startswith(render_key(prefixes[0])))
-        self.assertTrue(render_key(key, **{'inputs.sub_level': '74'}).startswith(render_key(prefixes[-1])))
+        self.assertTrue(render_key(key, **{'inputs.os_patch_level': '2022-07'}).startswith(render_key(prefixes[-1])))
+        self.assertFalse(render_key(key, **{'inputs.sub_level': '74'}).startswith(render_key(prefixes[-1])))
         # Guarded ECS cannot import stock or unbound public object caches.
         for prefix in prefixes:
             self.assertTrue(prefix.startswith('gki-ccache-ecs-v1-'))
@@ -90,6 +93,7 @@ class KernelCacheTests(unittest.TestCase):
         condition = self.find('保存本次 ccache 编译结果')['if']
         for outcome in ('success', 'failure'):
             self.assertTrue(condition_value(condition, outcome=outcome))
+        self.assertFalse(condition_value(condition, saved='true'))
         for parameters in ({'started': 'false'}, {'started': ''}, {'outcome': 'skipped'},
                            {'outcome': 'cancelled'}, {'outcome': ''}, {'enabled': 'false'},
                            {'local': 'true'}, {'cancelled': True}):
@@ -117,6 +121,7 @@ class KernelCacheTests(unittest.TestCase):
         self.assertIn('ccache --zero-stats', measurement['run'])
         restore_condition = restore['if']
         self.assertTrue(condition_value(restore_condition))
+        self.assertFalse(condition_value(restore_condition, restored='true'))
         self.assertFalse(condition_value(restore_condition, enabled='false'))
         self.assertFalse(condition_value(restore_condition, local='true'))
 

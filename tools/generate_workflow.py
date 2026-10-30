@@ -666,6 +666,8 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
     # the free runner pool; waiting inside those jobs could starve its producer.
     job['needs'] = ['prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager']
     job['permissions'] = {'contents': 'read', 'actions': 'read'}
+    from kernel_cache_workflow import wire_gki_cache
+    wire_gki_cache(job)
     job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
                        'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'}
     job['runs-on'] = job['runs-on'].replace("'ubuntu-latest'", "'ubuntu-24.04'")

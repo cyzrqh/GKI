@@ -9,7 +9,8 @@ import re
 from pathlib import Path
 
 import yaml
-from workflow_jobs import updater_workflow, release_job, cleanup_history_workflow, successful_cleanup_sweep_step
+from workflow_jobs import (updater_workflow, release_job, cleanup_history_workflow,
+                           successful_cleanup_sweep_step, reorder_release_workflow)
 from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cache_key, lkm_cache_restore_steps,
                               manager_lkm_job, source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
@@ -18,6 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
 CLEANUP_OUTPUT = Path('.github/workflows/cleanup-build-history.yml')
 UPDATE_OUTPUT = Path('.github/workflows/check-upstream-updates.yml')
+REORDER_OUTPUT = Path('.github/workflows/reorder-release-tags.yml')
 
 
 class Loader(yaml.SafeLoader):
@@ -847,6 +849,7 @@ def generate(root):
     rendered = []
     for relative, document in ((OUTPUT, workflow), (CLEANUP_OUTPUT, cleanup_history_workflow()),
                                (UPDATE_OUTPUT, updater_workflow()),
+                               (REORDER_OUTPUT, reorder_release_workflow()),
                                (OPLUS_OUTPUT, create_oplus_workflow(root, workflow))):
         content = header + yaml.dump(document, Dumper=Dumper, allow_unicode=True, sort_keys=False, width=120)
         # Validate every document before replacing any generated file.

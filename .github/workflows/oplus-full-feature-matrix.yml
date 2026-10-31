@@ -1744,6 +1744,10 @@ jobs:
     permissions:
       contents: write
       actions: write
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+      queue: max
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
     steps:

@@ -7399,6 +7399,10 @@ jobs:
     permissions:
       contents: write
       actions: write
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+      queue: max
     steps:
     - name: 检出发布工具
       uses: actions/checkout@v6

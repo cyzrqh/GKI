@@ -271,6 +271,42 @@ printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\\n' 
     ]
 
 
+def release_tag_concurrency():
+    return {'group': '${{ github.repository }}-published-release-tags',
+            'cancel-in-progress': False, 'queue': 'max'}
+
+
+def reorder_release_workflow():
+    return {
+        'name': '发行版标签自动重排',
+        'on': {'release': {'types': ['deleted']}, 'workflow_dispatch': {}},
+        'permissions': {'contents': 'read'},
+        'jobs': {'reorder': {
+            'name': '按发布时间连续重排 r1.x 标签',
+            'if': "github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'r1.'))",
+            'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
+            'permissions': {'contents': 'write', 'actions': 'read'},
+            'concurrency': release_tag_concurrency(),
+            'steps': [
+                {'name': '检出默认分支的标签维护工具', 'uses': 'actions/checkout@v6',
+                 'with': {'ref': '${{ github.event.repository.default_branch }}', 'persist-credentials': False}},
+                {'name': '保留原提交与附件并连续重排标签',
+                 'env': {'GH_TOKEN': '${{ github.token }}'},
+                 'run': '''set -euo pipefail
+for attempt in $(seq 1 32); do
+  status=0
+  python3 tools/reorder_release_tags.py --execute --report "$RUNNER_TEMP/release-tag-reorder.json" || status=$?
+  if [ "$status" = 0 ]; then exit 0; fi
+  if [ "$status" != 75 ] || [ "$attempt" = 32 ]; then exit "$status"; fi
+  echo '已有发行任务尚未结束，等待后重试，不取消或重跑构建。'
+  sleep 30
+done
+'''},
+            ],
+        }},
+    }
+
+
 def release_job():
     condition = ("always() && !cancelled() && github.event_name == 'workflow_dispatch' && "
                  "needs.prepare-matrix.result == 'success' && "
@@ -283,6 +319,7 @@ def release_job():
         'needs': ['prepare-matrix', 'build-sukisu-manager', 'build-kernel'],
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
         'permissions': {'contents': 'write', 'actions': 'write'},
+        'concurrency': release_tag_concurrency(),
         'steps': [
             {'name': '检出发布工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
             {'name': '准备 APK 内容签名验证',

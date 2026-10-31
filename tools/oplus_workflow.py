@@ -262,12 +262,14 @@ ccache --show-stats --verbose | tee "$report"
 
 
 def collect_job():
+    from workflow_jobs import release_tag_concurrency
     return {
         'name': '整理原生文件与详细配置（全量成功才发行）',
         'if': "always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success' && needs.build-oplus-kernel.result == 'success'",
         'needs': ['prepare-matrix', 'build-sukisu-manager', 'build-oplus-kernel'],
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 15,
         'permissions': {'contents': 'write', 'actions': 'write'},
+        'concurrency': release_tag_concurrency(),
         'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}'},
         'steps': [
             {'name': '检出本次原生校验工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},

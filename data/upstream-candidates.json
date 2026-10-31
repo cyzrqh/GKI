@@ -2,7 +2,7 @@
   "acknowledged_heads": {
     "bakasu": {
       "branch": "main",
-      "head": "5785bdb8091304322f597f67d50e0b79f9815cb2",
+      "head": "f98b7a5b909910e1830cae8a2f9c78a61f1f6c2a",
       "prerelease": {
         "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
         "tag": "v4.2.0-rc3"
@@ -14,7 +14,7 @@
       "branch": "dev",
       "head": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c"
     },
-    "sukisu_head": "a5742cdae02147973f9cc29db8888de62c1bae9d",
+    "sukisu_head": "d89f25100ae4d15385f991fe94a86145ded4f915",
     "sukisu_release": {
       "commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
       "tag": "v4.3.0"
@@ -40,11 +40,11 @@
   },
   "changes": [
     {
-      "candidate": "a5742cdae02147973f9cc29db8888de62c1bae9d",
+      "candidate": "d89f25100ae4d15385f991fe94a86145ded4f915",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "main",
       "source": "SukiSU",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/a5742cdae02147973f9cc29db8888de62c1bae9d"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/d89f25100ae4d15385f991fe94a86145ded4f915"
     },
     {
       "candidate": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
@@ -61,11 +61,11 @@
       "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/e67b14e6bbbbd3e67f24df658a01d3e73a64159c"
     },
     {
-      "candidate": "5785bdb8091304322f597f67d50e0b79f9815cb2",
+      "candidate": "f98b7a5b909910e1830cae8a2f9c78a61f1f6c2a",
       "current": "",
       "ref": "main",
       "source": "BakaSU",
-      "url": "https://github.com/Baka-SU/BakaSU/commit/5785bdb8091304322f597f67d50e0b79f9815cb2"
+      "url": "https://github.com/Baka-SU/BakaSU/commit/f98b7a5b909910e1830cae8a2f9c78a61f1f6c2a"
     },
     {
       "candidate": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
@@ -114,7 +114,7 @@
   "sources": {
     "bakasu": {
       "branch": "main",
-      "head": "5785bdb8091304322f597f67d50e0b79f9815cb2",
+      "head": "f98b7a5b909910e1830cae8a2f9c78a61f1f6c2a",
       "prerelease": {
         "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
         "tag": "v4.2.0-rc3"
@@ -128,7 +128,7 @@
         "branch": "dev",
         "head": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c"
       },
-      "head": "a5742cdae02147973f9cc29db8888de62c1bae9d",
+      "head": "d89f25100ae4d15385f991fe94a86145ded4f915",
       "release": {
         "commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
         "newer_than_baseline": true,

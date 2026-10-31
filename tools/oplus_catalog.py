@@ -18,6 +18,7 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 
 ROOT = Path(__file__).resolve().parents[1]
+ALL_TARGETS = '全部内核'
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 SHA256 = re.compile(r'[0-9a-f]{64}\Z')
 PLATFORM = re.compile(r'(?:sm|mt)[0-9]{4}\Z')
@@ -259,8 +260,20 @@ def order(row: dict):
     return tuple(map(int, row['kernel'].split('.'))), {'骁龙': 0, '天玑': 1}[family], row['id']
 
 
-def discover_matrix(root: Path = ROOT, reader=None) -> dict:
+def target_label(profile: dict) -> str:
+    return platform_family(profile['platform']) + ' · ' + profile['kernel']
+
+
+def target_choices(profiles: list[dict]) -> list[str]:
+    return [ALL_TARGETS] + [target_label(row) for row in sorted(profiles, key=order)]
+
+
+def discover_matrix(root: Path = ROOT, reader=None, *, target: str = ALL_TARGETS) -> dict:
     profiles = load_profiles(root)
+    if target != ALL_TARGETS:
+        profiles = [row for row in profiles if target_label(row) == target]
+        if len(profiles) != 1:
+            raise CatalogError('Unknown or ambiguous OPlus build target; select an approved platform and kernel')
     reader = reader or OfficialReader()
     selected = {}
     for profile in profiles:
@@ -277,18 +290,21 @@ def main(argv=None) -> int:
     parser.add_argument('--root', type=Path, default=ROOT)
     parser.add_argument('--github-output', action='store_true')
     parser.add_argument('--summary', action='store_true')
+    parser.add_argument('--target', default=ALL_TARGETS, help='Approved platform/kernel label, or 全部内核')
     args = parser.parse_args(argv)
     try:
-        matrix = discover_matrix(args.root)
+        matrix = discover_matrix(args.root, target=args.target)
         encoded = json.dumps(matrix, ensure_ascii=True, separators=(',', ':'))
         if args.github_output:
             with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as output:
-                output.write('matrix=' + encoded + '\ncount=' + str(len(matrix['include'])) + '\n')
+                output.write('matrix=' + encoded + '\ncount=' + str(len(matrix['include']))
+                             + '\nfull_catalog=' + str(args.target == ALL_TARGETS).lower() + '\n')
         else:
             print(encoded)
         if args.summary:
             with Path(os.environ['GITHUB_STEP_SUMMARY']).open('a', encoding='utf-8', newline='\n') as summary:
                 summary.write('## 欧加真官方源码构建范围\n\n')
+                summary.write('本次编译目标：' + args.target + '\n\n')
                 summary.write('仅构建下列已审核平台与完整内核版本；同版本不代表其他机型可通刷。\n\n')
                 summary.write('官方分支已升级时，本版本使用已审核的官方历史提交；不会把新版内核冒充旧版本。\n\n')
                 summary.write('| 平台 | 内核 | 官方源码 | 适用系统依据 |\n|---|---|---|---|\n')

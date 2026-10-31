@@ -19,7 +19,7 @@ import sys
 
 import yaml
 
-from oplus_catalog import OFFICIAL_REPOSITORIES, RECIPE_REPOSITORIES
+from oplus_catalog import OFFICIAL_REPOSITORIES, RECIPE_REPOSITORIES, ALL_TARGETS, target_label
 
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
@@ -102,12 +102,14 @@ def bool_value(value) -> bool:
 
 
 def native_inputs(inputs: dict, profile: dict) -> dict[str, str]:
-    if (not isinstance(inputs, dict) or set(inputs) != INPUTS
+    if (not isinstance(inputs, dict) or not INPUTS <= set(inputs) or set(inputs) - INPUTS - {'build_target'}
             or inputs['kernelsu_variant'] not in ('SukiSU', 'BakaSU')
             or inputs['kernelsu_branch'] not in ('正式版', '最新版')):
         raise RecipeError('Expected the supported OPlus menu inputs and manager version choice')
+    if inputs.get('build_target', ALL_TARGETS) not in (ALL_TARGETS, target_label(profile)):
+        raise RecipeError('OPlus build target does not match the selected platform and kernel')
     flags = {key: bool_value(value) for key, value in inputs.items()
-             if key not in ('kernelsu_variant', 'kernelsu_branch')}
+             if key not in ('kernelsu_variant', 'kernelsu_branch', 'build_target')}
     yes = lambda name: 'true' if flags[name] else 'false'
     return {'ksu_type': 'sukisu' if inputs['kernelsu_variant'] == 'SukiSU' else 'resukisu',
             'susfs_enable': yes('enable_susfs'), 'kpm_enable': yes('use_kpm'),

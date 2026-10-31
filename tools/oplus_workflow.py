@@ -7,6 +7,7 @@ from pathlib import Path
 from manager_lkm_jobs import (source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
 from workflow_jobs import release_publish_steps
+from oplus_catalog import load_profiles, target_choices, ALL_TARGETS
 
 OUTPUT = Path('.github/workflows/oplus-full-feature-matrix.yml')
 DISPATCH = "github.event_name == 'workflow_dispatch'"
@@ -16,6 +17,8 @@ INPUTS = {
                         'options': ['SukiSU', 'BakaSU'], 'default': 'SukiSU'},
     'kernelsu_branch': {'description': '版本', 'required': True, 'type': 'choice',
                        'options': ['正式版', '最新版'], 'default': '最新版'},
+    'build_target': {'description': '编译目标（可单独编译一个平台和内核）', 'required': True,
+                     'type': 'choice', 'options': [], 'default': ALL_TARGETS},
     'enable_susfs': {'description': '启用 SUSFS（android14/6.1、android15/6.6、android16/6.12）',
                      'required': False, 'type': 'boolean', 'default': True},
     'use_kpm': {'description': '启用 KPM（仅 SukiSU/BakaSU 生效）',
@@ -100,6 +103,7 @@ def prepare_job(base: dict) -> dict:
     prepare['if'] = DISPATCH
     for key in ('full_catalog', 'max_parallel'):
         prepare['outputs'].pop(key, None)
+    prepare['outputs']['full_catalog'] = '${{ steps.matrix.outputs.full_catalog }}'
     prepare['outputs'].update({key: '${{ steps.oplus-deps.outputs.' + key + ' }}'
                                for key in ('ak3_ref', 'patches_ref')})
     steps = []
@@ -108,8 +112,8 @@ def prepare_job(base: dict) -> dict:
             continue
         if step.get('id') == 'matrix':
             step = {'name': '从官方分支冻结已审核平台与完整内核版本', 'id': 'matrix',
-                    'env': {'GH_TOKEN': '${{ github.token }}'},
-                    'run': 'python3 tools/oplus_catalog.py --github-output --summary'}
+                    'env': {'GH_TOKEN': '${{ github.token }}', 'OPLUS_TARGET': '${{ inputs.build_target }}'},
+                    'run': 'python3 tools/oplus_catalog.py --target "$OPLUS_TARGET" --github-output --summary'}
         if step.get('id') == 'sources':
             step['env']['KSU_TIER'] = '${{ inputs.kernelsu_branch }}'
             step['env']['CUSTOM_REF'] = ''
@@ -282,7 +286,7 @@ def collect_job():
             {'name': '上传原文件同名校验清单', 'uses': 'actions/upload-artifact@v7',
              'with': {'path': 'oplus-report/SHA256SUMS.txt', 'archive': False,
                       'if-no-files-found': 'error', 'overwrite': True}},
-            *release_publish_steps('success()', assets_directory='oplus-publish/assets',
+            *release_publish_steps("success() && needs.prepare-matrix.outputs.full_catalog == 'true'", assets_directory='oplus-publish/assets',
                                    notes_file='oplus-report/summary.md', title_file='oplus-report/title.txt'),
             {'name': '显示统一的详细构建配置', 'if': "always() && !cancelled() && steps.assets.outcome == 'success'",
              'run': 'cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"'},
@@ -299,9 +303,10 @@ def create_workflow(root: Path, base: dict | None = None) -> dict:
     lkm['if'] = manager['if'] = DISPATCH
     fields = copy.deepcopy(INPUTS)
     fields['kernelsu_branch'] = copy.deepcopy(base['on']['workflow_dispatch']['inputs']['kernelsu_branch'])
+    fields['build_target']['options'] = target_choices(load_profiles(root))
     return {
         'name': '欧加真全属性内核构建矩阵',
-        'run-name': '欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_branch }} · 官方完整内核矩阵',
+        'run-name': "欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_branch }} · ${{ inputs.build_target || '全部内核' }}",
         'on': {'workflow_dispatch': {'inputs': fields}},
         'permissions': {'contents': 'read'},
         'jobs': {'prepare-matrix': prepare_job(base), 'build-sukisu-lkm': lkm,

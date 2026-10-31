@@ -121,6 +121,15 @@ class OPlusRecipeTests(unittest.TestCase):
             with self.subTest(tier=tier), self.assertRaises(ValueError):
                 adapter.native_inputs(self.inputs(kernelsu_branch=tier), profile)
 
+    def test_single_target_is_validated_without_becoming_a_feature_flag(self):
+        _, _, profile = self.case(0)
+        expected = adapter.native_inputs(self.inputs(), profile)
+        for target in (adapter.ALL_TARGETS, adapter.target_label(profile)):
+            self.assertEqual(expected, adapter.native_inputs(self.inputs(build_target=target), profile))
+        for target in ('天玑 · 6.1.57', '骁龙 · 6.1.999', '', None):
+            with self.subTest(target=target), self.assertRaisesRegex(ValueError, 'build target'):
+                adapter.native_inputs(self.inputs(build_target=target), profile)
+
     def refresh(self, document, profile):
         raw = yaml.safe_dump(document, allow_unicode=True, sort_keys=False).encode()
         profile = {**profile, 'recipe_sha256': hashlib.sha256(raw).hexdigest()}

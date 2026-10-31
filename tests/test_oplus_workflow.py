@@ -39,8 +39,8 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(self.document['name'], '欧加真全属性内核构建矩阵')
         self.assertEqual(list(self.document['on']), ['workflow_dispatch'])
         fields = self.document['on']['workflow_dispatch']['inputs']
-        self.assertEqual(set(fields), recipe.INPUTS)
-        self.assertEqual(len(fields), 9)
+        self.assertEqual(set(fields), recipe.INPUTS | {'build_target'})
+        self.assertEqual(len(fields), 10)
         self.assertEqual(fields['kernelsu_variant']['options'], ['SukiSU', 'BakaSU'])
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
         self.assertEqual([key for key in fields if fields[key]['default'] is True],
@@ -49,6 +49,18 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(fields['kernelsu_branch']['options'], ['正式版', '最新版'])
         self.assertNotIn('models', fields)
         self.assertNotIn('schedule', self.document['on'])
+
+    def test_single_kernel_menu_is_generated_from_reviewed_platform_family_catalog(self):
+        field = self.document['on']['workflow_dispatch']['inputs']['build_target']
+        self.assertEqual(field['type'], 'choice')
+        self.assertEqual(field['default'], '全部内核')
+        self.assertEqual(field['options'], catalog.target_choices(catalog.load_profiles(ROOT)))
+        self.assertIn('骁龙 · 6.1.141', field['options'])
+        self.assertIn('骁龙 · 6.6.89', field['options'])
+        self.assertIn('天玑 · 6.6.89', field['options'])
+        self.assertEqual(len(field['options']), len(set(field['options'])))
+        self.assertFalse(any(re.search(r'\b(?:sm|mt)\d{4}\b', label) for label in field['options']))
+        self.assertIn('inputs.build_target', self.document['run-name'])
 
     def test_every_expression_uses_declared_menu_and_no_remote_workflow(self):
         text = json.dumps(self.document)
@@ -98,7 +110,8 @@ class OplusWorkflowTests(unittest.TestCase):
     def test_official_catalog_and_selected_manager_are_fixed_before_snapshot_and_matrix_jobs(self):
         prepare = self.document['jobs']['prepare-matrix']
         indexed = {item['id']: (index, item) for index, item in enumerate(prepare['steps']) if 'id' in item}
-        self.assertEqual(indexed['matrix'][1]['run'], 'python3 tools/oplus_catalog.py --github-output --summary')
+        self.assertEqual(indexed['matrix'][1]['run'], 'python3 tools/oplus_catalog.py --target "$OPLUS_TARGET" --github-output --summary')
+        self.assertEqual(indexed['matrix'][1]['env']['OPLUS_TARGET'], '${{ inputs.build_target }}')
         self.assertLess(indexed['matrix'][0], indexed['sources'][0])
         self.assertLess(indexed['sources'][0], indexed['source-snapshot'][0])
         self.assertEqual(indexed['sources'][1]['env']['KSU_TIER'], '${{ inputs.kernelsu_branch }}')
@@ -109,7 +122,7 @@ class OplusWorkflowTests(unittest.TestCase):
         for key in ('ak3_ref', 'patches_ref'):
             self.assertEqual(prepare['outputs'][key], '${{ steps.oplus-deps.outputs.' + key + ' }}')
         self.assertNotIn('max_parallel', prepare['outputs'])
-        self.assertNotIn('full_catalog', prepare['outputs'])
+        self.assertEqual('${{ steps.matrix.outputs.full_catalog }}', prepare['outputs']['full_catalog'])
         source = indexed['shared-susfs'][1]
         self.assertEqual(source['env']['SUSFS_MATRIX'], '${{ steps.matrix.outputs.matrix }}')
         self.assertIn('inputs.enable_susfs', source['if'])
@@ -357,7 +370,7 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(upload['with']['path'], 'oplus-report/SHA256SUMS.txt')
         self.assertIs(upload['with']['archive'], False)
         self.assertNotIn('publish-release', self.document['jobs'])
-        expected = workflow.release_publish_steps('success()', assets_directory='oplus-publish/assets',
+        expected = workflow.release_publish_steps("success() && needs.prepare-matrix.outputs.full_catalog == 'true'", assets_directory='oplus-publish/assets',
                                                    notes_file='oplus-report/summary.md', title_file='oplus-report/title.txt')
         publish_steps = [step for step in steps if step.get('id') in ('release-tag', 'release')
                          or 'cleanup_build_artifacts.py' in step.get('run', '')]

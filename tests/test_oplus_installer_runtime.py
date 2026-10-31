@@ -22,6 +22,12 @@ from test_oplus_assets import SHELL
 
 FIXTURE = ROOT / 'tests/fixtures/oplus-ak3-flash'
 EXCERPT_SHA256 = 'c6f1cbc1b6868e346d853f579d472900db6dd0f547f157a9af49ce5030708acb'
+# AK3 runs in Android's shell and uses [[/== style test semantics. Ubuntu's
+# /bin/sh is dash, which rejects its `==` expressions. Use bash consistently
+# for this upstream-function replay on Windows and Linux.
+BASH = (str(Path(SHELL).with_name('bash.exe' if os.name == 'nt' else 'bash'))
+        if SHELL and Path(SHELL).with_name('bash.exe' if os.name == 'nt' else 'bash').is_file()
+        else shutil.which('bash'))
 
 CORE = r'''
 AKHOME="$PWD";
@@ -75,7 +81,7 @@ magiskboot() {
 '''
 
 
-@unittest.skipUnless(SHELL, 'A POSIX shell is required for the upstream runtime fixture')
+@unittest.skipUnless(BASH, 'Bash is required to replay the upstream Android AK3 shell function')
 class OplusUpstreamInstallerTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -111,12 +117,16 @@ class OplusUpstreamInstallerTests(unittest.TestCase):
         (directory / 'anykernel.sh').write_bytes(script)
         env = {**os.environ, 'AK3_RUNTIME_FIXTURE': (FIXTURE / 'flash_boot.sh').as_posix(),
                'PATCHVBMETAFLAG': 'true', 'magisk_patched': '1',
-               'PATH': str(Path(SHELL).parent) + os.pathsep + os.environ.get('PATH', '')}
-        result = subprocess.run([SHELL, './anykernel.sh'], cwd=directory, env=env,
+               'PATH': str(Path(BASH).parent) + os.pathsep + os.environ.get('PATH', '')}
+        result = subprocess.run([BASH, './anykernel.sh'], cwd=directory, env=env,
                                 text=True, encoding='utf-8', capture_output=True, timeout=15)
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
         calls = (directory / 'magiskboot-calls').read_text().splitlines()
         return directory, image, calls
+
+    def test_selected_shell_supports_upstream_ak3_equality_syntax(self):
+        result = subprocess.run([BASH, '-c', '[ "1" == 1 ]'], capture_output=True, text=True, timeout=10)
+        self.assertEqual(0, result.returncode, result.stderr)
 
     def test_both_managers_preserve_image_and_existing_ramdisk_with_upstream_runtime(self):
         for variant in ('SukiSU', 'BakaSU'):

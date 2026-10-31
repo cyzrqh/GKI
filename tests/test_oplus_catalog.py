@@ -224,6 +224,38 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(['6.1.57', '6.12.58'], [row['kernel'] for row in matrix['include']])
         self.assertTrue(all(row['kernel_repo'] in catalog.OFFICIAL_REPOSITORIES for row in matrix['include']))
 
+    def test_selected_single_kernel_only_resolves_its_official_source(self):
+        profile = next(row for row in self.profiles if row['id'] == 'sm8650-6.1.141')
+        reader = Reader(profile)
+        matrix = catalog.discover_matrix(ROOT, reader, target='骁龙 · 6.1.141')
+        self.assertEqual(['sm8650-6.1.141'], [r['id'] for r in matrix['include']])
+        self.assertEqual(2, len(reader.calls))
+        self.assertTrue(reader.calls[0].endswith(profile['kernel_branch'].replace('/', '%2F')))
+
+    def test_invalid_or_ambiguous_target_stops_before_network_discovery(self):
+        for target in ('6.1.141', '', '骁龙 · 6.1.999', 'sm8650-6.1.141', '全部内核; echo x'):
+            reader = Reader(self.profile)
+            with self.subTest(target=target), self.assertRaisesRegex(catalog.CatalogError, 'build target'):
+                catalog.discover_matrix(ROOT, reader, target=target)
+            self.assertEqual([], reader.calls)
+
+    def test_cli_marks_single_target_as_actions_only_and_all_target_as_full_catalog(self):
+        directory = ROOT.parent / '.gki-upstream-cache' / ('oplus-target-cli-' + uuid.uuid4().hex)
+        directory.mkdir()
+        self.addCleanup(shutil.rmtree, directory)
+        output = directory / 'output'
+        row = catalog.resolve_profile(self.profile, Reader(self.profile))
+        for label, expected in [('全部内核', 'true'), ('骁龙 · 6.1.57', 'false')]:
+            output.write_bytes(b'')
+            with mock.patch.object(catalog, 'discover_matrix', return_value={'include': [row]}) as discover, \
+                    mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(output)}):
+                self.assertEqual(0, catalog.main(['--target', label, '--github-output']))
+            discover.assert_called_once_with(ROOT, target=label)
+            fields = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            self.assertEqual(expected, fields['full_catalog'])
+            self.assertEqual('1', fields['count'])
+            self.assertEqual([row], json.loads(fields['matrix'])['include'])
+
     def test_discovery_refuses_duplicate_family_after_resolution_instead_of_silently_picking_one(self):
         row = catalog.resolve_profile(self.profile, Reader(self.profile))
         duplicate = {**row, 'platform': 'sm8750', 'id': 'sm8750-' + row['kernel']}

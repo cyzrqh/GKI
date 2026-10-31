@@ -188,6 +188,10 @@ BLOCK=boot;
 IS_SLOT_DEVICE=auto;
 RAMDISK_COMPRESSION=auto;
 PATCH_VBMETA_FLAG=0;
+# This is a paired SukiSU/BakaSU kernel replacement. Do not let AK3's
+# legacy Magisk preservation path modify the verified replacement Image.
+NO_MAGISK_CHECK=1;
+unset magisk_patched;
 . tools/ak3-core.sh;
 oplus_soc_match=0;
 for oplus_prop in ro.soc.model ro.vendor.soc.model ro.boot.soc.model; do

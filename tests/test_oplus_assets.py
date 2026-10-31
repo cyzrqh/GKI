@@ -220,6 +220,8 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertIn('6.1.57-android14-11|6.1.57-android14-11-*)', script)
         self.assertIn('BLOCK=boot;', script)
         self.assertIn('PATCH_VBMETA_FLAG=0;', script)
+        self.assertIn('NO_MAGISK_CHECK=1;', script)
+        self.assertIn('unset magisk_patched;', script)
         self.assertIn('IS_SLOT_DEVICE=auto;', script)
         self.assertIn('flash_boot;', script)
         for forbidden in ('BLOCK=auto;', 'NO_VBMETA_PARTITION_PATCH', 'dump_boot;', 'write_boot;',

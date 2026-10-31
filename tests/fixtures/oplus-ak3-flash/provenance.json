@@ -1,0 +1,10 @@
+{
+  "repository": "osm0sis/AnyKernel3",
+  "commit": "41f04bdb4ee30a44e429c2c1131d5e8bb32b15f1",
+  "path": "tools/ak3-core.sh",
+  "source_sha256": "0544478d92865e2f16aab00676de475af8bbbb0abecea738716f4aea3f484c9b",
+  "excerpt_sha256": "c6f1cbc1b6868e346d853f579d472900db6dd0f547f157a9af49ce5030708acb",
+  "excerpt": "Unmodified flash_boot function; Android executables and block I/O are replaced by bounded test spies.",
+  "license_sha256": "7644d1de215bd7d543e9cec7cd43da88931551a6507399590d06c1e75ea31edf",
+  "upstream_license_sha256": "df6f65da47d459fdf2a2ef0eadb34f37d838befc91352b64a84f35507bea95cd"
+}

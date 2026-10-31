@@ -100,9 +100,12 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
             raise ManagerUpdateError('Official manager and kernel numeric version formulas disagree')
         try:
             if variant == 'SukiSU':
+                from prepare_manager_icons import prepare_manager_icons
+                prepare_manager_icons(source)
                 from apply_susfs23 import apply_reviewed_port, PATCH_PATH
                 apply_reviewed_port(source, PATCH_PATH, allow_variants=True)
-                checks = ['SUSFS 2.3 完整接入及原生生命周期', 'KPM 原生接口保留', '管理器/内核版本公式一致']
+                checks = ['SUSFS 2.3 完整接入及原生生命周期', 'KPM 原生接口保留',
+                          '管理器图标依赖及 Kotlin 模块索引', '管理器/内核版本公式一致']
             else:
                 from restore_bakasu_kpm import restore_bakasu_kpm, verify_bakasu_kpm_port
                 from ensure_bakasu_symbol_lookup import validate_native_symbol_lookup

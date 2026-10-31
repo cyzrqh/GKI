@@ -42,6 +42,10 @@ fi
 export KSU_PACKAGE_NAME=com.sukisu.ultra
 [ -d "$ANDROID_HOME" ] && [ -d "$ANDROID_NDK_HOME" ] || { echo 'Android SDK or NDK directory does not exist.' >&2; exit 1; }
 
+# Keep the official version, but repair a trimmed icon JAR without the Kotlin
+# module index before spending time building the daemon and the manager.
+python3 "$build_tools/prepare_manager_icons.py" --source "$source_dir"
+
 # The caller stages and validates the same-source, same-certificate modules.
 # Refuse an incomplete asset directory before running either native compiler.
 python3 - "$source_dir" "$build_tools" <<'PY'

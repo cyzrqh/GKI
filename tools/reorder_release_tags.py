@@ -252,8 +252,10 @@ def main(argv=None):
     except Deferred as error:
         print('Release label reordering deferred: ' + str(error))
         return 75
-    except (ValueError, OSError):
-        print('::error::Release tag maintenance stopped; review the preserved plan before retrying.')
+    except (ValueError, OSError) as error:
+        # These exceptions are locally constructed scope/integrity messages
+        # or sanitized API status/path diagnostics, never remote bodies.
+        print('::error::Release tag maintenance stopped: ' + str(error))
         return 1
     print(json.dumps({key: value for key, value in result.items() if key not in ('assets', 'old_refs')}, ensure_ascii=False))
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):

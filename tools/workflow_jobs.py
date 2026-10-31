@@ -291,7 +291,7 @@ def reorder_release_workflow():
                 {'name': '检出默认分支的标签维护工具', 'uses': 'actions/checkout@v6',
                  'with': {'ref': '${{ github.event.repository.default_branch }}', 'persist-credentials': False}},
                 {'name': '保留原提交与附件并连续重排标签',
-                 'env': {'GH_TOKEN': '${{ github.token }}'},
+                 'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}'},
                  'run': '''set -euo pipefail
 for attempt in $(seq 1 32); do
   status=0

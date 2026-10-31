@@ -30,7 +30,7 @@ jobs:
         persist-credentials: false
     - name: 保留原提交与附件并连续重排标签
       env:
-        GH_TOKEN: ${{ github.token }}
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
       run: |
         set -euo pipefail
         for attempt in $(seq 1 32); do

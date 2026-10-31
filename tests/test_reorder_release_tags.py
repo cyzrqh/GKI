@@ -178,3 +178,5 @@ class ReorderTests(unittest.TestCase):
         self.assertIs(maintenance['jobs']['reorder']['concurrency']['cancel-in-progress'], False)
         self.assertEqual('max', maintenance['jobs']['reorder']['concurrency']['queue'])
         self.assertNotIn('build-kernel', maintenance['jobs'])
+        self.assertEqual('${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
+                         maintenance['jobs']['reorder']['steps'][1]['env']['GH_TOKEN'])

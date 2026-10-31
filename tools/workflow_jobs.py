@@ -138,7 +138,7 @@ if not (official_ok and catalog_ok):
 body = ('<!-- gki-upstream-sync:v1 -->\\n' + os.environ['HEADS_MARKER'] + '\\n\\n'
         '# 官方源更新\\n\\n本 PR 直接跟踪 SukiSU、BakaSU、SUSFS 和 Android GKI 官方源，不依赖其他构建仓库。\\n\\n'
         + status + '\\n\\n'
-        '本 PR 只准备待同步的数据，不会因检查而自动合并。确认后可在 Actions 的“检查并同步官方更新”中选择“同步官方更新”，或手动合并此 PR。新 APK 和内核仍需另外触发构建。\\n\\n'
+        '本 PR 只准备待同步的数据，不会因检查而自动合并。请在 Actions 的“检查并同步官方更新”中选择“同步官方更新”，完成管理器配套验证后再同步。新 APK 和内核仍需另外触发构建。\\n\\n'
         + (path.parent / 'official-sync-report.md').read_text(encoding='utf-8'))
 path.write_text(body,encoding='utf-8')
 with open(os.environ['GITHUB_OUTPUT'],'a') as output:
@@ -159,16 +159,28 @@ PY
                       'title': '${{ steps.update.outputs.title }}', 'body-path': '${{ steps.update.outputs.body_path }}',
                       'commit-message': 'Track official source updates and new GKI kernels',
                       'add-paths': 'data/kernels.json\ndata/upstream-candidates.json\n'}},
-            {'name': '校验并执行手动同步', 'id': 'sync',
-             'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '同步官方更新' && steps.probe.outputs.has_updates == 'true' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending == 'true')",
+            {'name': '恢复管理器配套验证的官方源码缓存', 'uses': 'actions/cache/restore@v5',
+             'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '同步官方更新' && steps.probe.outputs.has_updates == 'true'",
+             'continue-on-error': True,
+             'with': {'path': '${{ runner.temp }}/gki-manager-compatibility',
+                      'key': 'gki-manager-compatibility-v1-${{ github.run_id }}-${{ github.run_attempt }}',
+                      'restore-keys': 'gki-manager-compatibility-v1-'}},
+            {'name': '验证正式版和测试版配套后执行手动同步', 'id': 'sync',
+             'if': "github.event_name == 'workflow_dispatch' && inputs.operation == '同步官方更新' && steps.probe.outputs.has_updates == 'true' && steps.probe.outputs.partial_failure != 'true' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending == 'true')",
              'env': {'GH_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN }}',
                      'CREATED_PR_NUMBER': '${{ steps.pr.outputs.pull-request-number }}',
                      'EXISTING_PR_URL': '${{ steps.guard.outputs.pull_request_url }}',
                      'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
              'run': '''set -euo pipefail
 number="${CREATED_PR_NUMBER:-${EXISTING_PR_URL##*/}}"
-python3 tools/auto_merge_official_update.py --pull-request "$number" --base "$DEFAULT_BRANCH"
+python3 tools/auto_merge_official_update.py --pull-request "$number" --base "$DEFAULT_BRANCH" \\
+  --source-cache "$RUNNER_TEMP/gki-manager-compatibility" \\
+  --compatibility-report "$RUNNER_TEMP/manager-compatibility.json"
 '''},
+            {'name': '保存管理器配套验证的官方源码缓存', 'uses': 'actions/cache/save@v5',
+             'if': "always() && !cancelled() && steps.sync.outcome != 'skipped'", 'continue-on-error': True,
+             'with': {'path': '${{ runner.temp }}/gki-manager-compatibility',
+                      'key': 'gki-manager-compatibility-v1-${{ github.run_id }}-${{ github.run_attempt }}'}},
             {'name': '仅发送待手动同步的更新提醒', 'id': 'notify',
              'if': "always() && !cancelled() && steps.update.outcome == 'success' && steps.sync.outputs.merged != 'true' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending == 'true')",
              'env': {'GH_TOKEN': '${{ github.token }}',
@@ -201,6 +213,10 @@ fi
 if [ -f "$RUNNER_TEMP/official-sync-report.md" ]; then
   printf '\\n' >> "$GITHUB_STEP_SUMMARY"
   cat "$RUNNER_TEMP/official-sync-report.md" >> "$GITHUB_STEP_SUMMARY"
+fi
+if [ -f "$RUNNER_TEMP/manager-compatibility.md" ]; then
+  printf '\\n' >> "$GITHUB_STEP_SUMMARY"
+  cat "$RUNNER_TEMP/manager-compatibility.md" >> "$GITHUB_STEP_SUMMARY"
 fi
 if [ "$OFFICIAL_RESULT" != success ] || [ "$CATALOG_RESULT" != success ]; then
   printf '\\n部分官方检查未完成：SukiSU/BakaSU/SUSFS=%s，Android GKI=%s。失败部分须重试；不能确认全部官方源是否更新。\\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"

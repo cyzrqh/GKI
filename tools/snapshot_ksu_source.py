@@ -106,7 +106,11 @@ def temporary_directory(parent: Path, prefix: str):
         def remove_readonly(function, name, error):
             Path(name).chmod(stat.S_IWRITE | stat.S_IREAD)
             function(name)
-        shutil.rmtree(target, onexc=remove_readonly)
+        cleanup_target = str(target)
+        if os.name == 'nt' and not cleanup_target.startswith('\\\\?\\'):
+            cleanup_target = ('\\\\?\\UNC\\' + cleanup_target[2:] if cleanup_target.startswith('\\\\')
+                              else '\\\\?\\' + cleanup_target)
+        shutil.rmtree(cleanup_target, onexc=remove_readonly)
 
 
 def git(directory: Path, *arguments: str, timeout: int = 180) -> str:
@@ -120,7 +124,8 @@ def git(directory: Path, *arguments: str, timeout: int = 180) -> str:
     operation = next((argument for argument in arguments if argument in GIT_OPERATIONS), 'command')
     try:
         result = subprocess.run(
-            ["git", "-C", str(directory), "-c", "core.hooksPath=", "-c", "core.autocrlf=false", *arguments],
+            ["git", "-C", str(directory), "-c", "core.hooksPath=", "-c", "core.autocrlf=false",
+             "-c", "core.longpaths=true", *arguments],
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=timeout, env=environment,
         )

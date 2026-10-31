@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import difflib
 import hashlib
 import json
 import os
@@ -105,12 +106,16 @@ def path_name(value: str, *, patch: bool = True) -> str:
 def git(source: Path, *arguments: str, check: bool = True) -> bytes:
     try:
         result = subprocess.run(['git', '--no-replace-objects', '-c', 'core.autocrlf=false',
+            '-c', 'core.longpaths=true',
             '-C', str(source), *arguments], capture_output=True, timeout=60,
             env={**os.environ, 'GIT_TERMINAL_PROMPT': '0', 'GIT_NO_REPLACE_OBJECTS': '1'})
     except (OSError, subprocess.TimeoutExpired):
         raise KpmPortError('Cannot verify the local frozen BakaSU Git source') from None
     if check and result.returncode:
-        raise KpmPortError('Exact BakaSU KPM Git validation failed')
+        operation = arguments[0] if arguments and arguments[0] in {
+            'apply', 'show', 'ls-tree', 'rev-parse', 'diff', 'status', 'ls-files',
+            'clone', 'checkout', 'hash-object', 'init', 'remote'} else 'command'
+        raise KpmPortError(f'Exact BakaSU KPM Git validation failed ({operation}, exit {result.returncode})')
     return result.stdout if check else bytes((result.returncode,))
 
 
@@ -384,7 +389,10 @@ def expected_port(source: Path, reference: str, manifest: dict, patch: bytes) ->
                 destination.write_bytes(data)
         prepared = scratch / 'reviewed.patch'
         prepared.write_bytes(patch)
-        git(scratch, 'apply', '--check', str(prepared))
+        if git(scratch, 'apply', '--check', str(prepared), check=False)[0]:
+            rebased = merge_port(source, reference, manifest, patch)
+            prepared.write_bytes(materialized_patch(before, rebased))
+            git(scratch, 'apply', '--check', str(prepared))
         git(scratch, 'apply', '--whitespace=nowarn', str(prepared))
         git(scratch, 'apply', '--reverse', '--check', str(prepared))
         after = {}
@@ -399,6 +407,63 @@ def expected_port(source: Path, reference: str, manifest: dict, patch: bytes) ->
                     raise KpmPortError('BakaSU KPM patch output differs from its audited file lock')
             after[name] = data
     return before, after
+
+
+def materialized_patch(before: dict, after: dict) -> bytes:
+    """Bind the reviewed additions to the exact selected source, preserving modes."""
+    chunks = []
+    for name in sorted(after):
+        if before[name] == after[name]:
+            continue
+        old = before[name]
+        chunks.append(f'diff --git a/{name} b/{name}\n')
+        if old is None:
+            chunks.append('new file mode 100644\n')
+        for line in difflib.unified_diff((old or b'').decode('utf-8').splitlines(keepends=True),
+                after[name].decode('utf-8').splitlines(keepends=True),
+                fromfile='/dev/null' if old is None else 'a/' + name, tofile='b/' + name):
+            chunks.append(line if line.endswith('\n') else line + '\n\\ No newline at end of file\n')
+    return ''.join(chunks).encode('utf-8')
+
+
+def merge_port(source: Path, reference: str, manifest: dict, patch: bytes) -> dict:
+    """A real conflict-free three-way merge preserves independent upstream edits.
+
+    All merges happen in an isolated checkout. Conflicts, changed file modes,
+    extra paths and modified additive files remain hard failures.
+    """
+    with temporary_directory(source.parent, '.bakasu-kpm-merge-') as temporary:
+        checkout = temporary / 'source'
+        git(temporary, 'clone', '--quiet', '--shared', '--no-checkout', str(source), str(checkout))
+        paths = ['/' + item['path'] for item in manifest['files']]
+        git(checkout, 'sparse-checkout', 'set', '--no-cone', '--', *paths)
+        git(checkout, 'checkout', '--quiet', '--detach', reference)
+        prepared = temporary / 'reviewed.patch'
+        prepared.write_bytes(patch)
+        # A source bundle includes the selected history, not every remote
+        # branch. Carry the reviewed preimages so a force-push or branch split
+        # cannot remove the Git blobs required for an otherwise clean merge.
+        for item in manifest['files']:
+            if item['kind'] != 'update':
+                continue
+            base = ROOT / 'tools/patches/bakasu-kpm-base' / (item['before_sha256'] + '.source')
+            if not base.exists():
+                continue  # Historical objects may already be in this checkout.
+            data = regular(base, MAX_FILE)
+            if digest(data) != item['before_sha256']:
+                raise KpmPortError('Reviewed BakaSU KPM merge base failed its locked digest')
+            blob = hashlib.sha1(b'blob ' + str(len(data)).encode('ascii') + b'\0' + data).hexdigest()
+            if os.fsdecode(git(checkout, 'hash-object', '-w', '--', str(base))).strip() != blob:
+                raise KpmPortError('Reviewed BakaSU KPM base differs from its Git blob identity')
+        if (git(checkout, 'apply', '--3way', '--whitespace=nowarn', str(prepared), check=False)[0]
+                or git(checkout, 'ls-files', '--unmerged').strip()):
+            raise KpmPortError('BakaSU KPM changes conflict with upstream source; no source was changed')
+        paths = set(os.fsdecode(git(checkout, 'diff', '--name-only', 'HEAD', '-z')).strip('\0').split('\0'))
+        expected = {item['path'] for item in manifest['files']}
+        if paths != expected or git(checkout, 'diff', '--summary', 'HEAD', '--', *sorted(
+                item['path'] for item in manifest['files'] if item['kind'] == 'update')).strip():
+            raise KpmPortError('BakaSU KPM merge changed paths or modes outside its reviewed port')
+        return {name: regular(safe_path(checkout, name), MAX_FILE) for name in expected}
 
 
 def receipt_for(reference: str, tree: str, manifest: dict, before: dict, after: dict) -> dict:
@@ -439,7 +504,7 @@ def verify_bakasu_kpm_port(source: Path, reference: str, *, scope=None) -> dict:
     check_applied(source, before, after, scopes(scope))
     with temporary_directory(source.parent, '.bakasu-kpm-reverse-') as scratch:
         prepared = scratch / 'reviewed.patch'
-        prepared.write_bytes(patch)
+        prepared.write_bytes(materialized_patch(before, after))
         git(source, 'apply', '--reverse', '--check', str(prepared))
     return expected
 
@@ -463,7 +528,7 @@ def restore_bakasu_kpm(source: Path, reference: str) -> dict:
     try:
         with temporary_directory(source.parent, '.bakasu-kpm-apply-') as scratch:
             prepared = scratch / 'reviewed.patch'
-            prepared.write_bytes(patch)
+            prepared.write_bytes(materialized_patch(before, after))
             git(source, 'apply', '--check', str(prepared))
             git(source, 'apply', '--whitespace=nowarn', str(prepared))
             git(source, 'apply', '--reverse', '--check', str(prepared))

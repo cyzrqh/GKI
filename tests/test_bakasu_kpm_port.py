@@ -126,6 +126,61 @@ class BakaKpmPortTests(unittest.TestCase):
         self.assertNotEqual(result['files'][self.relative]['after_sha256'], self.manifest['files'][0]['after_sha256'])
         self.assertEqual(result, port.verify_bakasu_kpm_port(self.source, self.reference))
 
+    def three_way_context(self, *, conflict=False):
+        def blob(data):
+            return hashlib.sha1(b'blob ' + str(len(data)).encode() + b'\0' + data).hexdigest()
+        marker = ('diff --git a/' + self.relative + ' b/' + self.relative + '\n').encode()
+        self.patch = self.patch.replace(marker, marker +
+            f'index {blob(self.before)}..{blob(self.after)} 100644\n'.encode(), 1)
+        self.patch_file.write_bytes(self.patch)
+        self.manifest['patch'].update(size=len(self.patch), sha256=port.digest(self.patch))
+        self.save_manifest()
+        changed = (self.before.replace(b'return 0;', b'return 5;') if conflict else
+                   self.before.replace(b'Synthetic native source context.', b'Updated independent upstream context.'))
+        self.write(self.relative, changed)
+        self.command('add', self.relative)
+        self.reference = self.commit('upstream source context changed near the KPM port')
+        return changed
+
+    def test_changed_hunk_context_is_merged_reversibly_without_pinning_an_old_version(self):
+        upstream = self.three_way_context()
+        result = self.restore()
+        self.assertEqual(upstream.replace(b'return 0;', b'return 1;'), (self.source / self.relative).read_bytes())
+        self.assertEqual(result, self.restore())
+        self.assertEqual(result, port.verify_bakasu_kpm_port(self.source, self.reference))
+        self.assertEqual('', self.command('diff', '--cached', '--name-only'))
+
+    def test_real_three_way_conflict_never_changes_the_selected_source(self):
+        upstream = self.three_way_context(conflict=True)
+        with self.assertRaisesRegex(ValueError, 'conflict'):
+            self.restore()
+        self.assertEqual(upstream, (self.source / self.relative).read_bytes())
+        self.assertFalse((self.source / self.new_path).exists())
+        self.assertFalse((self.source / port.RECEIPT).exists())
+
+    def test_rewritten_upstream_history_uses_locked_base_without_remote_old_objects(self):
+        upstream = self.three_way_context()
+        base_blob = hashlib.sha1(b'blob ' + str(len(self.before)).encode() + b'\0' + self.before).hexdigest()
+        self.command('checkout', '--orphan', 'rewritten-official-history')
+        self.reference = self.commit('new official root retains changed native source')
+        bundle = self.directory / 'current-history.bundle'
+        self.command('bundle', 'create', str(bundle), 'HEAD')
+        imported = self.directory / 'bundled-source'
+        subprocess.run(['git', 'clone', '--quiet', '--config', 'core.autocrlf=false',
+                        str(bundle), str(imported)], check=True, capture_output=True)
+        self.source = imported
+        self.command('checkout', '--quiet', '--detach', self.reference)
+        self.command('remote', 'set-url', 'origin', 'https://github.com/Baka-SU/BakaSU.git')
+        missing = subprocess.run(['git', '-C', str(imported), 'cat-file', '-e', base_blob], capture_output=True)
+        self.assertNotEqual(0, missing.returncode)
+        base_path = self.directory / 'tools/patches/bakasu-kpm-base' / (port.digest(self.before) + '.source')
+        base_path.parent.mkdir(parents=True)
+        base_path.write_bytes(self.before)
+        result = self.restore()
+        self.assertEqual(upstream.replace(b'return 0;', b'return 1;'), (imported / self.relative).read_bytes())
+        self.assertEqual(result, port.verify_bakasu_kpm_port(imported, self.reference))
+        self.assertEqual(self.reference, self.command('rev-parse', 'HEAD'))
+
     def test_executable_official_text_blob_is_preserved_through_apply_and_verify(self):
         source = self.source / self.relative
         source.chmod(0o755)

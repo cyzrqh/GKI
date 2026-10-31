@@ -441,7 +441,7 @@ def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, wo
         if phase == 'build':
             if is_cctv(profile):
                 naming = select_step(recipe, '添加制作名称')['run']
-                run_steps([Step('CCTV 原生内核版本命名', render(naming, recipe, profile,
+                run_steps([Step('原生内核版本命名', render(naming, recipe, profile,
                           native_inputs(inputs, profile)))], workspace)
                 expected_release = profile['kernel'] + '-' + recipe['env']['KERNEL_NAME']
             else:

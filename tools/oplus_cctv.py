@@ -1,4 +1,4 @@
-"""Immutable CCTV OPlus schemes, separate from historical official-source builds.
+"""Immutable native OPlus schemes, separate from historical official-source builds.
 
 The mirror is part of the scheme: substituting an official branch changes the
 vendor fixes and is not an equivalent build. Manager sources remain independent.
@@ -51,7 +51,7 @@ def load_profiles(root=ROOT):
     if (not isinstance(document, dict) or set(document) != {'schema_version', 'profiles'}
             or type(document['schema_version']) is not int or document['schema_version'] != 1
             or not isinstance(document['profiles'], list) or not 1 <= len(document['profiles']) <= 128):
-        raise catalog.CatalogError('Invalid pinned CCTV scheme catalog')
+        raise catalog.CatalogError('Invalid pinned OPlus scheme catalog')
     rows, unique, recipes = [], set(), set()
     for row in document['profiles']:
         if (not isinstance(row, dict) or set(row) != FIELDS
@@ -66,47 +66,47 @@ def load_profiles(root=ROOT):
                 or not all(catalog.SHA.fullmatch(row[key]) for key in ('kernel_ref', 'recipe_ref'))
                 or not catalog.SHA256.fullmatch(row['recipe_sha256'])
                 or row['id'] != row['platform'] + '-' + row['kernel']):
-            raise catalog.CatalogError('Inconsistent pinned CCTV scheme identity')
+            raise catalog.CatalogError('Inconsistent pinned OPlus scheme identity')
         platform = row['platform']
         if platform == 'gki':
             expected_suffix = '_gki'
             if row['kernel_repo'] != 'cctv18/android_gki_kernel_common':
-                raise catalog.CatalogError('Generic GKI must use its own CCTV source')
+                raise catalog.CatalogError('Generic GKI must use its own OPlus source')
         else:
             family(platform)
             if not row['kernel_repo'].endswith('_' + platform):
-                raise catalog.CatalogError('CCTV platform and kernel source differ')
+                raise catalog.CatalogError('OPlus platform and kernel source differ')
             expected_suffix = '_mtk' if row['recipe_workflow'].endswith('_mtk.yml') else ''
         if row['recipe_workflow'] != '.github/workflows/fastbuild_' + row['kernel'] + expected_suffix + '.yml':
-            raise catalog.CatalogError('CCTV recipe does not match its platform and version')
+            raise catalog.CatalogError('OPlus recipe does not match its platform and version')
         branch = row['kernel_branch']
         if (not re.fullmatch(r'[A-Za-z0-9_./-]{1,255}', branch)
                 or any(part in ('', '.', '..') for part in branch.split('/'))):
-            raise catalog.CatalogError('Unsafe CCTV source branch')
+            raise catalog.CatalogError('Unsafe OPlus source branch')
         for key in ('system', 'compatibility'):
             if not row[key] or len(row[key]) > 1024 or any(ord(c) < 32 for c in row[key]):
-                raise catalog.CatalogError('Invalid CCTV source description')
+                raise catalog.CatalogError('Invalid OPlus source description')
         from datetime import datetime
         if datetime.fromisoformat(row['source_committed_at'].replace('Z', '+00:00')).tzinfo is None:
-            raise catalog.CatalogError('CCTV source requires a timestamp with timezone')
+            raise catalog.CatalogError('OPlus source requires a timestamp with timezone')
         identity = family(platform), row['kernel']
         if identity in unique or row['recipe_workflow'] in recipes:
-            raise catalog.CatalogError('Duplicate CCTV platform/version or recipe')
+            raise catalog.CatalogError('Duplicate OPlus platform/version or recipe')
         unique.add(identity)
         recipes.add(row['recipe_workflow'])
         raw = (root / 'third_party/cctv-oplus/recipes' / Path(row['recipe_workflow']).name).read_bytes()
         if hashlib.sha256(raw).hexdigest() != row['recipe_sha256']:
-            raise catalog.CatalogError('Vendored CCTV recipe differs from its fixed checksum')
+            raise catalog.CatalogError('Vendored OPlus recipe differs from its fixed checksum')
         rows.append(dict(row))
     return sorted(rows, key=order)
 
 
 def validate_profile(profile):
     if not isinstance(profile, dict):
-        raise catalog.CatalogError('Expected a pinned CCTV source profile')
+        raise catalog.CatalogError('Expected a pinned OPlus source profile')
     expected = next((row for row in load_profiles() if row['id'] == profile.get('id')), None)
     if expected is None or any(profile.get(key) != expected[key] for key in FIELDS):
-        raise catalog.CatalogError('CCTV source profile differs from its reviewed scheme')
+        raise catalog.CatalogError('OPlus source profile differs from its reviewed scheme')
     return expected
 
 
@@ -135,7 +135,7 @@ def prepare_maps(common, profile):
     if row['id'] not in ('sm8650-6.1.57', 'mt6897-6.1.128'):
         return False
     if git(common, 'rev-parse', 'HEAD') != row['kernel_ref']:
-        raise catalog.CatalogError('CCTV MM source changed from the fixed commit')
+        raise catalog.CatalogError('OPlus MM source changed from the fixed commit')
     if row['id'] == 'sm8650-6.1.57':
         from oplus_vma_compat import NATIVE_HEADERS, adapt_vma_source
         fingerprints, adapt = NATIVE_HEADERS, adapt_vma_source
@@ -146,12 +146,12 @@ def prepare_maps(common, profile):
         fingerprints, adapt = PROFILES[row['id']]['native'], adapt_mtk_maps
         absent = PROFILES[row['id']]['absent']
     if any((common / name).exists() or (common / name).is_symlink() for name in absent):
-        raise catalog.CatalogError('Review added CCTV MM migration implementation before adapting SUSFS')
+        raise catalog.CatalogError('Review added OPlus MM migration implementation before adapting SUSFS')
     inputs = {}
     for name, expected in fingerprints.items():
         data = read_source(common, name)[1]
         if digest(data) != expected:
-            raise catalog.CatalogError('Review changed CCTV MM headers/lifecycle before adapting SUSFS')
+            raise catalog.CatalogError('Review changed OPlus MM headers/lifecycle before adapting SUSFS')
         inputs[name] = data
     path, original = read_source(common, 'fs/proc/task_mmu.c')
     changed = adapt(original.decode('utf-8')).encode('utf-8')
@@ -165,7 +165,7 @@ def prepare_maps(common, profile):
         if (read_source(common, 'fs/proc/task_mmu.c')[1] != original
                 or any(read_source(common, name)[1] != raw for name, raw in inputs.items())
                 or git(common, 'rev-parse', 'HEAD') != row['kernel_ref']):
-            raise catalog.CatalogError('CCTV MM source changed during preparation')
+            raise catalog.CatalogError('OPlus MM source changed during preparation')
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)
@@ -176,22 +176,26 @@ def installer_script(profile, variant, prefix):
     validate_profile(profile)
     if variant not in ('SukiSU', 'BakaSU') or not re.fullmatch(
             re.escape(profile['kernel'] + '-' + profile['android_version']) + r'-[0-9]+', prefix):
-        raise catalog.CatalogError('Invalid native CCTV installer target')
+        raise catalog.CatalogError('Invalid native OPlus installer target')
     path = ROOT / 'third_party/cctv-oplus/anykernel.sh'
     if hashlib.sha256(path.read_bytes()).hexdigest() != AK3_SCRIPT_SHA256:
-        raise catalog.CatalogError('Vendored CCTV AnyKernel3 script checksum changed')
+        raise catalog.CatalogError('Vendored OPlus AnyKernel3 script checksum changed')
     raw = path.read_text(encoding='utf-8')
     # Preserve the native split/unpack/write/flash sequence and both optional
     # module installers. Add the real compiled version guard before split_boot.
     marker = '# boot install\nsplit_boot\n'
     if raw.count(marker) != 1:
-        raise catalog.CatalogError('Pinned CCTV installer layout changed')
+        raise catalog.CatalogError('Pinned OPlus installer layout changed')
     guard = ('# boot install\n'
              'case "$(uname -r)" in\n'
              f'  {prefix}|{prefix}-*) ;;\n'
              f'  *) abort "Kernel/Android/KMI mismatch: requires {prefix}" ;;\n'
              'esac\nsplit_boot\n')
-    return raw.replace(marker, guard, 1).encode('utf-8')
+    rendered = raw.replace(marker, guard, 1)
+    rendered = rendered.replace('kernel.string=AnyKernel3 by KernelSU Developers | Build by cctv18',
+        f"kernel.string=Oplus {family(profile['platform'])} {profile['kernel']} {variant}")
+    rendered = rendered.replace('ui_print "内核构建者: Coolapk@cctv18"', 'ui_print "内核构建: cyzrqh/GKI"')
+    return rendered.encode('utf-8')
 
 
 def discover_matrix(root=ROOT, *, target=catalog.ALL_TARGETS):
@@ -199,7 +203,7 @@ def discover_matrix(root=ROOT, *, target=catalog.ALL_TARGETS):
     if target != catalog.ALL_TARGETS:
         rows = [row for row in rows if label(row) == target]
         if len(rows) != 1:
-            raise catalog.CatalogError('Unknown CCTV platform/kernel target')
+            raise catalog.CatalogError('Unknown OPlus platform/kernel target')
     return {'include': rows}
 
 
@@ -224,8 +228,8 @@ def main():
             stream.write('full_catalog=' + str(args.target == catalog.ALL_TARGETS).lower() + '\n')
     if args.summary:
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:
-            stream.write('### 本次 CCTV 欧加真方案\n\n')
-            stream.write('使用对应配方的 CCTV 内核树；管理器及配套 APK 仍使用所选官方源码。\n\n')
+            stream.write('### 本次欧加真构建方案\n\n')
+            stream.write('使用对应方案的完整内核树；管理器及配套 APK 仍使用所选官方源码。\n\n')
             stream.write('| 目标 | 内核源码提交 | 构建配方提交 |\n|---|---|---|\n')
             for row in matrix['include']:
                 stream.write(f"| {label(row)} | `{row['kernel_ref']}` | `{row['recipe_ref']}` |\n")

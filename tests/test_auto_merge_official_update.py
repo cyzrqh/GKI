@@ -114,6 +114,9 @@ class FakeAPI:
 class MergeTests(unittest.TestCase):
     def setUp(self):
         self.api = FakeAPI()
+        validation = patch.object(merge, 'validate_manager_snapshot', return_value={'passed': True})
+        self.compatibility = validation.start()
+        self.addCleanup(validation.stop)
 
     def sync(self):
         return merge.sync(REPO, 1, 'main', self.api)
@@ -130,6 +133,16 @@ class MergeTests(unittest.TestCase):
         self.assertIn('/compare/' + BASE + '...' + HEAD + '?per_page=100&page=1', self.api.calls)
         self.assertIn('/contents/' + KERNELS + '?ref=' + BASE, self.api.calls)
         self.assertEqual([('/pulls/1/merge', {'sha': HEAD, 'merge_method': 'squash'})], self.api.mutations)
+        self.assertEqual(self.api.documents[CANDIDATES, HEAD]['sources'], self.compatibility.call_args.args[0])
+
+    def test_source_integration_failure_prevents_merge_and_keeps_pending_pr(self):
+        self.compatibility.side_effect = merge.ManagerUpdateError('SUSFS/KPM integration failed')
+        self.refused()
+        self.compatibility.assert_called_once()
+
+    def test_source_drift_during_integration_validation_prevents_merge(self):
+        self.compatibility.side_effect = lambda *args, **kwargs: setattr(self.api, 'drift', 'head')
+        self.refused()
 
     def test_trusted_owner_pat_or_real_actions_bot_are_supported(self):
         self.api.pr['user'] = {'login': 'github-actions[bot]', 'type': 'Bot'}
@@ -281,6 +294,11 @@ class MergeTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
+    def setUp(self):
+        validation = patch.object(merge, 'validate_manager_snapshot', return_value={'passed': True})
+        validation.start()
+        self.addCleanup(validation.stop)
+
     def test_fixed_api_only_bounded_json_and_exact_put_contract(self):
         response = io.BytesIO(b'{"merged":true,"sha":"' + COMMIT.encode() + b'"}')
         response.headers = {}

@@ -16,8 +16,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.57.yml",
       "recipe_sha256": "07b61c39ceccd58e67624eaf4e052533d29cb151ea1fcad45d77cfd285045545",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -35,8 +35,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.75.yml",
       "recipe_sha256": "62b6907a09f643b5ba5bb7fa0d7cafca616bdfb3b3d7b1313a942959ac8c0ad6",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -54,8 +54,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.115.yml",
       "recipe_sha256": "0f9735ecdd12cfe0871e77f51529147831c3c46eca369714ab2956b37b614e2e",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -73,8 +73,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.118.yml",
       "recipe_sha256": "af0e4a2bbbe1681a50bdb56caddce404e475c80edb1de352af8d83d8c9b7d7ad",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -92,8 +92,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.128.yml",
       "recipe_sha256": "95d599374091b211c6610943393f9c83195bdd1b9e8e83ed006be8bca69e02f1",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -111,8 +111,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.134.yml",
       "recipe_sha256": "c69acc27d91b6fb359db2716675497967110085b0ac1a5aeceb4f8aa7903ec2a",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -130,8 +130,8 @@
       "recipe_ref": "f4e3a8084a7a5f8203e16ea177c8847c7ff517dc",
       "recipe_workflow": ".github/workflows/fastbuild_6.1.141.yml",
       "recipe_sha256": "d28d4e701a610386d229f454d12ecc8ef0892ea6a1974cbb206a9208fbe892f9",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -149,8 +149,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.30.yml",
       "recipe_sha256": "6c378412df5de1cd663f5a56a13765e09e8579d2fab621253845d3a7f6ac21b3",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -168,8 +168,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.50.yml",
       "recipe_sha256": "70594261f7afa9dd37da0aae4a8611db3f94445900696eb0e2a7b9cec811f2f6",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -187,8 +187,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.56.yml",
       "recipe_sha256": "740534946b902307d3225ba0e84fd44c63b5d1e33d840ff1a89ebefaea0637c2",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -206,8 +206,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.57.yml",
       "recipe_sha256": "4e1c01c93883fb6008bf72f206209a2f40d6fe506658d407fdeb32926c63d025",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -225,8 +225,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.66.yml",
       "recipe_sha256": "0201a530d1e58ce0164ef8719125580783e23b6e0d1e8cbc5c408ea4bc79a714",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -244,8 +244,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.89_mtk.yml",
       "recipe_sha256": "0b6cf0fe3501a611e8f31f4da22d9985fdc1b4f60480ba2d4f6fd8535f5c6124",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -263,8 +263,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.89.yml",
       "recipe_sha256": "6454bcbd078e1db3fd7ba205336e8bb39e8c93a7cc94e39e2630dab538d292ee",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -282,8 +282,8 @@
       "recipe_ref": "0d90ea459dd5013ba5b1cb2e1ebc8c6d1544d746",
       "recipe_workflow": ".github/workflows/fastbuild_6.6.118.yml",
       "recipe_sha256": "c99e710bb0b6a12b0c7d90bd8668b145d817060c89e6c5b0da5e0958004e14b3",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -301,8 +301,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.23_gki.yml",
       "recipe_sha256": "020b48b770a29d2c6986c321de84538f8718bcc2c1e17103efffbc79ab9283b9",
-      "system": "CCTV 通用 GKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "通用 GKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -320,8 +320,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.23_mtk.yml",
       "recipe_sha256": "dde851794260ef88100dd89032c22483d615896368c9da31157e4616f90f909c",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -339,8 +339,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.23.yml",
       "recipe_sha256": "6be31d1ede4bcd8a8906c9cd8652142d00b18c7e7c2b642db512106c2ff1e290",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -358,8 +358,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.38.yml",
       "recipe_sha256": "60560c69999ae35b2eca9d700649a446b15be89f88ef7b72398d1affb3452db8",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -377,8 +377,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.58_mtk.yml",
       "recipe_sha256": "c286f0c071afad3ba13b423d7eeafa9c85f9dfd5d7a38d5d476d711a2d717657",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -396,8 +396,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.58.yml",
       "recipe_sha256": "f212dfd1d3921827fa2b7639fa92ea1fa2d54bb08b497ec2ebf34483f861e029",
-      "system": "CCTV 欧加真 OKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "欧加真 OKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     },
     {
@@ -415,8 +415,8 @@
       "recipe_ref": "6c1ffdac3ebf7ebb80254427a7972262b0a8f64e",
       "recipe_workflow": ".github/workflows/fastbuild_6.12.69_gki.yml",
       "recipe_sha256": "79e554db9267f34f8085d1ff5e4af0bf5d6f1e8954713150acc63358f8660180",
-      "system": "CCTV 通用 GKI 构建方案",
-      "compatibility": "采用 CCTV 对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
+      "system": "通用 GKI 构建方案",
+      "compatibility": "采用对应版本的完整内核源码及构建方案；仍须匹配 Android/KMI、系统及原厂模块，编译成功不代表所有设备已通过开机验证。",
       "cctv_scheme": "cctv-oplus-v1"
     }
   ]

@@ -89,7 +89,7 @@ permissions:
   contents: read
 jobs:
   prepare-matrix:
-    name: 固定全部 CCTV 构建方案、官方管理器与构建依赖
+    name: 固定全部原生构建方案、官方管理器与构建依赖
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     env:
@@ -133,13 +133,13 @@ jobs:
       if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
         == 'BakaSU')
       run: for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done
-    - name: 选择 CCTV 固定源码、平台与完整内核版本
+    - name: 选择固定源码、平台与完整内核版本
       id: matrix
       env:
         GH_TOKEN: ${{ github.token }}
         OPLUS_TARGET: ${{ inputs.build_target }}
       run: python3 tools/oplus_cctv.py --target "$OPLUS_TARGET" --github-output --summary
-    - name: 固定 CCTV AnyKernel3 与可选 Unicode 补丁
+    - name: 固定原生 AnyKernel3 与可选 Unicode 补丁
       id: oplus-deps
       env:
         GH_TOKEN: ${{ github.token }}
@@ -1594,7 +1594,7 @@ jobs:
         python3 tools/transfer_ksu_snapshot.py verify-cache \
           --source "$GITHUB_WORKSPACE/ksu-source-bundle" --expected-ref "$KSU_REF" \
           --prepared-identity "$PREPARED_SOURCE_IDENTITY"
-    - name: 检出固定的 CCTV 构建方法参考
+    - name: 检出固定的原生构建参考
       uses: actions/checkout@v6
       with:
         repository: ${{ matrix.recipe_repository }}
@@ -1602,7 +1602,7 @@ jobs:
         path: oplus-reference
         fetch-depth: 1
         persist-credentials: false
-    - name: 检出 CCTV 固定版本 AnyKernel3 运行文件
+    - name: 检出固定版本 AnyKernel3 运行文件
       uses: actions/checkout@v6
       with:
         repository: cctv18/AnyKernel3
@@ -1666,7 +1666,7 @@ jobs:
           }}
         restore-keys: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
           'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-
-    - name: 获取 CCTV 配方对应的完整源码及工具链
+    - name: 获取对应方案的完整源码及工具链
       run: |
         python3 tools/oplus_recipe.py --phase bootstrap --recipe-root "$GITHUB_WORKSPACE/oplus-reference" \
           --profile "$RUNNER_TEMP/oplus-profile.json" --inputs "$RUNNER_TEMP/oplus-inputs.json" \

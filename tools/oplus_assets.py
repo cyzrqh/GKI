@@ -260,7 +260,7 @@ def template_files(directory: Path, *, cctv=False) -> tuple[dict[str, tuple[byte
     if git(directory, 'status', '--porcelain', '--untracked-files=all'):
         raise AssetError('AnyKernel3 runtime checkout contains changes outside its pinned commit')
     if cctv and digest(regular(directory / 'anykernel.sh', 65536)) != AK3_SCRIPT_SHA256:
-        raise AssetError('CCTV native installer differs from its reviewed fixed script')
+        raise AssetError('Native installer differs from its reviewed fixed script')
     files, total = {}, 0
     for path in directory.rglob('*'):
         relative = path.relative_to(directory).as_posix()
@@ -403,10 +403,10 @@ def validate_document(document: dict) -> None:
     native_cctv = is_cctv(profile)
     if native_cctv:
         if document.get('cctv_source_tree') != source_provenance(profile):
-            raise AssetError('CCTV kernel/recipe provenance differs from its pinned scheme')
+            raise AssetError('Native kernel/recipe provenance differs from its pinned scheme')
         if any(document.get(key) for key in ('f2fs_boot_compatibility', 'scheduler_boot_compatibility',
                 'vendor_sources', 'vendor_locking', 'mtk_cpu_sources', 'mtk_memory_sources')):
-            raise AssetError('A CCTV source tree cannot claim an official-branch source adaptation')
+            raise AssetError('A mirror source tree cannot claim an official-branch source adaptation')
     try:
         # Historical packages remain readable; every new package verifies the
         # actual repaired source before creating this field or its AK3 file.
@@ -617,9 +617,9 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
     hashes = {path.name: digest(regular(path)) for path in files}
     (output / 'SHA256SUMS.txt').write_text(''.join(hashes[name] + '  ' + name + '\n' for name in sorted(hashes)), encoding='utf-8', newline='\n')
     from oplus_cctv import is_cctv
-    source_text = ('来源：CCTV 对应配方的完整内核源码树、工具链和 AnyKernel3；管理器与 SUSFS 使用所选官方源码。'
+    source_text = ('来源：对应方案的完整内核源码树、工具链和 AnyKernel3；管理器与 SUSFS 使用所选官方源码。'
                    if all(is_cctv(row['profile']) for row in records) else
-                   '来源：官方源码；构建方法参考已固定的 CCTV 配方。')
+                   '来源：官方源码；构建方法采用已固定的配方。')
     lines = ['# 欧加真全属性内核构建结果', '', source_text, '',
              '| 管理器 | 版本 |', '|---|---|']
     for variant in sorted(managers):

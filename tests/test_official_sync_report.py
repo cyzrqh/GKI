@@ -132,7 +132,7 @@ class OfficialSyncReportTests(unittest.TestCase):
         self.assertIn('v4.2.1-r2', report['summary_markdown'])
         self.assertIn('v4.2.0-rc3', report['summary_markdown'])
         self.assertIn('v4.2.1-rc1', report['summary_markdown'])
-        self.assertIn('已验证的 SUSFS 配对及适配基线保持不变', report['summary_markdown'])
+        self.assertIn('手动同步另行验证所选管理器与 SUSFS/KPM 的配套', report['summary_markdown'])
 
     def test_initial_baka_observation_is_not_claimed_to_be_a_new_formal_release(self):
         del self.before['sources']['bakasu']

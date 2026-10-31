@@ -23,6 +23,7 @@ from resolve_build_sources import SourceResolutionError
 from snapshot_ksu_source import temporary_directory
 from upstream_pr_guard import (BRANCH, HEADS_MARKER_PATTERN, NoRedirect, GuardError,
                                _owned_pr, validate_base, validate_repository)
+from verify_manager_update import validate_manager_snapshot, ManagerUpdateError
 
 FILES = frozenset(('data/kernels.json', 'data/upstream-candidates.json'))
 PROFILE = 'build-compatibility.json'
@@ -232,7 +233,8 @@ def validate_candidates(document, expected_baseline):
         raise MergeError('Official candidate changes/acknowledgement do not match their validated source snapshot')
 
 
-def sync(repository: str, number: int, base: str, api) -> dict:
+def sync(repository: str, number: int, base: str, api, *, source_cache: Path | None = None,
+         compatibility_report: Path | None = None) -> dict:
     validate_repository(repository)
     validate_base(base)
     if type(number) is not int or number < 1:
@@ -278,6 +280,13 @@ def sync(repository: str, number: int, base: str, api) -> dict:
                 (temporary / PROFILE).write_text(json.dumps(profile), encoding='utf-8')
                 expected_baseline = baseline(temporary)
             validate_candidates(new, expected_baseline)
+    # Metadata synchronization is complete only after the selected real source
+    # can receive the same feature ports used by the build preparation job.
+    candidate = read_file(api, 'data/upstream-candidates.json', head)
+    previous = read_file(api, 'data/upstream-candidates.json', current_base, missing=True)
+    validate_manager_snapshot(candidate['sources'], cache=source_cache or Path.cwd() / '.gki-manager-compatibility',
+                              report_path=compatibility_report,
+                              before_snapshot=previous['sources'] if previous is not None else None)
     # Refuse any source/base drift observed during content validation. A PR's
     # base.sha can be its old creation point; the actual branch ref is our base.
     repository_state(api, repository, base)
@@ -298,19 +307,27 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--pull-request', type=int, required=True)
     parser.add_argument('--base', required=True)
+    parser.add_argument('--source-cache', type=Path,
+                        default=Path(os.environ.get('RUNNER_TEMP', '.')) / 'gki-manager-compatibility')
+    parser.add_argument('--compatibility-report', type=Path)
     parser.add_argument('--github-output', type=Path,
                         default=Path(os.environ['GITHUB_OUTPUT']) if os.environ.get('GITHUB_OUTPUT') else None)
     args = parser.parse_args(argv)
     try:
         repository = os.environ.get('GITHUB_REPOSITORY', '')
         api = GitHub(repository, os.environ.get('GH_TOKEN', ''))
-        result = sync(repository, args.pull_request, args.base, api)
+        result = sync(repository, args.pull_request, args.base, api, source_cache=args.source_cache,
+                      compatibility_report=args.compatibility_report)
         if args.github_output:
             with args.github_output.open('a', encoding='utf-8', newline='\n') as stream:
                 for key, value in result.items():
                     stream.write(key + '=' + (str(value).lower() if type(value) is bool else value) + '\n')
         print(json.dumps(result, ensure_ascii=True))
         return 0
+    except ManagerUpdateError as error:
+        message = str(error).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        print('::error::' + message, file=sys.stderr)
+        return 1
     except (MergeError, GuardError, UpdateError, CompatibilityError, SourceResolutionError, OSError, ValueError, UnicodeError):
         # Remote bodies and data never enter errors, and tokens cannot reach logs.
         print('Official update was not automatically merged: ownership, data, current commits or repository rules could not be verified.', file=sys.stderr)

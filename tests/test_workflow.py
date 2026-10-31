@@ -244,6 +244,8 @@ class WorkflowTests(unittest.TestCase):
         sync = indexed['sync'][1]
         self.assertLess(indexed['pr'][0], indexed['sync'][0])
         self.assertIn('tools/auto_merge_official_update.py', sync['run'])
+        self.assertIn('--compatibility-report', sync['run'])
+        self.assertIn("steps.probe.outputs.partial_failure != 'true'", sync['if'])
         update = indexed['update'][1]
         self.assertEqual(update['env']['OFFICIAL_CANDIDATES'], '${{ steps.official.outputs.candidates_json }}')
         self.assertEqual(update['env']['CATALOG_CANDIDATES'], '${{ steps.catalog.outputs.candidates_json }}')
@@ -306,17 +308,18 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(expected, bool(eval(expression.strip(), {'__builtins__': {}}, {})))
         for event in ('schedule', 'workflow_dispatch'):
             for operation in ('', '仅检查并提醒', '同步官方更新'):
-                for pending in (False, True):
+                for pending, partial in ((False, False), (True, False), (False, True), (True, True)):
                     values = {'github.event_name': repr(event), 'inputs.operation': repr(operation),
                               'steps.probe.outputs.has_updates': repr('true'),
+                              'steps.probe.outputs.partial_failure': repr(str(partial).lower()),
                               'steps.pr.outputs.pull-request-number': repr('' if pending else '12'),
                               'steps.guard.outputs.already_pending': repr(str(pending).lower())}
                     expression = step['if']
                     for name, value in values.items():
                         expression = expression.replace(name, value)
                     allowed = bool(eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}, {}))
-                    with self.subTest(event=event, operation=operation, pending=pending):
-                        self.assertEqual(allowed, event == 'workflow_dispatch' and operation == '同步官方更新')
+                    with self.subTest(event=event, operation=operation, pending=pending, partial=partial):
+                        self.assertEqual(allowed, event == 'workflow_dispatch' and operation == '同步官方更新' and not partial)
 
     def test_catalog_cache_survives_partial_failures_and_final_status_is_explicit(self):
         steps = self.updater['jobs']['check-upstream']['steps']

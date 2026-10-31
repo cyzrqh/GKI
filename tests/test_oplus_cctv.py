@@ -94,6 +94,8 @@ class CctvSchemes(unittest.TestCase):
             self.assertIn('unpack_ramdisk\n    write_boot', text)
             self.assertIn('else\n    flash_boot', text)
             self.assertIn('/data/adb/ksud module install', text)
+            visible = '\n'.join(line for line in text.splitlines() if line.startswith(('ui_print ', 'kernel.string=')))
+            self.assertNotIn('cctv', visible.lower())
             self.assertLess(text.index('Kernel/Android/KMI mismatch'), text.index('\nsplit_boot\n'))
 
     def test_native_and_historical_provenance_are_kept_separate(self):

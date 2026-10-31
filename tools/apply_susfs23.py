@@ -15,6 +15,8 @@ Run after kernel/setup.sh, before other tools modify the KernelSU source.
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 from pathlib import Path
 import re
 import subprocess
@@ -32,7 +34,7 @@ PATCH_MEMORY_ARCHES = ("arm64", "x86_64", "riscv64")
 
 def git(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
-        ["git", "-C", str(repository), *arguments],
+        ["git", "-C", str(repository), "-c", "core.longpaths=true", *arguments],
         check=False, capture_output=True, text=True, encoding="utf-8", errors="replace",
     )
 
@@ -244,6 +246,13 @@ def verify_integration(repository: Path) -> None:
     verify_patch_memory_build((source / "Kbuild").read_text(encoding="utf-8"))
     verify_native_avc(repository)
     verify_native_rcu_allowlist(repository)
+    # An upstream logging cleanup must survive the SUSFS hook replacement.
+    original_setuid = git(repository, 'show', 'HEAD:kernel/hook/setuid_hook.c')
+    if original_setuid.returncode == 0:
+        original = strip_comments_and_literals(original_setuid.stdout)
+        current = strip_comments_and_literals((source / 'hook/setuid_hook.c').read_text(encoding='utf-8'))
+        if len(re.findall(r'\bpr_info\s*\(', current)) > len(re.findall(r'\bpr_info\s*\(', original)):
+            raise ValueError('SUSFS hook port must preserve upstream setuid logging cleanup')
     verify_blacklist_lifecycle((source / "core/init.c").read_text(encoding="utf-8"),
                                (source / "runtime/ksud_integration.c").read_text(encoding="utf-8"))
     original_blacklist = git(repository, "diff", "--quiet", "HEAD", "--",
@@ -285,6 +294,36 @@ def verify_integration(repository: Path) -> None:
                 raise ValueError(f"Incomplete SUSFS 2.3 integration: {relative} lacks {marker!r}")
 
 
+def seed_port_bases(repository: Path, candidates: list[Path]) -> None:
+    """Keep reviewed merge preimages available after an upstream history rewrite."""
+    root = PROFILE_ROOT / 'tools/patches/sukisu-susfs23-base'
+    path = root / 'objects.json'
+    if not path.is_file():
+        return
+    if path.is_symlink() or path.stat().st_size > 65536:
+        raise ValueError('Invalid reviewed SUSFS merge-base inventory')
+    document = json.loads(path.read_text('utf-8'))
+    if (not isinstance(document, dict) or document.get('schema_version') != 1
+            or not isinstance(document.get('objects'), dict) or not 1 <= len(document['objects']) <= 128):
+        raise ValueError('Invalid reviewed SUSFS merge-base inventory')
+    required = {value for candidate in candidates for value in re.findall(
+        r'^index ([0-9a-f]{40})\.\.[0-9a-f]{40}', candidate.read_text('utf-8'), re.M)}
+    for identity in required & document['objects'].keys():
+        digest = document['objects'][identity]
+        if not isinstance(digest, str) or not re.fullmatch(r'[0-9a-f]{64}', digest):
+            raise ValueError('Invalid reviewed SUSFS merge-base digest')
+        source = root / (digest + '.source')
+        if source.is_symlink() or not source.is_file() or source.stat().st_size > 4 * 1024 * 1024:
+            raise ValueError('Missing reviewed SUSFS merge-base source')
+        raw = source.read_bytes()
+        if (hashlib.sha256(raw).hexdigest() != digest
+                or hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() != identity):
+            raise ValueError('Reviewed SUSFS merge base differs from its locked identity')
+        stored = git(repository, 'hash-object', '-w', '--no-filters', '--', str(source))
+        if stored.returncode or stored.stdout.strip() != identity:
+            raise ValueError('Could not restore the reviewed SUSFS Git merge base')
+
+
 def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | None:
     """Accept only an actual conflict-free, reversible merge in a separate clone."""
     from snapshot_ksu_source import temporary_directory
@@ -300,6 +339,7 @@ def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | Non
                      "--config", "core.autocrlf=false", str(bundle), str(checked))
         if cloned.returncode:
             return None
+        seed_port_bases(checked, candidates)
         for candidate in candidates:
             if git(checked, "reset", "--hard", "--quiet", reference.stdout.strip()).returncode:
                 return None
@@ -339,7 +379,7 @@ def apply_reviewed_port(repository: Path, patch: Path, *, allow_variants: bool =
     patch = patch.resolve(strict=True)
     candidates = [patch]
     if allow_variants:
-        for name in ("sukisu-susfs23-avc.patch", "sukisu-susfs23-avc-rcu.patch"):
+        for name in ("sukisu-susfs23-avc.patch", "sukisu-susfs23-avc-rcu.patch", "sukisu-susfs23-quiet.patch"):
             variant = patch.with_name(name)
             if variant.is_file() and variant.resolve() not in candidates:
                 candidates.append(variant.resolve(strict=True))

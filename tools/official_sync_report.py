@@ -390,10 +390,10 @@ def render_report(report: dict) -> str:
     if compatibility['changed']:
         lines.append('**构建兼容性基线发生变化；本报告仅记录差异，不能视为已验证适配成功。**')
     else:
-        lines.append('本次只同步官方候选观察和内核目录；已验证的 SUSFS 配对及适配基线保持不变。')
+        lines.append('本次同步官方版本记录和内核目录；手动同步另行验证所选管理器与 SUSFS/KPM 的配套。适配参考基线与本次管理器实际提交分别记录。')
     before, after = compatibility['before'], compatibility['after']
     lines.extend(['', '| 已验证构建基线 | 之前 | 本次 |', '| --- | --- | --- |',
-                  '| SukiSU 适配提交 | ' + code(before['sukisu_source_ref'][:12]) + ' | ' + code(after['sukisu_source_ref'][:12]) + ' |',
+                  '| SUSFS 适配参考提交（非本次管理器提交） | ' + code(before['sukisu_source_ref'][:12]) + ' | ' + code(after['sukisu_source_ref'][:12]) + ' |',
                   '| SUSFS 版本 | ' + code(before['susfs_version']) + ' | ' + code(after['susfs_version']) + ' |'])
     for target in TARGETS:
         lines.append('| SUSFS ' + target + ' | ' + code(before['susfs_pins'][target][:12]) + ' | ' + code(after['susfs_pins'][target][:12]) + ' |')

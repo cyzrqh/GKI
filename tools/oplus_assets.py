@@ -28,6 +28,7 @@ from oplus_vendor_locking import validate_vendor_locking_provenance, verify_vend
 from oplus_mtk_cpu import validate_mtk_cpu_provenance, verify_mtk_cpu_report
 from oplus_mtk_memory import validate_mtk_memory_provenance, verify_mtk_memory_report
 from validate_arm64_image import validate_image
+from oplus_f2fs_compat import verify_f2fs_compat, validate_f2fs_provenance
 
 
 MEMBER = 'META-INF/oplus-kernel.json'
@@ -306,6 +307,7 @@ def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, 
         raise AssetError('Actual SUSFS configuration differs from the menu selection')
     metadata.update(schema=SCHEMA, schema_version=1, profile=profile, kernel_release=native,
                     compatibility_prefix=prefix, **provenance())
+    metadata['f2fs_boot_compatibility'] = verify_f2fs_compat(common, profile)
     vendor_report_path = common / 'out/gki-oplus-vendor-sources.json'
     vendor_report = (metadata_json(regular(vendor_report_path, 65536))
                      if vendor_report_path.exists() or vendor_report_path.is_symlink() else {})
@@ -378,6 +380,10 @@ def validate_document(document: dict) -> None:
         raise AssetError('Invalid independent OPlus asset schema')
     profile = profile_identity(document.get('profile'))
     try:
+        # Historical packages remain readable; every new package verifies the
+        # actual repaired source before creating this field or its AK3 file.
+        if 'f2fs_boot_compatibility' in document:
+            validate_f2fs_provenance(profile, document['f2fs_boot_compatibility'])
         validate_vendor_provenance(profile, document.get('vendor_sources', {}))
         validate_vendor_locking_provenance(profile, document.get('vendor_locking', {}))
         validate_mtk_cpu_provenance(profile, document.get('mtk_cpu_sources', {}))

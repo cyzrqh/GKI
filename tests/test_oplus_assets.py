@@ -200,6 +200,7 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertEqual(document['vendor_locking'], {})
         self.assertEqual(document['mtk_cpu_sources'], {})
         self.assertEqual(document['mtk_memory_sources'], {})
+        self.assertEqual(document['f2fs_boot_compatibility'], {})
         self.assertEqual(document['kernel_release'], self.native)
         self.assertEqual(document['manager_apk_sha256'], self.manager['apk_sha256'])
         self.assertEqual(document['image_entry'], validate_image(self.image.read_bytes()))

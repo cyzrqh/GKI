@@ -261,6 +261,8 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         if enable_kpm:
             prepare_kpm_members(root, reference)
     if profile['kernel_version'] == '6.1':
+        from oplus_f2fs_compat import prepare_f2fs_compat
+        prepare_f2fs_compat(root / 'common', profile)
         from oplus_vendor_sources import restore_vendor_sources
         from oplus_vendor_locking import restore_vendor_locking
         from oplus_mtk_cpu import restore_mtk_cpu

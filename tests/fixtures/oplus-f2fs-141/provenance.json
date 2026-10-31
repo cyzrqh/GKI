@@ -1,0 +1,18 @@
+{
+  "issue": "https://github.com/OnePlusOSS/android_kernel_common_oneplus_sm8650/issues/35",
+  "license": "GPL-2.0; original file copyright and license notices retained",
+  "official": {
+    "commit": "ebdd1643cfdbf719fb59c6573ce0abe6e794a5cc",
+    "path": "fs/f2fs/checkpoint.c",
+    "repository": "OnePlusOSS/android_kernel_common_oneplus_sm8650",
+    "sha256": "487cf07dcd6d37bff2a5108a551823cca9c0ce5e7feb885ab6e9cc883dfa675e"
+  },
+  "purpose": "Regression fixture for the SM8650 6.1.141 F2FS checkpoint boot issue; not a flashable kernel",
+  "reference": {
+    "commit": "7a244ff186208e81791a0792d5032b63dbad2eda",
+    "path": "fs/f2fs/checkpoint.c",
+    "repository": "cctv18/android_kernel_common_oneplus_sm8650",
+    "sha256": "9a6a8f60bf910b1c7d8621b1a17d15b0929d93ab66fbcdfe2c7ec8a109022df3"
+  },
+  "schema_version": 1
+}

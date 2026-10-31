@@ -231,6 +231,13 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertNotIn('patch_cmdline', script)
         self.assertNotIn('replace_string', script)
 
+    def test_reader_rejects_scheduler_repair_claim_for_another_kernel(self):
+        path = self.pack()
+        rewrite_zip(path, change=lambda data: change_metadata(data, lambda doc:
+            doc.update(scheduler_boot_compatibility={'schema_version': 1, 'files': {}})))
+        with self.assertRaisesRegex(ValueError, 'scheduler repair'):
+            assets.read_kernel(path)
+
     def test_public_names_keep_both_families_without_cpu_codes_or_collisions(self):
         names = [assets.filename({'platform': platform, 'android_version': 'android15',
                                   'kernel': '6.6.118'}, 'SukiSU')

@@ -1,0 +1,17 @@
+{
+  "official_repository": "OnePlusOSS/android_kernel_common_oneplus_sm8650",
+  "official_commit": "ebdd1643cfdbf719fb59c6573ce0abe6e794a5cc",
+  "reference_repository": "cctv18/android_kernel_common_oneplus_sm8650",
+  "reference_commit": "7a244ff186208e81791a0792d5032b63dbad2eda",
+  "files": {
+    "kernel/sched/core.c": {
+      "official_sha256": "915289597be5715b69746b4990cdde5e9617e3dc4200df910a568360c1fe2582",
+      "reference_sha256": "809c7e27953f6e20d4e422f0e07f14b3314c4a0fb33f89275fa9af6502215073"
+    },
+    "kernel/sched/fair.c": {
+      "official_sha256": "2325235ab79de61f8367677fe1b05c579f8cca60548500be895a920fe836433b",
+      "reference_sha256": "17848f67b66a0adadd7bcd77a91e615adc2466856fc0bd5db1130d55ef3311b0"
+    }
+  },
+  "license": "Original complete GPL-2.0 kernel C files, with original copyright and SPDX notices, compressed with gzip for test fixtures."
+}

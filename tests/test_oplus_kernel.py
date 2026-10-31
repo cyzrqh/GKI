@@ -60,6 +60,7 @@ class OPlusKernelTests(unittest.TestCase):
         signature = stack.enter_context(mock.patch.object(kernel, 'configure'))
         stack.enter_context(mock.patch('oplus_compat.prepare_vendor_dependencies', create=True))
         stack.enter_context(mock.patch('oplus_f2fs_compat.prepare_f2fs_compat', return_value={}))
+        stack.enter_context(mock.patch('oplus_scheduler_compat.prepare_scheduler_compat', return_value={}))
         stack.enter_context(mock.patch('oplus_vendor_sources.restore_vendor_sources', return_value={}))
         stack.enter_context(mock.patch('oplus_vendor_locking.restore_vendor_locking', return_value={}))
         stack.enter_context(mock.patch('oplus_mtk_cpu.restore_mtk_cpu', return_value={}))
@@ -132,6 +133,7 @@ class OPlusKernelTests(unittest.TestCase):
     def test_vendor_dependencies_are_checked_after_configuration_before_hook_validation(self):
         self.finalize_mocks()
         with mock.patch('oplus_f2fs_compat.prepare_f2fs_compat') as f2fs, \
+                mock.patch('oplus_scheduler_compat.prepare_scheduler_compat') as scheduler, \
                 mock.patch('oplus_vendor_sources.restore_vendor_sources') as restore, \
                 mock.patch('oplus_vendor_locking.restore_vendor_locking') as locking, \
                 mock.patch('oplus_mtk_cpu.restore_mtk_cpu') as cpu, \
@@ -143,6 +145,7 @@ class OPlusKernelTests(unittest.TestCase):
             locking_provenance = {'schema_version': 1, 'files': {'locking.c': {'sha256': 'e' * 64}}}
             memory_provenance = {'schema_version': 1, 'files': {'mm-trace.h': {'sha256': 'd' * 64}}}
             f2fs.side_effect = lambda common, profile: (order.append(('f2fs', common)) or {})
+            scheduler.side_effect = lambda common, profile: (order.append(('scheduler', common)) or {})
             restore.side_effect = lambda common, profile: (order.append(('restore', common)) or provenance)
             locking.side_effect = lambda common, profile: (order.append(('locking', common)) or locking_provenance)
             cpu.side_effect = lambda common, profile: (order.append(('cpu', common)) or {})
@@ -150,7 +153,7 @@ class OPlusKernelTests(unittest.TestCase):
             prepare.side_effect = lambda common: order.append(('vendor', common))
             hooks.side_effect = lambda *args, **kwargs: (order.append(('hooks', None)) or SimpleNamespace(calls=1, ok=True))
             self.finalize(inputs={**self.inputs, 'enable_susfs': True})
-            self.assertEqual([('f2fs', self.root / 'common'), ('restore', self.root / 'common'), ('locking', self.root / 'common'),
+            self.assertEqual([('f2fs', self.root / 'common'), ('scheduler', self.root / 'common'), ('restore', self.root / 'common'), ('locking', self.root / 'common'),
                               ('cpu', self.root / 'common'), ('memory', self.root / 'common'),
                               ('vendor', self.root / 'common'), ('hooks', None)], order)
             self.assertEqual(provenance, json.loads((self.root / 'common/out/gki-oplus-vendor-sources.json').read_text()))

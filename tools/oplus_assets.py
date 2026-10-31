@@ -29,6 +29,7 @@ from oplus_mtk_cpu import validate_mtk_cpu_provenance, verify_mtk_cpu_report
 from oplus_mtk_memory import validate_mtk_memory_provenance, verify_mtk_memory_report
 from validate_arm64_image import validate_image
 from oplus_f2fs_compat import verify_f2fs_compat, validate_f2fs_provenance
+from oplus_scheduler_compat import verify_scheduler_compat, validate_scheduler_provenance
 
 
 MEMBER = 'META-INF/oplus-kernel.json'
@@ -312,6 +313,7 @@ def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, 
     metadata.update(schema=SCHEMA, schema_version=1, profile=profile, kernel_release=native,
                     compatibility_prefix=prefix, **provenance())
     metadata['f2fs_boot_compatibility'] = verify_f2fs_compat(common, profile)
+    metadata['scheduler_boot_compatibility'] = verify_scheduler_compat(common, profile)
     vendor_report_path = common / 'out/gki-oplus-vendor-sources.json'
     vendor_report = (metadata_json(regular(vendor_report_path, 65536))
                      if vendor_report_path.exists() or vendor_report_path.is_symlink() else {})
@@ -388,6 +390,8 @@ def validate_document(document: dict) -> None:
         # actual repaired source before creating this field or its AK3 file.
         if 'f2fs_boot_compatibility' in document:
             validate_f2fs_provenance(profile, document['f2fs_boot_compatibility'])
+        if 'scheduler_boot_compatibility' in document:
+            validate_scheduler_provenance(profile, document['scheduler_boot_compatibility'])
         validate_vendor_provenance(profile, document.get('vendor_sources', {}))
         validate_vendor_locking_provenance(profile, document.get('vendor_locking', {}))
         validate_mtk_cpu_provenance(profile, document.get('mtk_cpu_sources', {}))

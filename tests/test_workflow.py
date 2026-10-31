@@ -216,7 +216,7 @@ class WorkflowTests(unittest.TestCase):
         operation = self.updater['on']['workflow_dispatch']['inputs']['operation']
         self.assertEqual(operation['options'], ['仅检查并提醒', '同步官方更新'])
         self.assertEqual(operation['default'], '仅检查并提醒')
-        self.assertEqual(set(self.updater['jobs']), {'check-upstream'})
+        self.assertEqual(set(self.updater['jobs']), {'check-upstream', 'reorder-old-release-tags'})
         self.assertNotIn('check-upstream', self.workflow['jobs'])
         self.assertEqual(job['if'], "(github.event_name == 'workflow_dispatch' || github.event_name == 'schedule') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)")
         self.assertNotIn('schedule', self.updater['run-name'])

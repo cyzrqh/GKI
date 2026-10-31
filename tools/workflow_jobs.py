@@ -226,7 +226,15 @@ def updater_workflow():
                           'required': True, 'type': 'choice',
                           'options': ['仅检查并提醒', '同步官方更新'], 'default': '仅检查并提醒'}}}},
         'permissions': {'contents': 'read'},
-        'jobs': {'check-upstream': job},
+        'jobs': {'check-upstream': job,
+                 # release events use the tagged commit's workflow. Existing
+                 # releases predate the new receiver, so reuse the established
+                 # schedule as a fallback without another polling run record.
+                 'reorder-old-release-tags': {
+                     **reorder_release_workflow()['jobs']['reorder'],
+                     'name': '补排旧发行版的遗留标签',
+                     'if': "github.event_name == 'schedule'",
+                 }},
     }
 
 

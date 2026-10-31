@@ -242,3 +242,34 @@ jobs:
       run: |
         echo '::error::部分官方源检查失败；请查看失败步骤并重试。仅成功检查部分可以准备待同步数据。'
         exit 1
+  reorder-old-release-tags:
+    name: 补排旧发行版的遗留标签
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+      queue: max
+    steps:
+    - name: 检出默认分支的标签维护工具
+      uses: actions/checkout@v6
+      with:
+        ref: ${{ github.event.repository.default_branch }}
+        persist-credentials: false
+    - name: 保留原提交与附件并连续重排标签
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      run: |
+        set -euo pipefail
+        for attempt in $(seq 1 32); do
+          status=0
+          python3 tools/reorder_release_tags.py --execute --report "$RUNNER_TEMP/release-tag-reorder.json" || status=$?
+          if [ "$status" = 0 ]; then exit 0; fi
+          if [ "$status" != 75 ] || [ "$attempt" = 32 ]; then exit "$status"; fi
+          echo '已有发行任务尚未结束，等待后重试，不取消或重跑构建。'
+          sleep 30
+        done

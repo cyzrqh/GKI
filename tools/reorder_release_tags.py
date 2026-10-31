@@ -169,7 +169,6 @@ def read_ref(api, tag):
 def reorder(api, *, execute=False, current_run_id='', report_path: Path | None = None) -> dict:
     no_active_publisher(api, current_run_id)
     releases, refs = snapshot(api)
-    latest = api.request('/releases/latest', missing=True)
     rows = [{'release_id': release['id'], 'old': release['tag_name'], 'new': 'r1.' + str(index),
              'sha': release['target_commitish'], 'name': release.get('name')}
             for index, release in enumerate(releases)]
@@ -177,6 +176,15 @@ def reorder(api, *, execute=False, current_run_id='', report_path: Path | None =
     orphan_tags = sorted(set(refs) - wanted, key=lambda tag: int(VERSION_TAG.fullmatch(tag)[1]))
     result = {'repository': api.repository, 'mode': 'execute' if execute else 'preview',
               'state': 'planned', 'mapping': rows, 'deleted_orphan_tags': [], 'old_refs': refs}
+    if execute and not orphan_tags and all(row['old'] == row['new'] for row in rows):
+        # The existing three-hour source check also catches deletions of old
+        # tags whose commits predate the release-event workflow. No writes or
+        # repeated asset enumeration are needed when numbering is contiguous.
+        result.update(state='completed', assets={})
+        if report_path:
+            report_path.write_text(json.dumps(result, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n')
+        return result
+    latest = api.request('/releases/latest', missing=True)
     assets = {release['id']: inventory(api, release['id']) for release in releases}
     result['assets'] = assets
     if report_path:

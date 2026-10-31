@@ -180,3 +180,6 @@ class ReorderTests(unittest.TestCase):
         self.assertNotIn('build-kernel', maintenance['jobs'])
         self.assertEqual('${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}',
                          maintenance['jobs']['reorder']['steps'][1]['env']['GH_TOKEN'])
+        fallback = workflow_jobs.updater_workflow()['jobs']['reorder-old-release-tags']
+        self.assertEqual("github.event_name == 'schedule'", fallback['if'])
+        self.assertEqual(maintenance['jobs']['reorder']['concurrency'], fallback['concurrency'])

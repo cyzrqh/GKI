@@ -7,7 +7,8 @@ from pathlib import Path
 from manager_lkm_jobs import (source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
 from workflow_jobs import release_publish_steps
-from oplus_catalog import load_profiles, target_choices, ALL_TARGETS
+from oplus_catalog import ALL_TARGETS
+from oplus_cctv import load_profiles, target_choices, AK3_REPOSITORY, AK3_REF
 
 OUTPUT = Path('.github/workflows/oplus-full-feature-matrix.yml')
 DISPATCH = "github.event_name == 'workflow_dispatch'"
@@ -99,7 +100,7 @@ def recipe_step(phase: str, name: str):
 
 def prepare_job(base: dict) -> dict:
     prepare = adapt(copy.deepcopy(base['jobs']['prepare-matrix']))
-    prepare['name'] = '固定官方平台内核、所选版本管理器与构建依赖'
+    prepare['name'] = '固定全部 CCTV 构建方案、官方管理器与构建依赖'
     prepare['if'] = DISPATCH
     for key in ('full_catalog', 'max_parallel'):
         prepare['outputs'].pop(key, None)
@@ -111,9 +112,9 @@ def prepare_job(base: dict) -> dict:
         if step.get('name') in ('校验旧版内核 SUSFS 映射兼容性', '验证共享源码还原及原生符号接口'):
             continue
         if step.get('id') == 'matrix':
-            step = {'name': '从官方分支冻结已审核平台与完整内核版本', 'id': 'matrix',
+            step = {'name': '选择 CCTV 固定源码、平台与完整内核版本', 'id': 'matrix',
                     'env': {'GH_TOKEN': '${{ github.token }}', 'OPLUS_TARGET': '${{ inputs.build_target }}'},
-                    'run': 'python3 tools/oplus_catalog.py --target "$OPLUS_TARGET" --github-output --summary'}
+                    'run': 'python3 tools/oplus_cctv.py --target "$OPLUS_TARGET" --github-output --summary'}
         if step.get('id') == 'sources':
             step['env']['KSU_TIER'] = '${{ inputs.kernelsu_branch }}'
             step['env']['CUSTOM_REF'] = ''
@@ -126,9 +127,9 @@ def prepare_job(base: dict) -> dict:
                        "python3 -m unittest discover -s tests -p 'test_oplus_*.py'\n"
                        "python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'"}]
         if step.get('id') == 'matrix':
-            steps.append({'name': '固定官方 AnyKernel3 与可选 Unicode 补丁', 'id': 'oplus-deps',
+            steps.append({'name': '固定 CCTV AnyKernel3 与可选 Unicode 补丁', 'id': 'oplus-deps',
                           'env': {'GH_TOKEN': '${{ github.token }}', 'UNICODE_BYPASS': '${{ inputs.use_unicode_bypass }}'},
-                          'run': 'python3 tools/oplus_kernel.py --phase prepare-deps --unicode-bypass "$UNICODE_BYPASS"'})
+                          'run': 'python3 tools/oplus_cctv.py --prepare-deps --unicode-bypass "$UNICODE_BYPASS"'})
     prepare['steps'] = steps
     return prepare
 
@@ -155,8 +156,8 @@ def kernel_job() -> dict:
         {'name': '检出固定的 CCTV 构建方法参考', 'uses': 'actions/checkout@v6',
          'with': {'repository': '${{ matrix.recipe_repository }}', 'ref': '${{ matrix.recipe_ref }}',
                   'path': 'oplus-reference', 'fetch-depth': 1, 'persist-credentials': False}},
-        {'name': '检出固定的官方 AnyKernel3 运行文件', 'uses': 'actions/checkout@v6',
-         'with': {'repository': 'osm0sis/AnyKernel3', 'ref': '${{ needs.prepare-matrix.outputs.ak3_ref }}',
+        {'name': '检出 CCTV 固定版本 AnyKernel3 运行文件', 'uses': 'actions/checkout@v6',
+         'with': {'repository': AK3_REPOSITORY, 'ref': AK3_REF,
                   'path': 'oplus-ak3', 'fetch-depth': 1, 'persist-credentials': False}},
         {'name': '检出固定的 Unicode 修复补丁', 'if': 'inputs.use_unicode_bypass', 'uses': 'actions/checkout@v6',
          'with': {'repository': 'Xiaomichael/kernel_patches', 'ref': '${{ needs.prepare-matrix.outputs.patches_ref }}',
@@ -186,7 +187,7 @@ python3 tools/kernel_compile_cache.py install \\
          'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '1'},
          'with': {'path': '${{ env.CCACHE_DIR }}',
                   'key': prefix + '${{ github.run_id }}-${{ github.run_attempt }}', 'restore-keys': prefix}},
-        recipe_step('bootstrap', '获取官方固定源码及参考配方工具链'),
+        recipe_step('bootstrap', '获取 CCTV 配方对应的完整源码及工具链'),
         {'name': '接入同次管理器源码及官方 SUSFS', 'run': '''python3 tools/oplus_kernel.py --phase integrate \\
   --workspace "$GITHUB_WORKSPACE" --profile "$RUNNER_TEMP/oplus-profile.json" \\
   --inputs "$RUNNER_TEMP/oplus-inputs.json" --snapshot "$GITHUB_WORKSPACE/ksu-source-bundle"
@@ -246,7 +247,7 @@ ccache --show-stats --verbose | tee "$report"
          'with': {'path': '${{ env.CCACHE_DIR }}', 'key': '${{ steps.oplus-ccache.outputs.cache-primary-key }}'}},
     ]
     return {
-        'name': "${{ startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}",
+        'name': "${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}",
         'if': "always() && !cancelled() && " + DISPATCH + " && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'",
         'needs': ['prepare-matrix', 'build-sukisu-manager'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 120,
         'permissions': {'contents': 'read', 'actions': 'read'},
@@ -258,7 +259,7 @@ ccache --show-stats --verbose | tee "$report"
                 'KSU_BRANCH': '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}',
                 'ENABLE_SUSFS': '${{ inputs.enable_susfs }}',
                 'SUSFS_SOURCES': '${{ needs.prepare-matrix.outputs.susfs_sources }}',
-                'AK3_REF': '${{ needs.prepare-matrix.outputs.ak3_ref }}',
+                'AK3_REF': AK3_REF,
                 'PATCHES_REF': '${{ needs.prepare-matrix.outputs.patches_ref }}',
                 'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '1536M'},
         'steps': steps,

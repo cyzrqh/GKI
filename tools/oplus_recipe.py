@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Run reviewed OPlus build-method phases against an official fixed kernel.
+"""Run pinned OPlus recipes with their selected source tree and toolchain.
 
-CCTV's pinned recipe supplies compiler/configuration methods only. Its kernel
-mirror, moving KernelSU setup, cache deletion, uploads and release jobs are
-never executed. The parent workflow supplies KernelSU, SUSFS and APK identity.
+CCTV schemes use the entire corresponding CCTV kernel tree. Historical
+official-source packages remain verifiable. The parent provides independently
+selected official manager sources, SUSFS and the paired APK trust identity.
 """
 from __future__ import annotations
 
@@ -72,6 +72,9 @@ def strict_json(path: Path):
 
 
 def validate_profile(profile: dict) -> dict:
+    from oplus_cctv import is_cctv, validate_profile as validate_cctv
+    if is_cctv(profile):
+        return validate_cctv(profile)
     fields = ('id', 'platform', 'kernel', 'android_version', 'kernel_version', 'sub_level',
               'kernel_repo', 'kernel_branch', 'kernel_ref', 'recipe_repository', 'recipe_ref',
               'recipe_workflow', 'recipe_sha256', 'system', 'compatibility')
@@ -111,7 +114,9 @@ def native_inputs(inputs: dict, profile: dict) -> dict[str, str]:
     flags = {key: bool_value(value) for key, value in inputs.items()
              if key not in ('kernelsu_variant', 'kernelsu_branch', 'build_target')}
     yes = lambda name: 'true' if flags[name] else 'false'
-    return {'ksu_type': 'sukisu' if inputs['kernelsu_variant'] == 'SukiSU' else 'resukisu',
+    from oplus_cctv import is_cctv
+    return {'ksu_type': 'sukisu' if inputs['kernelsu_variant'] == 'SukiSU' else
+                       ('bakasu' if is_cctv(profile) else 'resukisu'),
             'susfs_enable': yes('enable_susfs'), 'kpm_enable': yes('use_kpm'),
             'lz4kd_enable': yes('use_lz4kd'), 'baseband_guard': yes('use_bbg'),
             'bbr_enable': yes('use_bbr'),
@@ -357,7 +362,8 @@ def check_kernel(root: Path, profile: dict) -> None:
 
 
 def clone_fixed(repository: str, reference: str, directory: Path) -> None:
-    if (repository not in OFFICIAL_REPOSITORIES | {BBG_REPOSITORY, LZ4_REPOSITORY}
+    from oplus_cctv import SOURCE_REPOSITORIES
+    if (repository not in OFFICIAL_REPOSITORIES | SOURCE_REPOSITORIES | {BBG_REPOSITORY, LZ4_REPOSITORY}
             or not isinstance(reference, str) or not SHA.fullmatch(reference)):
         raise RecipeError('Fixed source checkout requires a reviewed repository and full SHA')
     if directory.exists() or directory.is_symlink() or not directory.parent.is_dir():
@@ -394,6 +400,7 @@ def run_steps(steps: list[Step], workspace: Path, extra: dict[str, str] | None =
 
 
 def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, workspace: Path) -> None:
+    from oplus_cctv import is_cctv
     profile = validate_profile(profile)
     if workspace.is_symlink() or not workspace.is_dir():
         raise RecipeError('OPlus workspace must already exist')
@@ -410,6 +417,13 @@ def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, wo
         kernel_workspace.mkdir()
         clone_fixed(profile['kernel_repo'], profile['kernel_ref'], common)
         check_kernel(common, profile)
+        if is_cctv(profile):
+            # The native bootstrap removes these export allowlists before
+            # adding KernelSU; keep that behaviour on the exact mirror only.
+            for path in (common / 'android').glob('abi_gki_protected_exports_*'):
+                if path.is_symlink() or not path.is_file():
+                    raise RecipeError('Unexpected protected-export path')
+                path.unlink()
         run_steps(steps, workspace)
         clang = SERIES[profile['kernel_version']][1]
         required = ['clang' + clang + '/bin/clang', 'clang' + clang + '/bin/ld.lld']
@@ -425,8 +439,14 @@ def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, wo
         check_kernel(common, profile)
         expected_release = None
         if phase == 'build':
-            from oplus_compat import prepare_native_release
-            expected_release = prepare_native_release(common, profile)
+            if is_cctv(profile):
+                naming = select_step(recipe, '添加制作名称')['run']
+                run_steps([Step('CCTV 原生内核版本命名', render(naming, recipe, profile,
+                          native_inputs(inputs, profile)))], workspace)
+                expected_release = profile['kernel'] + '-' + recipe['env']['KERNEL_NAME']
+            else:
+                from oplus_compat import prepare_native_release
+                expected_release = prepare_native_release(common, profile)
         if phase == 'build' and profile['kernel_version'] == '6.12':
             from oplus_compat import prepare_rust_bitcode
             prepare_rust_bitcode(common)

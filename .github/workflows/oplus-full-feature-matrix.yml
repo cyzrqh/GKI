@@ -29,7 +29,6 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_bra
         - 全部内核
         - 骁龙 · 6.1.57
         - 骁龙 · 6.1.75
-        - 天玑 · 6.1.75
         - 天玑 · 6.1.115
         - 骁龙 · 6.1.118
         - 天玑 · 6.1.128
@@ -43,12 +42,13 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_bra
         - 骁龙 · 6.6.89
         - 天玑 · 6.6.89
         - 骁龙 · 6.6.118
-        - 天玑 · 6.6.118
         - 骁龙 · 6.12.23
         - 天玑 · 6.12.23
+        - 通用 GKI · 6.12.23
         - 骁龙 · 6.12.38
         - 骁龙 · 6.12.58
         - 天玑 · 6.12.58
+        - 通用 GKI · 6.12.69
         default: 全部内核
       enable_susfs:
         description: 启用 SUSFS（android14/6.1、android15/6.6、android16/6.12）
@@ -89,7 +89,7 @@ permissions:
   contents: read
 jobs:
   prepare-matrix:
-    name: 固定官方平台内核、所选版本管理器与构建依赖
+    name: 固定全部 CCTV 构建方案、官方管理器与构建依赖
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     env:
@@ -133,18 +133,18 @@ jobs:
       if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
         == 'BakaSU')
       run: for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done
-    - name: 从官方分支冻结已审核平台与完整内核版本
+    - name: 选择 CCTV 固定源码、平台与完整内核版本
       id: matrix
       env:
         GH_TOKEN: ${{ github.token }}
         OPLUS_TARGET: ${{ inputs.build_target }}
-      run: python3 tools/oplus_catalog.py --target "$OPLUS_TARGET" --github-output --summary
-    - name: 固定官方 AnyKernel3 与可选 Unicode 补丁
+      run: python3 tools/oplus_cctv.py --target "$OPLUS_TARGET" --github-output --summary
+    - name: 固定 CCTV AnyKernel3 与可选 Unicode 补丁
       id: oplus-deps
       env:
         GH_TOKEN: ${{ github.token }}
         UNICODE_BYPASS: ${{ inputs.use_unicode_bypass }}
-      run: python3 tools/oplus_kernel.py --phase prepare-deps --unicode-bypass "$UNICODE_BYPASS"
+      run: python3 tools/oplus_cctv.py --prepare-deps --unicode-bypass "$UNICODE_BYPASS"
     - name: 验证 BakaSU KPM 原生接口与补丁
       if: github.event_name == 'workflow_dispatch' && (true || false) && inputs.kernelsu_variant == 'BakaSU'
       run: |
@@ -1487,7 +1487,8 @@ jobs:
           !manager-source/target/**/release/deps/ksuinit-*
         key: ${{ steps.manager-cargo-cache.outputs.cache-primary-key }}
   build-oplus-kernel:
-    name: ${{ startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}
+    name: ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel
+      }} · ${{ inputs.kernelsu_variant }}
     if: always() && !cancelled() && github.event_name == 'workflow_dispatch' && needs.prepare-matrix.result == 'success' &&
       needs.build-sukisu-manager.result == 'success'
     needs:
@@ -1511,7 +1512,7 @@ jobs:
       KSU_BRANCH: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
       ENABLE_SUSFS: ${{ inputs.enable_susfs }}
       SUSFS_SOURCES: ${{ needs.prepare-matrix.outputs.susfs_sources }}
-      AK3_REF: ${{ needs.prepare-matrix.outputs.ak3_ref }}
+      AK3_REF: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
       PATCHES_REF: ${{ needs.prepare-matrix.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
       CCACHE_MAXSIZE: 1536M
@@ -1601,11 +1602,11 @@ jobs:
         path: oplus-reference
         fetch-depth: 1
         persist-credentials: false
-    - name: 检出固定的官方 AnyKernel3 运行文件
+    - name: 检出 CCTV 固定版本 AnyKernel3 运行文件
       uses: actions/checkout@v6
       with:
-        repository: osm0sis/AnyKernel3
-        ref: ${{ needs.prepare-matrix.outputs.ak3_ref }}
+        repository: cctv18/AnyKernel3
+        ref: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
         path: oplus-ak3
         fetch-depth: 1
         persist-credentials: false
@@ -1665,7 +1666,7 @@ jobs:
           }}
         restore-keys: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
           'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-
-    - name: 获取官方固定源码及参考配方工具链
+    - name: 获取 CCTV 配方对应的完整源码及工具链
       run: |
         python3 tools/oplus_recipe.py --phase bootstrap --recipe-root "$GITHUB_WORKSPACE/oplus-reference" \
           --profile "$RUNNER_TEMP/oplus-profile.json" --inputs "$RUNNER_TEMP/oplus-inputs.json" \

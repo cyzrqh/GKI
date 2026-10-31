@@ -260,7 +260,8 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         prepare_builtin_includes(root, reference)
         if enable_kpm:
             prepare_kpm_members(root, reference)
-    if profile['kernel_version'] == '6.1':
+    from oplus_cctv import is_cctv
+    if profile['kernel_version'] == '6.1' and not is_cctv(profile):
         from oplus_f2fs_compat import prepare_f2fs_compat
         prepare_f2fs_compat(root / 'common', profile)
         from oplus_scheduler_compat import prepare_scheduler_compat
@@ -294,10 +295,14 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         patch_checked(root / 'common', patches / 'common/unicode_bypass_fix_6.1+.patch')
     if susfs:
         if profile['kernel_version'] == '6.1':
-            from oplus_vma_compat import prepare_vma_compat
-            from oplus_mtk_vma_compat import prepare_mtk_vma_compat
-            prepare_vma_compat(root / 'common', profile)
-            prepare_mtk_vma_compat(root / 'common', profile)
+            if is_cctv(profile):
+                from oplus_cctv import prepare_maps
+                prepare_maps(root / 'common', profile)
+            else:
+                from oplus_vma_compat import prepare_vma_compat
+                from oplus_mtk_vma_compat import prepare_mtk_vma_compat
+                prepare_vma_compat(root / 'common', profile)
+                prepare_mtk_vma_compat(root / 'common', profile)
         if profile['kernel_version'] == '6.6':
             from ensure_susfs_map_compat import ensure_map_compat
             ensure_map_compat(root)

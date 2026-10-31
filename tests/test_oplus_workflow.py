@@ -18,6 +18,7 @@ import oplus_workflow as workflow
 import oplus_recipe as recipe
 import oplus_kernel as kernel
 import oplus_catalog as catalog
+import oplus_cctv as cctv
 
 
 def heredoc(script):
@@ -54,7 +55,7 @@ class OplusWorkflowTests(unittest.TestCase):
         field = self.document['on']['workflow_dispatch']['inputs']['build_target']
         self.assertEqual(field['type'], 'choice')
         self.assertEqual(field['default'], '全部内核')
-        self.assertEqual(field['options'], catalog.target_choices(catalog.load_profiles(ROOT)))
+        self.assertEqual(field['options'], cctv.target_choices(cctv.load_profiles(ROOT)))
         self.assertIn('骁龙 · 6.1.141', field['options'])
         self.assertIn('骁龙 · 6.6.89', field['options'])
         self.assertIn('天玑 · 6.6.89', field['options'])
@@ -110,7 +111,7 @@ class OplusWorkflowTests(unittest.TestCase):
     def test_official_catalog_and_selected_manager_are_fixed_before_snapshot_and_matrix_jobs(self):
         prepare = self.document['jobs']['prepare-matrix']
         indexed = {item['id']: (index, item) for index, item in enumerate(prepare['steps']) if 'id' in item}
-        self.assertEqual(indexed['matrix'][1]['run'], 'python3 tools/oplus_catalog.py --target "$OPLUS_TARGET" --github-output --summary')
+        self.assertEqual(indexed['matrix'][1]['run'], 'python3 tools/oplus_cctv.py --target "$OPLUS_TARGET" --github-output --summary')
         self.assertEqual(indexed['matrix'][1]['env']['OPLUS_TARGET'], '${{ inputs.build_target }}')
         self.assertLess(indexed['matrix'][0], indexed['sources'][0])
         self.assertLess(indexed['sources'][0], indexed['source-snapshot'][0])
@@ -247,8 +248,8 @@ class OplusWorkflowTests(unittest.TestCase):
         checkouts = {step.get('with', {}).get('path'): step for step in worker['steps'] if step.get('uses') == 'actions/checkout@v6'}
         self.assertEqual(checkouts['oplus-reference']['with']['ref'], '${{ matrix.recipe_ref }}')
         self.assertEqual(checkouts['oplus-reference']['with']['repository'], '${{ matrix.recipe_repository }}')
-        self.assertEqual(checkouts['oplus-ak3']['with']['repository'], 'osm0sis/AnyKernel3')
-        self.assertEqual(checkouts['oplus-ak3']['with']['ref'], '${{ needs.prepare-matrix.outputs.ak3_ref }}')
+        self.assertEqual(checkouts['oplus-ak3']['with']['repository'], cctv.AK3_REPOSITORY)
+        self.assertEqual(checkouts['oplus-ak3']['with']['ref'], cctv.AK3_REF)
         self.assertEqual(checkouts['oplus-patches']['with']['repository'], 'Xiaomichael/kernel_patches')
         self.assertEqual(checkouts['oplus-patches']['with']['ref'], '${{ needs.prepare-matrix.outputs.patches_ref }}')
         self.assertEqual(checkouts['oplus-patches']['if'], 'inputs.use_unicode_bypass')

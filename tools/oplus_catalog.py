@@ -55,6 +55,8 @@ class CatalogError(ValueError):
 
 def platform_family(platform: str) -> str:
     """Public platform label; the exact SoC stays in internal source guards."""
+    if platform == 'gki':
+        return '通用 GKI'
     supported = {repository.rsplit('_', 1)[-1] for repository in OFFICIAL_REPOSITORIES}
     if not isinstance(platform, str) or platform not in supported:
         raise CatalogError('Unsupported reviewed OPlus platform')
@@ -257,7 +259,7 @@ def resolve_profile(profile: dict, reader) -> dict:
 
 def order(row: dict):
     family = platform_family(row['platform'])
-    return tuple(map(int, row['kernel'].split('.'))), {'骁龙': 0, '天玑': 1}[family], row['id']
+    return tuple(map(int, row['kernel'].split('.'))), {'骁龙': 0, '天玑': 1, '通用 GKI': 2}[family], row['id']
 
 
 def target_label(profile: dict) -> str:

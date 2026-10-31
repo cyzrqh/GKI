@@ -1,0 +1,2 @@
+recipes/*.yml -text -whitespace
+anykernel.sh -text -whitespace

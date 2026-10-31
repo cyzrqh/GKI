@@ -85,6 +85,9 @@ def json_input(value: str | Path) -> dict:
 
 
 def profile_identity(document: dict) -> dict:
+    from oplus_cctv import is_cctv, validate_profile as validate_cctv
+    if is_cctv(document):
+        return validate_cctv(document)
     if (not isinstance(document, dict) or not PROFILE_FIELDS <= set(document)
             or any(not isinstance(document[field], str) for field in PROFILE_FIELDS)):
         raise AssetError('OPlus build requires a complete frozen official-source profile')
@@ -154,7 +157,7 @@ def provenance() -> dict:
 def filename(profile: dict, variant: str) -> str:
     if variant not in MANAGERS:
         raise AssetError('Only the paired SukiSU and BakaSU managers are supported')
-    family = {'骁龙': 'Snapdragon', '天玑': 'Dimensity'}[catalog.platform_family(profile['platform'])]
+    family = {'骁龙': 'Snapdragon', '天玑': 'Dimensity', '通用 GKI': 'Generic'}[catalog.platform_family(profile['platform'])]
     return f"Oplus-{family}-{profile['android_version']}-{profile['kernel']}-{variant}-AnyKernel3.zip"
 
 
@@ -170,6 +173,9 @@ def release_prefix(release: str, profile: dict) -> str:
 
 
 def anykernel_script(profile: dict, variant: str, prefix: str) -> bytes:
+    from oplus_cctv import is_cctv, installer_script
+    if is_cctv(profile):
+        return installer_script(profile, variant, prefix)
     # This replaces the upstream example's device/ramdisk/fstab modifications.
     # Explicit boot avoids AnyKernel3's auto preference for init_boot. The
     # split/flash pair preserves an existing ramdisk and permits ramdisk-free
@@ -239,18 +245,22 @@ def verify_kpm(image: bytes, report: dict, payload: bytes) -> None:
         raise AssetError('KPM preset/layout does not describe the actual complete patched Image')
 
 
-def template_files(directory: Path) -> tuple[dict[str, tuple[bytes, int]], str]:
+def template_files(directory: Path, *, cctv=False) -> tuple[dict[str, tuple[bytes, int]], str]:
     if directory.is_symlink() or not directory.is_dir():
         raise AssetError('AnyKernel3 must be an independent official checkout')
     origin = git(directory, 'remote', 'get-url', 'origin')
-    if origin not in ('https://github.com/osm0sis/AnyKernel3', 'https://github.com/osm0sis/AnyKernel3.git'):
+    from oplus_cctv import AK3_REPOSITORY, AK3_REF, AK3_SCRIPT_SHA256
+    repository = AK3_REPOSITORY if cctv else 'osm0sis/AnyKernel3'
+    if origin not in ('https://github.com/' + repository, 'https://github.com/' + repository + '.git'):
         raise AssetError('Only the official osm0sis/AnyKernel3 runtime may be packaged')
     reference = git(directory, 'rev-parse', 'HEAD')
-    expected = os.environ.get('AK3_REF') or os.environ.get('ANYKERNEL3_REF') or reference
+    expected = AK3_REF if cctv else os.environ.get('AK3_REF') or os.environ.get('ANYKERNEL3_REF') or reference
     if not catalog.SHA.fullmatch(reference) or expected != reference:
         raise AssetError('AnyKernel3 runtime differs from its pinned commit')
     if git(directory, 'status', '--porcelain', '--untracked-files=all'):
         raise AssetError('AnyKernel3 runtime checkout contains changes outside its pinned commit')
+    if cctv and digest(regular(directory / 'anykernel.sh', 65536)) != AK3_SCRIPT_SHA256:
+        raise AssetError('CCTV native installer differs from its reviewed fixed script')
     files, total = {}, 0
     for path in directory.rglob('*'):
         relative = path.relative_to(directory).as_posix()
@@ -277,6 +287,8 @@ def template_files(directory: Path) -> tuple[dict[str, tuple[bytes, int]], str]:
 
 def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, output: Path) -> dict:
     profile = profile_identity(profile)
+    from oplus_cctv import is_cctv, source_provenance, AK3_REPOSITORY
+    native_cctv = is_cctv(profile)
     variant, reference = os.environ.get('KSU_VARIANT'), os.environ.get('KSU_REF', '')
     if variant not in MANAGERS or not catalog.SHA.fullmatch(reference):
         raise AssetError('Missing paired manager variant or immutable KernelSU source')
@@ -312,28 +324,30 @@ def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, 
         raise AssetError('Actual SUSFS configuration differs from the menu selection')
     metadata.update(schema=SCHEMA, schema_version=1, profile=profile, kernel_release=native,
                     compatibility_prefix=prefix, **provenance())
-    metadata['f2fs_boot_compatibility'] = verify_f2fs_compat(common, profile)
-    metadata['scheduler_boot_compatibility'] = verify_scheduler_compat(common, profile)
+    metadata['f2fs_boot_compatibility'] = {} if native_cctv else verify_f2fs_compat(common, profile)
+    metadata['scheduler_boot_compatibility'] = {} if native_cctv else verify_scheduler_compat(common, profile)
+    if native_cctv:
+        metadata['cctv_source_tree'] = source_provenance(profile)
     vendor_report_path = common / 'out/gki-oplus-vendor-sources.json'
     vendor_report = (metadata_json(regular(vendor_report_path, 65536))
                      if vendor_report_path.exists() or vendor_report_path.is_symlink() else {})
-    metadata['vendor_sources'] = verify_vendor_report(common, profile, vendor_report)
+    metadata['vendor_sources'] = {} if native_cctv else verify_vendor_report(common, profile, vendor_report)
     locking_report_path = common / 'out/gki-oplus-vendor-locking.json'
     locking_report = (metadata_json(regular(locking_report_path, 65536))
                       if locking_report_path.exists() or locking_report_path.is_symlink() else {})
-    metadata['vendor_locking'] = verify_vendor_locking_report(common, profile, locking_report)
+    metadata['vendor_locking'] = {} if native_cctv else verify_vendor_locking_report(common, profile, locking_report)
     cpu_report_path = common / 'out/gki-oplus-mtk-cpu.json'
     cpu_report = (metadata_json(regular(cpu_report_path, 65536))
                   if cpu_report_path.exists() or cpu_report_path.is_symlink() else {})
-    metadata['mtk_cpu_sources'] = verify_mtk_cpu_report(common, profile, cpu_report)
+    metadata['mtk_cpu_sources'] = {} if native_cctv else verify_mtk_cpu_report(common, profile, cpu_report)
     memory_report_path = common / 'out/gki-oplus-mtk-memory.json'
     memory_report = (metadata_json(regular(memory_report_path, 65536))
                      if memory_report_path.exists() or memory_report_path.is_symlink() else {})
-    metadata['mtk_memory_sources'] = verify_mtk_memory_report(common, profile, memory_report)
+    metadata['mtk_memory_sources'] = {} if native_cctv else verify_mtk_memory_report(common, profile, memory_report)
     for field in MANAGER_BINDINGS:
         metadata[field] = os.environ.get(field.upper(), '')
-    runtime, ak3_ref = template_files(template)
-    metadata['ak3_template'] = {'repository': 'osm0sis/AnyKernel3', 'ref': ak3_ref}
+    runtime, ak3_ref = template_files(template, cctv=True) if native_cctv else template_files(template)
+    metadata['ak3_template'] = {'repository': AK3_REPOSITORY if native_cctv else 'osm0sis/AnyKernel3', 'ref': ak3_ref}
     metadata['runtime_sha256'] = {name: digest(data) for name, (data, _) in runtime.items()}
     report_path = common / 'out/gki-kpm-patch.json'
     payload = None
@@ -385,17 +399,26 @@ def validate_document(document: dict) -> None:
             or type(document.get('schema_version')) is not int or document['schema_version'] != 1):
         raise AssetError('Invalid independent OPlus asset schema')
     profile = profile_identity(document.get('profile'))
+    from oplus_cctv import is_cctv, source_provenance, AK3_REPOSITORY, AK3_REF
+    native_cctv = is_cctv(profile)
+    if native_cctv:
+        if document.get('cctv_source_tree') != source_provenance(profile):
+            raise AssetError('CCTV kernel/recipe provenance differs from its pinned scheme')
+        if any(document.get(key) for key in ('f2fs_boot_compatibility', 'scheduler_boot_compatibility',
+                'vendor_sources', 'vendor_locking', 'mtk_cpu_sources', 'mtk_memory_sources')):
+            raise AssetError('A CCTV source tree cannot claim an official-branch source adaptation')
     try:
         # Historical packages remain readable; every new package verifies the
         # actual repaired source before creating this field or its AK3 file.
-        if 'f2fs_boot_compatibility' in document:
+        if not native_cctv and 'f2fs_boot_compatibility' in document:
             validate_f2fs_provenance(profile, document['f2fs_boot_compatibility'])
-        if 'scheduler_boot_compatibility' in document:
+        if not native_cctv and 'scheduler_boot_compatibility' in document:
             validate_scheduler_provenance(profile, document['scheduler_boot_compatibility'])
-        validate_vendor_provenance(profile, document.get('vendor_sources', {}))
-        validate_vendor_locking_provenance(profile, document.get('vendor_locking', {}))
-        validate_mtk_cpu_provenance(profile, document.get('mtk_cpu_sources', {}))
-        validate_mtk_memory_provenance(profile, document.get('mtk_memory_sources', {}))
+        if not native_cctv:
+            validate_vendor_provenance(profile, document.get('vendor_sources', {}))
+            validate_vendor_locking_provenance(profile, document.get('vendor_locking', {}))
+            validate_mtk_cpu_provenance(profile, document.get('mtk_cpu_sources', {}))
+            validate_mtk_memory_provenance(profile, document.get('mtk_memory_sources', {}))
     except ValueError as error:
         raise AssetError(str(error)) from None
     variant = document.get('ksu_variant')
@@ -430,7 +453,8 @@ def validate_document(document: dict) -> None:
             or not REQUIRED_RUNTIME <= document['runtime_sha256'].keys()
             or any(not isinstance(name, str) or not catalog.SHA256.fullmatch(str(value))
                    for name, value in document['runtime_sha256'].items())
-            or not isinstance(template, dict) or template.get('repository') != 'osm0sis/AnyKernel3'
+            or not isinstance(template, dict) or template.get('repository') != (AK3_REPOSITORY if native_cctv else 'osm0sis/AnyKernel3')
+            or native_cctv and template.get('ref') != AK3_REF
             or not catalog.SHA.fullmatch(str(template.get('ref', '')))):
         raise AssetError('OPlus asset has invalid compiled configuration or official runtime identity')
     if (len(runtime) > 10000 or not any(Path(name).name.casefold().startswith('license') for name in runtime)
@@ -592,8 +616,11 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
         raise AssetError('OPlus report output must be empty; existing files are preserved')
     hashes = {path.name: digest(regular(path)) for path in files}
     (output / 'SHA256SUMS.txt').write_text(''.join(hashes[name] + '  ' + name + '\n' for name in sorted(hashes)), encoding='utf-8', newline='\n')
-    lines = ['# 欧加真全属性内核构建结果', '',
-             '来源：官方源码；构建方法参考已固定的 CCTV 配方。刷入前会检查平台及完整内核/Android/KMI。', '',
+    from oplus_cctv import is_cctv
+    source_text = ('来源：CCTV 对应配方的完整内核源码树、工具链和 AnyKernel3；管理器与 SUSFS 使用所选官方源码。'
+                   if all(is_cctv(row['profile']) for row in records) else
+                   '来源：官方源码；构建方法参考已固定的 CCTV 配方。')
+    lines = ['# 欧加真全属性内核构建结果', '', source_text, '',
              '| 管理器 | 版本 |', '|---|---|']
     for variant in sorted(managers):
         manager = managers[variant]

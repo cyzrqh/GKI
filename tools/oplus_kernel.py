@@ -195,7 +195,8 @@ def integrate_manager(workspace: Path, profile: dict, inputs: dict, snapshot: Pa
     root = checked_root(workspace, profile)
     checkout_snapshot(snapshot, root / 'KernelSU', reference, variant=variant)
     integrate(root, reference)
-    if bool_value(inputs['enable_susfs']):
+    from additional_manager_integration import effective_susfs, integrate_susfs
+    if effective_susfs(variant, bool_value(inputs['enable_susfs'])):
         dependency = workspace.resolve() / 'official-susfs'
         target = profile['android_version'] + '-' + profile['kernel_version']
         restore_source(snapshot, dependency, reference, target, read_json(susfs_sources), variant=variant)
@@ -205,6 +206,8 @@ def integrate_manager(workspace: Path, profile: dict, inputs: dict, snapshot: Pa
         if variant == 'SukiSU':
             from apply_susfs23 import apply_integration
             apply_integration(root, dependency)
+        else:
+            integrate_susfs(root, dependency, variant)
         patch = dependency / ('kernel_patches/50_add_susfs_in_gki-' + target + '.patch')
         patch_checked(root / 'common', patch)
         for relative in ('fs', 'include/linux'):
@@ -230,15 +233,21 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
     verify_manager_checkout(root, reference)
     if os.environ.get('MANAGER_PACKAGE') != identity['package']:
         raise ValueError('The verified APK must use the selected official application ID')
-    configure(root, os.environ['MANAGER_CERT_SIZE'], os.environ['MANAGER_CERT_SHA256'],
-              identity['package'], os.environ['MANAGER_VERSION_CODE'])
+    from manager_variants import ADDITIONAL_MANAGERS
+    from additional_manager_integration import effective_susfs, configure as configure_official
+    if variant in ADDITIONAL_MANAGERS:
+        configure_official(root, os.environ['MANAGER_CERT_SIZE'], os.environ['MANAGER_CERT_SHA256'],
+                           identity['package'], os.environ['MANAGER_VERSION_CODE'], variant=variant)
+    else:
+        configure(root, os.environ['MANAGER_CERT_SIZE'], os.environ['MANAGER_CERT_SHA256'],
+                  identity['package'], os.environ['MANAGER_VERSION_CODE'])
     command([sys.executable, ROOT / '.github/scripts/ensure-ksu-compat.py', root])
     defconfig = root / 'common/arch/arm64/configs/gki_defconfig'
     enable_kpm = bool_value(inputs['use_kpm']) and variant in ('SukiSU', 'BakaSU')
     values = {'CONFIG_KSU': 'y', 'CONFIG_IKCONFIG': 'y', 'CONFIG_IKCONFIG_PROC': 'y',
               'CONFIG_KPROBES': 'y', 'CONFIG_HEADERS_INSTALL': 'y',
               'CONFIG_KPM': 'y' if enable_kpm else 'n'}
-    susfs = bool_value(inputs['enable_susfs'])
+    susfs = effective_susfs(variant, bool_value(inputs['enable_susfs']))
     kconfig = (root / 'KernelSU/kernel/Kconfig').read_text(encoding='utf-8')
     if enable_kpm and not re.search(r'(?m)^config KPM\s*$', kconfig):
         raise ValueError('Selected manager source does not expose its required native KPM bridge configuration')

@@ -19,7 +19,8 @@ import zlib
 
 import apply_kpm_patch as kpm
 from capture_build_metadata import collect as capture, parse_config, state
-from embedded_build_metadata import metadata_json, read_manager_apk, read_member, validate_members
+from embedded_build_metadata import (metadata_json, read_manager_apk, read_member, validate_members,
+                                     official_receipt_from_environment)
 from manager_variants import MANAGERS, manager_profile, valid_manager_apk_filename
 from prepare_release import release_title
 import oplus_catalog as catalog
@@ -579,7 +580,7 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
     current = provenance()
     managers = {}
     for path in apk_paths:
-        manager = read_manager_apk(path)
+        manager = read_manager_apk(path, external_metadata=official_receipt_from_environment())
         variant = manager['ksu_variant']
         if variant not in expected_variants or variant in managers or manager['package'] != manager_profile(variant)['package']:
             raise AssetError('Unexpected, duplicate or wrongly packaged OPlus manager APK')

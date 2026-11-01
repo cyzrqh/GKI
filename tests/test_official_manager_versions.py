@@ -111,9 +111,9 @@ class OfficialManagerVersionTests(unittest.TestCase):
         self.assertIsNone(formal['version_code'])
         self.assertIsNone(formal['commit'])
         self.assertIsNone(formal['ref'])
-        self.assertEqual({variant + '.git' for variant in versions.MANAGERS},
+        self.assertEqual({variant + '.git' for variant in ('SukiSU', 'BakaSU')},
                          {path.name for path in self.cache.iterdir()})
-        for variant in versions.MANAGERS:
+        for variant in ('SukiSU', 'BakaSU'):
             repository = self.cache / (variant + '.git')
             self.assertEqual('true', snapshot.git(repository, 'rev-parse', '--is-bare-repository'))
             self.assertEqual('false', snapshot.git(repository, 'rev-parse', '--is-shallow-repository'))

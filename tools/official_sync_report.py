@@ -26,7 +26,8 @@ FILES = ('data/upstream-candidates.json', 'data/kernels.json', 'build-compatibil
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 MAX_FILE = 512 * 1024
 CHECK_STATES = frozenset(('success', 'failure', 'skipped', 'cancelled', 'unknown'))
-MANAGERS = (('sukisu', 'SukiSU'), ('bakasu', 'BakaSU'))
+from manager_variants import MANAGERS as BUILD_MANAGERS
+MANAGERS = tuple((name.lower(), name) for name in BUILD_MANAGERS)
 MANAGER_CHANNELS = ('正式版', '测试版')
 LEGACY_VERSION_OBSERVATION = {
     'status': 'not-observed',
@@ -75,7 +76,7 @@ def observed_sources(snapshot: dict | None) -> dict[tuple[str, str], dict]:
     if snapshot is None:
         return {}
     result = {}
-    for key, name in (('sukisu', 'SukiSU'), ('bakasu', 'BakaSU')):
+    for key, name in MANAGERS:
         if key not in snapshot:
             continue
         item = snapshot[key]
@@ -355,7 +356,7 @@ def render_manager_versions(observations: dict) -> list[str]:
 def render_report(report: dict) -> str:
     lines = ['## 本次同步的具体变化', '', '以下比较本次检查前的记录与准备提交的数据，不代表已编译或已通过真机验证。', '',
              '| 来源 | 检查结果 |', '| --- | --- |']
-    for key, label in (('official', 'SukiSU / BakaSU / SUSFS'), ('catalog', 'Android GKI 目录')):
+    for key, label in (('official', '管理器 / SUSFS 官方源'), ('catalog', 'Android GKI 目录')):
         value = report['checks'][key]
         lines.append('| ' + label + ' | ' + ('完成' if value == 'success' else '未完成（' + value + '），不能确认有无更新') + ' |')
     lines.extend(render_manager_versions(report['manager_version_codes']))
@@ -397,7 +398,7 @@ def render_report(report: dict) -> str:
                   '| SUSFS 版本 | ' + code(before['susfs_version']) + ' | ' + code(after['susfs_version']) + ' |'])
     for target in TARGETS:
         lines.append('| SUSFS ' + target + ' | ' + code(before['susfs_pins'][target][:12]) + ' | ' + code(after['susfs_pins'][target][:12]) + ' |')
-    lines.extend(['', 'SukiSU / BakaSU 的正式版和最新版在下一次构建时解析所选官方源码。上表中的发布标签为官方版本标签；管理器数字版本号以该次实际 APK 元数据为准，本次检查没有编译 APK 或内核。', ''])
+    lines.extend(['', '各管理器的正式版和最新版在下一次构建时解析所选官方源码。上表中的发布标签为官方版本标签；管理器数字版本号以该次实际 APK 元数据为准，本次检查没有编译 APK 或内核。', ''])
     return '\n'.join(lines)
 
 

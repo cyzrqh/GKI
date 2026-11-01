@@ -77,6 +77,7 @@ class Expected:
     manager_job: str = DEFAULT_MANAGER_JOB
     variant: str = 'SukiSU'
     manager_job_id: int | None = None
+    external_metadata: dict | None = None
 
     def validate(self):
         try:
@@ -209,7 +210,8 @@ def read_identity_archive(archive: bytes, expected: Expected, *,
                     raise IdentityError('Manager artifact filename does not match its APK')
                 filename = entries[0].filename
                 apk = bundle.read(entries[0])
-        metadata = read_manager_apk(apk, filename=filename or expected.artifact_name or None)
+        metadata = read_manager_apk(apk, filename=filename or expected.artifact_name or None,
+                                    external_metadata=expected.external_metadata)
     except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError, UnicodeError,
             ValueError, OSError, NotImplementedError) as error:
         if isinstance(error, IdentityError):
@@ -324,9 +326,13 @@ def _check_run(reader, expected: Expected):
     return run
 
 
+def producer_name_matches(name, expected) -> bool:
+    return name in (expected.manager_job, expected.variant + ' / ' + expected.manager_job)
+
+
 def _validate_producer(job, expected: Expected | ProducerContext, *, job_id: int | None = None,
                        current_attempt: bool = False):
-    if (not isinstance(job, dict) or job.get('name') != expected.manager_job
+    if (not isinstance(job, dict) or not producer_name_matches(job.get('name'), expected)
             or job.get('run_id') != expected.run_id or job.get('head_sha') != expected.head_sha):
         raise IdentityError('Manager producer belongs to a different job, workflow run or commit')
     actual_id = positive_integer(job.get('id'), 'manager producer job ID')
@@ -346,13 +352,13 @@ def _check_manager_job(reader, expected: Expected):
         job = reader.get(f'actions/jobs/{expected.manager_job_id}')
         return _validate_producer(job, expected, job_id=expected.manager_job_id)
     jobs = list(_pages(reader, f"actions/runs/{expected.run_id}/attempts/{expected.run_attempt}/jobs", "jobs"))
-    matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == expected.manager_job]
+    matches = [job for job in jobs if isinstance(job, dict) and producer_name_matches(job.get('name'), expected)]
     if not matches:
         # Rerun failed jobs retains a successful producer from the previous
         # attempt. Only explicit success from the latest manager job permits
         # reusing that exact attempt's already signed identity.
         jobs = list(_pages(reader, f"actions/runs/{expected.run_id}/jobs?filter=latest", "jobs"))
-        matches = [job for job in jobs if isinstance(job, dict) and job.get("name") == expected.manager_job]
+        matches = [job for job in jobs if isinstance(job, dict) and producer_name_matches(job.get('name'), expected)]
     if len(matches) > 1:
         raise IdentityError("More than one manager producer job was found")
     if matches and matches[0].get("status") == "completed" and matches[0].get("conclusion") != "success":
@@ -365,7 +371,7 @@ def record_producer_job(context: ProducerContext, reader) -> int:
     context.validate()
     _check_run(reader, context)
     jobs = list(_pages(reader, f'actions/runs/{context.run_id}/attempts/{context.run_attempt}/jobs', 'jobs'))
-    matches = [job for job in jobs if isinstance(job, dict) and job.get('name') == context.manager_job]
+    matches = [job for job in jobs if isinstance(job, dict) and producer_name_matches(job.get('name'), context)]
     if len(matches) != 1:
         raise IdentityError('Expected exactly one current manager producer before expanding the kernel matrix')
     job = _validate_producer(matches[0], context, current_attempt=True)
@@ -451,6 +457,8 @@ def main():
     parser.add_argument("--head-sha", default=os.environ.get("GITHUB_SHA", ""))
     parser.add_argument("--manager-job-name", default=None)
     parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
+    parser.add_argument('--manager-metadata', default=os.environ.get('GKI_MANAGER_METADATA', ''),
+                        help='Trusted official APK producer output; never read from an unsigned sidecar')
     parser.add_argument("--github-env", type=Path, default=os.environ.get("GITHUB_ENV"))
     parser.add_argument("--timeout", type=float, default=1200)
     parser.add_argument("--interval", type=float, default=15)
@@ -480,7 +488,8 @@ def main():
                             args.expected_ref, args.artifact_name,
                             manager_job, args.variant,
                             positive_integer(args.manager_job_id, 'manager producer job ID')
-                            if args.manager_job_id is not None else None)
+                            if args.manager_job_id is not None else None,
+                            json.loads(args.manager_metadata) if args.manager_metadata else None)
         values = wait_for_identity(expected, GitHubReader(expected.repository),
                                    timeout=args.timeout, interval=args.interval)
         write_environment(args.github_env, values)

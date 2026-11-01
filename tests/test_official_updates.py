@@ -24,6 +24,11 @@ PINS = {target: 'd' * 39 + str(index) for index, target in enumerate(updates.TAR
 
 class OfficialCandidateTests(unittest.TestCase):
     def setUp(self):
+        # These fixtures exercise backwards-compatible SukiSU/BakaSU snapshots.
+        # Six-manager discovery is covered in test_additional_managers.
+        tracks = patch.object(updates, 'ADDITIONAL_TRACKS', {})
+        tracks.start()
+        self.addCleanup(tracks.stop)
         self.root = ROOT / 'tests' / ('.official-updates-' + uuid.uuid4().hex)
         self.root.mkdir()
         self.addCleanup(shutil.rmtree, self.root)

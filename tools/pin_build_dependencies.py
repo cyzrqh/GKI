@@ -99,9 +99,24 @@ def custom_configuration(root: Path) -> bool:
     return bool(re.search(r"^\s*custom\s*=\s*true\s*(?:#.*)?$", path.read_text(encoding="utf-8"), re.M | re.I))
 
 
-def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str) -> tuple[str, str] | None:
+def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str, *,
+                 manager_source: Path | None = None) -> tuple[str, str] | None:
     if not TARGET.fullmatch(target):
         raise CompatibilityError("Invalid Android/kernel target")
+    if variant in ('KernelSU-Next', 'KernelSU'):
+        path = root / 'config/manager-susfs-pins.json'
+        if path.is_file():
+            document = json.loads(path.read_text(encoding='utf-8'))
+            profile = document.get('managers', {}).get(variant, {})
+            legacy = (manager_source is not None
+                      and (manager_source / 'kernel/feature/preinit.c').is_file()
+                      and not (manager_source / 'kernel/preinit/preinit.c').is_file())
+            if ksu_ref in profile.get('source_refs', []) or legacy:
+                reference = profile.get('pins', {}).get(target)
+                if (not isinstance(reference, str) or not SHA.fullmatch(reference)
+                        or document.get('version') != 'v2.3.0'):
+                    raise CompatibilityError('Missing native-ABI SUSFS 2.3 pin for the selected manager')
+                return reference, document['version']
     if variant != "SukiSU" or tier not in TIERS:
         return None
     profile = load_profile(root)

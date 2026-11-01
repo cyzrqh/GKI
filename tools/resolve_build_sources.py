@@ -18,6 +18,10 @@ REPOSITORIES = {
     "Official": "tiann/KernelSU",
     "SukiSU": "SukiSU-Ultra/SukiSU-Ultra",
     "BakaSU": "Baka-SU/BakaSU",
+    "KernelSU-Next": "KernelSU-Next/KernelSU-Next",
+    "KernelSU": "tiann/KernelSU",
+    "KowSU": "KOWX712/KernelSU",
+    "FinaSU": "LyraVoid/FinaSU",
 }
 TIER_ALIASES = {
     "正式版": "Stable(标准)", "最新版": "Latest(最新)",
@@ -216,6 +220,10 @@ def source_result(commit: str, repository: str, source_branch: str, tier: str) -
 
 
 def resolve_sources(root: Path, variant: str, tier: str, custom_ref: str = "", susfs: bool = False) -> dict[str, str]:
+    from manager_variants import ADDITIONAL_MANAGERS
+    if variant in ADDITIONAL_MANAGERS:
+        from additional_manager_integration import effective_susfs
+        susfs = effective_susfs(variant, susfs)
     if variant not in (*REPOSITORIES, "None"):
         raise SourceResolutionError("Unknown KernelSU variant")
     if tier not in TIERS:

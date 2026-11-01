@@ -127,6 +127,19 @@ def _compact(value: str) -> str:
 
 def _gradle_version(text: str, count: int, variant: str) -> int:
     """Recognize only the audited native Gradle formulas and full HEAD count."""
+    if variant in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+        counters = re.findall(r'^fun getGitCommitCount\(\): Int \{(.*?)^\}', text, re.M | re.S)
+        formulas = re.findall(r'^fun getVersionCode\(\): Int \{(.*?)^\}', text, re.M | re.S)
+        expected_count = ('valprocess=Runtime.getRuntime().exec(arrayOf("git","rev-list","--count","HEAD"))'
+                          'returnprocess.inputStream.bufferedReader().use{it.readText().trim().toInt()}')
+        expected_formula = ('valcommitCount=getGitCommitCount()valmajor=1returnmajor*30000+commitCount'
+                            if variant == 'KernelSU-Next' else 'valcommitCount=getGitCommitCount()return30000+commitCount')
+        if (len(counters) != 1 or _compact(counters[0]) != expected_count
+                or len(formulas) != 1 or _compact(formulas[0]) != expected_formula
+                or not re.search(r'(?:extra\["managerVersionCode"\]\s*=\s*getVersionCode\(\)|'
+                                 r'val managerVersionCode by extra\(getVersionCode\(\)\))', text)):
+            raise SnapshotError('Native manager Gradle history formula changed')
+        return 30000 + count
     assignments = re.findall(r'^extra\["managerVersionCode"\][ \t]*=[^\r\n]+', text, re.M)
     if len(assignments) != 1:
         raise SnapshotError('Manager Gradle version formula changed')

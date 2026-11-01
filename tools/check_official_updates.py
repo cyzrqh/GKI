@@ -24,6 +24,8 @@ from resolve_build_sources import (NoRedirect as GitHubNoRedirect, SourceResolut
 ROOT = Path(__file__).resolve().parents[1]
 SUKISU = 'SukiSU-Ultra/SukiSU-Ultra'
 BAKASU = 'Baka-SU/BakaSU'
+from manager_variants import ADDITIONAL_MANAGERS, manager_profile
+ADDITIONAL_TRACKS = {variant.lower(): variant for variant in ADDITIONAL_MANAGERS}
 SUSFS = 'simonpunk/susfs4ksu'
 TARGETS = ('android12-5.10', 'android13-5.15', 'android14-6.1', 'android15-6.6', 'android16-6.12')
 CANDIDATE_PATH = 'data/upstream-candidates.json'
@@ -208,6 +210,23 @@ def fetch_bakasu_snapshot() -> dict:
     return {'branch': branch, 'head': head.lower(), 'release': formal, 'prerelease': prerelease}
 
 
+def fetch_additional_snapshot(variant: str) -> dict:
+    repository = manager_profile(variant)['repository']
+    document = github_lookup(variant + ' repository', github_json, repository)
+    branch = document.get('default_branch')
+    validate_ref(branch)
+    head = github_lookup(variant + ' default branch', github_commit, repository, branch)
+    release = github_lookup(variant + ' formal release', github_json, repository, '/releases/latest', missing=True)
+    formal = None
+    if release is not None:
+        if release.get('draft') is not False or release.get('prerelease') is not False:
+            raise UpdateError('Official manager formal release must be published, not a prerelease')
+        tag = release.get('tag_name')
+        validate_ref(tag)
+        formal = {'tag': tag, 'commit': github_lookup(variant + ' release commit', github_commit, repository, tag)}
+    return {'branch': branch, 'head': head, 'release': formal}
+
+
 def fetch_snapshot(current: dict) -> dict:
     repository = github_lookup('SukiSU repository', github_json, SUKISU)
     branch = repository.get('default_branch')
@@ -248,12 +267,13 @@ def fetch_snapshot(current: dict) -> dict:
     return validate_snapshot({'schema_version': 1,
                               'sukisu': {'branch': branch, 'head': head, 'release': release, 'development': development},
                               'bakasu': fetch_bakasu_snapshot(),
+                              **{key: fetch_additional_snapshot(variant) for key, variant in ADDITIONAL_TRACKS.items()},
                               'susfs': {target: gitlab_head(target) for target in TARGETS}})
 
 
 def validate_snapshot(value: object) -> dict:
-    if (not isinstance(value, dict) or set(value) not in ({'schema_version', 'sukisu', 'susfs'},
-                                                      {'schema_version', 'sukisu', 'bakasu', 'susfs'})
+    if (not isinstance(value, dict) or not {'schema_version', 'sukisu', 'susfs'} <= set(value)
+            or set(value) - {'schema_version', 'sukisu', 'susfs', 'bakasu'} - set(ADDITIONAL_TRACKS)
             or type(value['schema_version']) is not int or value['schema_version'] != 1):
         raise UpdateError('Unsupported official candidate snapshot schema')
     suki, susfs = value['sukisu'], value['susfs']
@@ -305,6 +325,22 @@ def validate_snapshot(value: object) -> dict:
                     raise UpdateError('Invalid official BakaSU ' + key + ' snapshot')
                 validate_ref(entry['tag'])
             result['bakasu'][key] = {'tag': entry['tag'], 'commit': entry['commit'].lower()} if entry is not None else None
+    for key, variant in ADDITIONAL_TRACKS.items():
+        if key not in value:
+            continue
+        item = value[key]
+        if (not isinstance(item, dict) or set(item) != {'branch', 'head', 'release'}
+                or not isinstance(item['head'], str) or not SHA.fullmatch(item['head'])):
+            raise UpdateError('Invalid official ' + variant + ' snapshot')
+        validate_ref(item['branch'])
+        release = item['release']
+        if release is not None:
+            if (not isinstance(release, dict) or set(release) != {'tag', 'commit'}
+                    or not isinstance(release['commit'], str) or not SHA.fullmatch(release['commit'])):
+                raise UpdateError('Invalid official ' + variant + ' formal release')
+            validate_ref(release['tag'])
+        result[key] = {'branch': item['branch'], 'head': item['head'].lower(),
+                       'release': {'tag': release['tag'], 'commit': release['commit'].lower()} if release else None}
     return result
 
 
@@ -317,6 +353,9 @@ def head_state(snapshot: dict) -> dict:
         result['sukisu_development'] = snapshot['sukisu']['development']
     if 'bakasu' in snapshot:
         result['bakasu'] = snapshot['bakasu']
+    for key in ADDITIONAL_TRACKS:
+        if key in snapshot:
+            result[key] = snapshot[key]
     return result
 
 
@@ -378,6 +417,17 @@ def changes(current: dict, snapshot: dict) -> list[dict[str, str]]:
         if snapshot['susfs'][target] != current['susfs'][target]:
             selected.append({'source': 'SUSFS', 'ref': 'gki-' + target, 'current': current['susfs'][target],
                              'candidate': snapshot['susfs'][target], 'url': f'https://gitlab.com/{SUSFS}/-/commit/' + snapshot['susfs'][target]})
+    for key, variant in ADDITIONAL_TRACKS.items():
+        if key not in snapshot:
+            continue
+        item = snapshot[key]
+        repository = manager_profile(variant)['repository']
+        selected.append({'source': variant, 'ref': item['branch'], 'current': '', 'candidate': item['head'],
+                         'url': f'https://github.com/{repository}/commit/' + item['head']})
+        release = item['release']
+        if release:
+            selected.append({'source': variant + ' release', 'ref': release['tag'], 'current': '',
+                             'candidate': release['commit'], 'url': f'https://github.com/{repository}/releases/tag/' + quote(release['tag'], safe='')})
     return selected
 
 

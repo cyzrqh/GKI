@@ -5,7 +5,12 @@ import os
 import re
 
 
-MANAGERS = ('SukiSU', 'BakaSU')
+LOCAL_MANAGERS = ('SukiSU', 'BakaSU')
+ADDITIONAL_MANAGERS = ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU')
+MANAGERS = LOCAL_MANAGERS + ADDITIONAL_MANAGERS
+COMBINED_SELECTION = 'SukiSU + BakaSU + KernelSU-Next'
+COMBINED_MANAGERS = ('SukiSU', 'BakaSU', 'KernelSU-Next')
+MANAGER_SELECTIONS = MANAGERS + (COMBINED_SELECTION,)
 # Actual Gradle application IDs, not Kotlin namespaces. BakaSU retains its
 # upstream ReSukiSU ID; its current Kotlin namespace is org.bakasu.bakasu.
 _PROFILES = {
@@ -13,6 +18,14 @@ _PROFILES = {
                'package': 'com.sukisu.ultra', 'apk_prefixes': ('SukiSU',)},
     'BakaSU': {'repository': 'Baka-SU/BakaSU',
                'package': 'com.resukisu.resukisu', 'apk_prefixes': ('BakaSU', 'ReSukiSU')},
+    'KernelSU-Next': {'repository': 'KernelSU-Next/KernelSU-Next',
+                     'package': 'com.rifsxd.ksunext', 'apk_prefixes': ('KernelSU_Next',)},
+    'KernelSU': {'repository': 'tiann/KernelSU',
+                 'package': 'me.weishu.kernelsu', 'apk_prefixes': ('KernelSU',)},
+    'KowSU': {'repository': 'KOWX712/KernelSU',
+              'package': 'com.kowx712.supermanager', 'apk_prefixes': ('KernelSU', 'KowSU', 'SuperManager')},
+    'FinaSU': {'repository': 'LyraVoid/FinaSU',
+               'package': 'me.yuki.fina', 'apk_prefixes': ('FinaSU',)},
 }
 
 
@@ -28,9 +41,19 @@ def selected_variant(variant: str | None = None) -> str:
     return selected
 
 
+def selected_managers(selection: str) -> tuple[str, ...]:
+    """Expand the menu once; every build still receives exactly one manager."""
+    if selection == COMBINED_SELECTION:
+        return COMBINED_MANAGERS
+    manager_profile(selection)
+    return (selection,)
+
+
 def valid_manager_apk_filename(name: str, variant: str = 'SukiSU', *,
                                allow_unsigned: bool = False) -> bool:
     profile = manager_profile(variant)
+    if variant != 'KernelSU-Next' and isinstance(name, str) and name.startswith('KernelSU_Next_'):
+        return False
     prefixes = '|'.join(re.escape(prefix) for prefix in profile['apk_prefixes'])
     unsigned = r'(?:-unsigned)?' if allow_unsigned else ''
     return (isinstance(name, str) and len(name) <= 250 and '..' not in name

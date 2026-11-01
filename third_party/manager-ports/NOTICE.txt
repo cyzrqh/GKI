@@ -1,0 +1,23 @@
+The reviewed kernel integration patches and their merge preimages retain the
+copyright and license terms of their upstream authors.
+
+Official root managers:
+  https://github.com/KernelSU-Next/KernelSU-Next
+  https://github.com/tiann/KernelSU
+  https://github.com/KOWX712/KernelSU
+  https://github.com/LyraVoid/FinaSU
+
+SUSFS integration:
+  https://gitlab.com/simonpunk/susfs4ksu
+  https://github.com/pershoot/KernelSU-Next
+
+Generic GKI and additional manager build reference:
+  https://github.com/WildKernels/GKI_KernelSU_SUSFS
+  https://github.com/WildKernels/OnePlus_KernelSU_SUSFS
+
+The OPlus build reference and its attribution remain in third_party/cctv-oplus.
+Exact patch digests, original blob digests and upstream revisions are recorded
+beside each reviewed patch under tools/patches/*-susfs23*-base/objects.json.
+Local changes preserve the selected official APK's package, signature and native
+version calculation. The two stable ports use the corresponding official SUSFS
+2.3 native hook ABI, pinned in config/manager-susfs-pins.json.

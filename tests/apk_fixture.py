@@ -47,13 +47,14 @@ def lp(data):
     return struct.pack('<I', len(data)) + data
 
 
-def signed_apk(metadata=None, *, member='assets/gki-build.json', extra=False, raw_metadata=None):
+def signed_apk(metadata=None, *, member='assets/gki-build.json', extra=False, raw_metadata=None,
+               manifest_bytes=None):
     key, certificate = material()
     metadata = manager_metadata() if metadata is None else metadata
     raw_metadata = json.dumps(metadata, sort_keys=True).encode() if raw_metadata is None else raw_metadata
     stream = io.BytesIO()
     with zipfile.ZipFile(stream, 'w') as archive:
-        entries = [('AndroidManifest.xml', b'APK manifest fixture'), ('classes.dex', b'APK dex fixture'),
+        entries = [('AndroidManifest.xml', manifest_bytes if manifest_bytes is not None else b'APK manifest fixture'), ('classes.dex', b'APK dex fixture'),
                    ('lib/arm64-v8a/libksud.so', b'APK daemon fixture'), (member, raw_metadata)]
         if extra:
             entries.append(('../untrusted', b'unsafe APK member'))

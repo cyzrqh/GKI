@@ -20,6 +20,8 @@ import sys
 import yaml
 
 from oplus_catalog import OFFICIAL_REPOSITORIES, RECIPE_REPOSITORIES, ALL_TARGETS, target_label
+from manager_variants import MANAGERS
+from additional_manager_integration import effective_susfs
 
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
@@ -106,7 +108,7 @@ def bool_value(value) -> bool:
 
 def native_inputs(inputs: dict, profile: dict) -> dict[str, str]:
     if (not isinstance(inputs, dict) or not INPUTS <= set(inputs) or set(inputs) - INPUTS - {'build_target'}
-            or inputs['kernelsu_variant'] not in ('SukiSU', 'BakaSU')
+            or inputs['kernelsu_variant'] not in MANAGERS
             or inputs['kernelsu_branch'] not in ('正式版', '最新版')):
         raise RecipeError('Expected the supported OPlus menu inputs and manager version choice')
     if inputs.get('build_target', ALL_TARGETS) not in (ALL_TARGETS, target_label(profile)):
@@ -115,9 +117,12 @@ def native_inputs(inputs: dict, profile: dict) -> dict[str, str]:
              if key not in ('kernelsu_variant', 'kernelsu_branch', 'build_target')}
     yes = lambda name: 'true' if flags[name] else 'false'
     from oplus_cctv import is_cctv
-    return {'ksu_type': 'sukisu' if inputs['kernelsu_variant'] == 'SukiSU' else
-                       ('bakasu' if is_cctv(profile) else 'resukisu'),
-            'susfs_enable': yes('enable_susfs'), 'kpm_enable': yes('use_kpm'),
+    variant = inputs['kernelsu_variant']
+    native = {'SukiSU': 'sukisu', 'BakaSU': 'bakasu' if is_cctv(profile) else 'resukisu',
+              'KernelSU-Next': 'ksunext', 'KernelSU': 'ksu', 'KowSU': 'kowsu', 'FinaSU': 'finasu'}
+    return {'ksu_type': native[variant],
+            'susfs_enable': 'true' if effective_susfs(variant, flags['enable_susfs']) else 'false',
+            'kpm_enable': yes('use_kpm') if variant in ('SukiSU', 'BakaSU') else 'false',
             'lz4kd_enable': yes('use_lz4kd'), 'baseband_guard': yes('use_bbg'),
             'bbr_enable': yes('use_bbr'),
             'better_net': 'false' if profile['platform'].startswith('mt') else yes('use_proxy_optimization'),

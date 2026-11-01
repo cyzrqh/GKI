@@ -174,7 +174,8 @@ def prepare_maps(common, profile):
 
 def installer_script(profile, variant, prefix):
     validate_profile(profile)
-    if variant not in ('SukiSU', 'BakaSU') or not re.fullmatch(
+    from manager_variants import MANAGERS
+    if variant not in MANAGERS or not re.fullmatch(
             re.escape(profile['kernel'] + '-' + profile['android_version']) + r'-[0-9]+', prefix):
         raise catalog.CatalogError('Invalid native OPlus installer target')
     path = ROOT / 'third_party/cctv-oplus/anykernel.sh'

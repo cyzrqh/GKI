@@ -24,7 +24,7 @@ from manager_variants import MANAGERS, valid_manager_apk_filename
 
 AK3_NAME = re.compile(
     r'(?P<android>android[0-9]+)-(?P<series>[0-9]+\.[0-9]+)\.(?P<sublevel>[0-9]+|X)-'
-    r'(?P<patch>[0-9]{4}-(?:0[1-9]|1[0-2])|lts)-AnyKernel3\.zip\Z')
+    r'(?P<patch>[0-9]{4}-(?:0[1-9]|1[0-2])|lts)(?:-(?P<manager>SukiSU|BakaSU|KernelSU-Next|KernelSU|KowSU|FinaSU))?-AnyKernel3\.zip\Z')
 SHA256 = re.compile(r'[0-9a-fA-F]{64}\Z')
 SOURCE_REF = re.compile(r'[0-9a-f]{40}\Z')
 MAX_AK3_BYTES = 512 * 1024 * 1024
@@ -66,6 +66,8 @@ def validate_kernel_document(metadata: dict) -> None:
     if parsed is None or parsed.tzinfo is None or parsed.utcoffset() != dt.timedelta(0):
         raise PackagingError('Embedded kernel lacks its UTC build timestamp')
     variant = metadata.get('ksu_variant')
+    if match['manager'] is not None and match['manager'] != variant:
+        raise PackagingError('Kernel filename manager differs from the embedded variant')
     if not isinstance(variant, str) or not variant or len(variant) > 100 or any(ord(c) < 32 for c in variant):
         raise PackagingError('Invalid embedded KernelSU variant')
     if variant != 'None':

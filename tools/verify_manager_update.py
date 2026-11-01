@@ -90,7 +90,7 @@ def fetch_reference(repository: Path, reference: str) -> int:
 
 def check_source(repository: Path, variant: str, reference: str, count: int) -> dict:
     with temporary_directory(repository.parent, '.manager-compatibility-') as temporary:
-        source = temporary / 'source'
+        source = temporary / 'KernelSU'
         git(temporary, 'clone', '--quiet', '--shared', '--no-checkout', str(repository), str(source))
         git(source, 'checkout', '--quiet', '--detach', reference)
         git(source, 'remote', 'set-url', 'origin', 'https://github.com/' + manager_profile(variant)['repository'] + '.git')
@@ -106,13 +106,23 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
                 apply_reviewed_port(source, PATCH_PATH, allow_variants=True)
                 checks = ['SUSFS 2.3 完整接入及原生生命周期', 'KPM 原生接口保留',
                           '管理器图标依赖及 Kotlin 模块索引', '管理器/内核版本公式一致']
-            else:
+            elif variant == 'BakaSU':
                 from restore_bakasu_kpm import restore_bakasu_kpm, verify_bakasu_kpm_port
                 from ensure_bakasu_symbol_lookup import validate_native_symbol_lookup
                 restore_bakasu_kpm(source, reference)
                 verify_bakasu_kpm_port(source, reference)
                 validate_native_symbol_lookup(source, reference, Path('kernel'))
                 checks = ['KPM 完整还原及正反向校验', '原生符号接口', '管理器/内核版本公式一致']
+            else:
+                from additional_manager_integration import apply_next_port, configure
+                if variant in ('KernelSU-Next', 'KernelSU'):
+                    name = 'next-susfs23' if variant == 'KernelSU-Next' else 'official-susfs23'
+                    if not (source / 'kernel/preinit/preinit.c').is_file():
+                        name += '-stable'
+                    apply_next_port(source, name=name)
+                configure(temporary, '827', 'a' * 64, manager_profile(variant)['package'], str(code), variant=variant)
+                checks = ['官方管理器/内核完整历史版本一致', '原生包名及证书绑定接口',
+                          '完整 SUSFS 适配' if variant != 'KowSU' else 'KowSU 原生构建（不支持 SUSFS）']
         except (OSError, ValueError, RuntimeError) as error:
             raise SourceIntegrationError(str(error), code) from None
         return {'version_code': code, 'checks': checks}

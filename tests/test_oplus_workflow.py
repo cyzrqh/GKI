@@ -42,7 +42,8 @@ class OplusWorkflowTests(unittest.TestCase):
         fields = self.document['on']['workflow_dispatch']['inputs']
         self.assertEqual(set(fields), recipe.INPUTS | {'build_target'})
         self.assertEqual(len(fields), 10)
-        self.assertEqual(fields['kernelsu_variant']['options'], ['SukiSU', 'BakaSU'])
+        from manager_variants import MANAGER_SELECTIONS
+        self.assertEqual(fields['kernelsu_variant']['options'], list(MANAGER_SELECTIONS))
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
         self.assertEqual([key for key in fields if fields[key]['default'] is True],
                          ['enable_susfs', 'use_kpm', 'use_lz4kd'])
@@ -100,7 +101,9 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(self.base, before)
         for name in ('build-sukisu-manager', 'build-sukisu-lkm'):
             expected = workflow.adapt(copy.deepcopy(self.base['jobs'][name]))
-            expected['if'] = workflow.DISPATCH
+            if name == 'build-sukisu-lkm':
+                from additional_manager_jobs import LOCAL_IF
+                expected['if'] = workflow.DISPATCH + ' && ' + LOCAL_IF
             self.assertEqual(self.document['jobs'][name], expected)
         manager = self.document['jobs']['build-sukisu-manager']
         self.assertIn('build-sukisu-lkm', manager['needs'])
@@ -393,7 +396,8 @@ class OplusWorkflowTests(unittest.TestCase):
 
     def test_generated_fourth_workflow_is_reproducible_yaml_with_boolean_on(self):
         current = generator.load_yaml(ROOT / workflow.OUTPUT)
-        self.assertEqual(current, self.document)
+        from combined_manager_workflow import add_combined
+        self.assertEqual(current, add_combined(self.document, oplus=True)[0])
         self.assertIs(current['on']['workflow_dispatch']['inputs']['enable_susfs']['default'], True)
         self.assertIs(current['jobs']['build-oplus-kernel']['strategy']['fail-fast'], False)
 

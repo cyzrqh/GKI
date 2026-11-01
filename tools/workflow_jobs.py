@@ -64,7 +64,7 @@ def updater_job():
              'with': {'path': '${{ runner.temp }}/gki-kernel-catalog',
                       'key': 'gki-official-catalog-v1-${{ github.run_id }}-${{ github.run_attempt }}',
                       'restore-keys': 'gki-official-catalog-v1-'}},
-            {'name': '检查 SukiSU、BakaSU 与 SUSFS 官方更新', 'id': 'official',
+            {'name': '检查六种管理器与 SUSFS 官方更新', 'id': 'official',
              'continue-on-error': True,
              'env': {'GH_TOKEN': '${{ github.token }}'},
              'run': 'python3 tools/check_official_updates.py --check-only'},
@@ -131,12 +131,12 @@ import json,os,pathlib
 path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'official-update.md'
 official_ok = os.environ['OFFICIAL_RESULT'] == 'success'
 catalog_ok = os.environ['CATALOG_RESULT'] == 'success'
-status = ('SukiSU/BakaSU/SUSFS：' + ('检查完成' if official_ok else '检查失败，未确认有无更新') +
+status = ('管理器/SUSFS 官方源：' + ('检查完成' if official_ok else '检查失败，未确认有无更新') +
           '；Android GKI：' + ('检查完成' if catalog_ok else '检查失败，未确认有无更新'))
 if not (official_ok and catalog_ok):
     status += '。本次仅提交成功检查部分的候选；失败部分须重试，不能视为全部官方源已检查。'
 body = ('<!-- gki-upstream-sync:v1 -->\\n' + os.environ['HEADS_MARKER'] + '\\n\\n'
-        '# 官方源更新\\n\\n本 PR 直接跟踪 SukiSU、BakaSU、SUSFS 和 Android GKI 官方源，不依赖其他构建仓库。\\n\\n'
+        '# 官方源更新\\n\\n本 PR 直接跟踪 SukiSU、BakaSU、KernelSU-Next、KernelSU、KowSU、FinaSU、SUSFS 和 Android GKI 官方源。\\n\\n'
         + status + '\\n\\n'
         '本 PR 只准备待同步的数据，不会因检查而自动合并。请在 Actions 的“检查并同步官方更新”中选择“同步官方更新”，完成管理器配套验证后再同步。新 APK 和内核仍需另外触发构建。\\n\\n'
         + (path.parent / 'official-sync-report.md').read_text(encoding='utf-8'))
@@ -219,7 +219,7 @@ if [ -f "$RUNNER_TEMP/manager-compatibility.md" ]; then
   cat "$RUNNER_TEMP/manager-compatibility.md" >> "$GITHUB_STEP_SUMMARY"
 fi
 if [ "$OFFICIAL_RESULT" != success ] || [ "$CATALOG_RESULT" != success ]; then
-  printf '\\n部分官方检查未完成：SukiSU/BakaSU/SUSFS=%s，Android GKI=%s。失败部分须重试；不能确认全部官方源是否更新。\\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"
+  printf '\\n部分官方检查未完成：管理器/SUSFS=%s，Android GKI=%s。失败部分须重试；不能确认全部官方源是否更新。\\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" >> "$GITHUB_STEP_SUMMARY"
 fi
 '''},
             successful_cleanup_sweep_step(),

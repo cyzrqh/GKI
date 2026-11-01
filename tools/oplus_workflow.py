@@ -15,7 +15,8 @@ DISPATCH = "github.event_name == 'workflow_dispatch'"
 KPM_IF = "inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')"
 INPUTS = {
     'kernelsu_variant': {'description': 'KernelSU 变体', 'required': True, 'type': 'choice',
-                        'options': ['SukiSU', 'BakaSU'], 'default': 'SukiSU'},
+                        'options': ['SukiSU', 'BakaSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU',
+                                    'SukiSU + BakaSU + KernelSU-Next'], 'default': 'SukiSU'},
     'kernelsu_branch': {'description': '版本', 'required': True, 'type': 'choice',
                        'options': ['正式版', '最新版'], 'default': '最新版'},
     'build_target': {'description': '编译目标（可单独编译一个平台和内核）', 'required': True,
@@ -297,11 +298,14 @@ def create_workflow(root: Path, base: dict | None = None) -> dict:
         base = create_gki(root)
     lkm = adapt(copy.deepcopy(base['jobs']['build-sukisu-lkm']))
     manager = adapt(copy.deepcopy(base['jobs']['build-sukisu-manager']))
-    lkm['if'] = manager['if'] = DISPATCH
+    # Keep the conditional dependency for unchanged local SukiSU/BakaSU builds;
+    # the additional managers verify the upstream signed APK instead of LKMs.
+    from additional_manager_jobs import LOCAL_IF
+    lkm['if'] = DISPATCH + ' && ' + LOCAL_IF
     fields = copy.deepcopy(INPUTS)
     fields['kernelsu_branch'] = copy.deepcopy(base['on']['workflow_dispatch']['inputs']['kernelsu_branch'])
     fields['build_target']['options'] = target_choices(load_profiles(root))
-    return {
+    workflow = {
         'name': '欧加真全属性内核构建矩阵',
         'run-name': "欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_branch }} · ${{ inputs.build_target || '全部内核' }}",
         'on': {'workflow_dispatch': {'inputs': fields}},
@@ -310,3 +314,5 @@ def create_workflow(root: Path, base: dict | None = None) -> dict:
                  'build-sukisu-manager': manager, 'build-oplus-kernel': kernel_job(),
                  'verify-oplus-assets': collect_job()},
     }
+    from manager_workflow_extensions import extend_oplus
+    return extend_oplus(workflow)

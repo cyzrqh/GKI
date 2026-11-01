@@ -14,6 +14,9 @@ import uuid
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import generate_workflow as generator
+from manager_variants import MANAGER_SELECTIONS, MANAGERS
+from additional_manager_jobs import LOCAL_IF, ALL_IF
+from manager_workflow_extensions import EFFECTIVE_SUSFS
 
 
 class WorkflowTests(unittest.TestCase):
@@ -37,7 +40,7 @@ class WorkflowTests(unittest.TestCase):
                      if 'tools/verify_manager_boot_patch.py' in step.get('run', ''))
         verify = steps[index]
         self.assertNotIn('continue-on-error', verify)
-        self.assertNotIn('if', verify)
+        self.assertEqual(LOCAL_IF, verify['if'])
         self.assertIn('--module-report "$RUNNER_TEMP/manager-lkm-stage.json"', verify['run'])
         self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-build'), index)
         self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'sign'))
@@ -59,7 +62,7 @@ class WorkflowTests(unittest.TestCase):
     def test_manager_choices_only_expose_two_variants_and_two_shared_versions(self):
         fields = self.workflow['on']['workflow_dispatch']['inputs']
         self.assertEqual(fields['kernelsu_variant']['default'], 'SukiSU')
-        self.assertEqual(fields['kernelsu_variant']['options'], ['SukiSU', 'BakaSU'])
+        self.assertEqual(fields['kernelsu_variant']['options'], list(MANAGER_SELECTIONS))
         self.assertEqual(fields['kernelsu_branch']['default'], '最新版')
         self.assertEqual(fields['kernelsu_branch']['description'], '版本')
         self.assertEqual(fields['kernelsu_branch']['options'], ['正式版', '最新版'])
@@ -397,7 +400,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(manager['name'], '编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK')
         self.assertEqual(manager['needs'], ['prepare-matrix', 'build-sukisu-lkm'])
         self.assertNotIn('strategy', manager)
-        self.assertEqual(manager['if'], generator.MANAGER_IF)
+        self.assertEqual(manager['if'], generator.manager_job()['if'])
         self.assertEqual({'contents': 'read', 'actions': 'read'}, manager['permissions'])
         self.assertEqual('${{ steps.manager-producer.outputs.manager_job_id }}', manager['outputs']['manager_job_id'])
         producer = next(step for step in manager['steps'] if step.get('id') == 'manager-producer')
@@ -430,7 +433,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(kernel['needs'], ['prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager'])
         self.assertEqual(kernel['permissions'], {'contents': 'read', 'actions': 'read'})
         wait = self.find('编译前读取本次 APK 的实际签名信息')
-        self.assertEqual(wait['if'], "inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'")
+        self.assertEqual(wait['if'], ALL_IF)
         self.assertIn('wait_manager_identity.py', wait['run'])
         self.assertIn('--expected-ref "$KSU_REF"', wait['run'])
         self.assertIn('--manager-job-id "$MANAGER_JOB_ID"', wait['run'])
@@ -443,7 +446,7 @@ class WorkflowTests(unittest.TestCase):
         upload = next(step for step in manager['steps'] if step['name'] == '上传管理器安装包')
         self.assertEqual(upload['uses'], 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)
-        self.assertEqual(upload['with']['path'], 'manager-artifact/${{ steps.sign.outputs.apk_filename }}')
+        self.assertEqual(upload['with']['path'], 'manager-artifact/${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}')
         self.assertNotIn('name', upload['with'])
         collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
                           if step['name'] == '收集本次构建产物')
@@ -464,7 +467,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('build-sukisu-manager', kernels['needs'])
         self.assertNotIn('build-kernel', manager['needs'])
         self.assertEqual(20, self.workflow['on']['workflow_dispatch']['inputs']['max_parallel']['default'])
-        for variant in ('SukiSU', 'None', 'KernelSU', 'BakaSU'):
+        for variant in MANAGERS:
             for producer in ('success', 'failure', 'cancelled', 'skipped'):
                 with self.subTest(variant=variant, producer=producer):
                     values = {
@@ -478,9 +481,10 @@ class WorkflowTests(unittest.TestCase):
                     expression = kernels['if']
                     for name, value in values.items():
                         expression = expression.replace(name, value)
-                    expression = expression.replace('&&', ' and ').replace('||', ' or ').replace('!False', 'not False')
+                    import re
+                    expression = re.sub(r'!(?!=)', 'not ', expression.replace('&&', ' and ').replace('||', ' or '))
                     allowed = bool(eval(expression, {'__builtins__': {}}, {}))
-                    self.assertEqual(variant not in ('SukiSU', 'BakaSU') or producer == 'success', allowed)
+                    self.assertEqual(producer == 'success', allowed)
 
     def test_release_rerun_collects_only_this_attempts_signed_manager_filename(self):
         collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
@@ -987,13 +991,13 @@ class WorkflowTests(unittest.TestCase):
         self.assertLess(names.index(pin['name']), names.index('应用 SUSFS 补丁'))
         self.assertEqual(pin['env']['PIN_KSU_REF'], '${{ env.BRANCH }}')
         self.assertEqual(pin['env']['PIN_KSU_TIER'], '${{ needs.prepare-matrix.outputs.effective_ksu_branch }}')
-        self.assertEqual(pin['if'], "inputs.enable_susfs && inputs.kernelsu_variant == 'SukiSU'")
+        self.assertEqual(pin['if'], EFFECTIVE_SUSFS + " && inputs.kernelsu_variant == 'SukiSU'")
 
     def test_susfs_is_fixed_once_and_workers_restore_before_dependency_downloads(self):
         prepare = self.workflow['jobs']['prepare-matrix']
         shared = next(step for step in prepare['steps'] if step.get('id') == 'shared-susfs')
         snapshot = next(step for step in prepare['steps'] if step.get('id') == 'source-snapshot')
-        self.assertEqual(shared['if'], generator.BUILD_IF + ' && inputs.enable_susfs')
+        self.assertEqual(shared['if'], generator.BUILD_IF + ' && ' + EFFECTIVE_SUSFS)
         self.assertLess(prepare['steps'].index(shared), prepare['steps'].index(snapshot))
         self.assertEqual(shared['env']['SUSFS_MATRIX'], '${{ steps.matrix.outputs.matrix }}')
         self.assertIn('shared_susfs_source.py prepare', shared['run'])

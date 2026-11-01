@@ -12,6 +12,11 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_bra
         options:
         - SukiSU
         - BakaSU
+        - KernelSU-Next
+        - KernelSU
+        - KowSU
+        - FinaSU
+        - SukiSU + BakaSU + KernelSU-Next
         default: SukiSU
       kernelsu_branch:
         description: 版本
@@ -91,7 +96,7 @@ jobs:
   prepare-matrix:
     name: 固定全部原生构建方案、官方管理器与构建依赖
     runs-on: ubuntu-24.04
-    if: github.event_name == 'workflow_dispatch'
+    if: (github.event_name == 'workflow_dispatch') && !(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
     permissions:
@@ -130,8 +135,9 @@ jobs:
         python3 -m unittest discover -s tests -p 'test_oplus_*.py'
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
     - name: 检查管理器构建脚本
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (true || false) && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       run: for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done
     - name: 选择固定源码、平台与完整内核版本
       id: matrix
@@ -158,7 +164,7 @@ jobs:
         KSU_VARIANT: ${{ inputs.kernelsu_variant }}
         KSU_TIER: ${{ inputs.kernelsu_branch }}
         CUSTOM_REF: ''
-        ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        ENABLE_SUSFS: ${{ (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') }}
         GH_TOKEN: ${{ github.token }}
       run: |
         python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \
@@ -186,8 +192,9 @@ jobs:
         PY
     - name: 仅下载一次官方管理器源码
       uses: actions/checkout@v6
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (true || false) && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       with:
         repository: ${{ steps.sources.outputs.ksu_repo }}
         ref: ${{ steps.sources.outputs.ksu_ref }}
@@ -196,7 +203,7 @@ jobs:
         persist-credentials: false
     - name: 矩阵展开前统一下载并固定 SUSFS
       id: shared-susfs
-      if: github.event_name == 'workflow_dispatch' && true && inputs.enable_susfs
+      if: github.event_name == 'workflow_dispatch' && true && (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU')
       env:
         SUSFS_MATRIX: ${{ steps.matrix.outputs.matrix }}
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
@@ -207,12 +214,13 @@ jobs:
           --tier "$KSU_TIER" --root "$GITHUB_WORKSPACE" --output "$RUNNER_TEMP/susfs-sources.json"
     - name: 展开矩阵前验证并固定源码快照
       id: source-snapshot
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (true || false) && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       env:
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
         KSU_TIER: ${{ steps.sources.outputs.effective_ksu_branch }}
-        ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
+        ENABLE_SUSFS: ${{ true && (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') || false }}
       run: |
         set -euo pipefail
         snapshot_args=()
@@ -240,8 +248,9 @@ jobs:
         PY
     - name: 固定源码树和管理器版本身份
       id: source-identity
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (true || false) && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       env:
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
       run: |
@@ -262,8 +271,9 @@ jobs:
       uses: actions/cache/save@v5
       timeout-minutes: 3
       continue-on-error: true
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (true || false) && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       with:
         path: ksu-source-bundle
         key: ${{ steps.source-snapshot.outputs.source_cache_key }}
@@ -271,8 +281,9 @@ jobs:
       uses: actions/cache/restore@v5
       timeout-minutes: 3
       continue-on-error: true
-      if: github.event_name == 'workflow_dispatch' && (true || false) && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
-        == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (true || false) && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       with:
         path: ksu-source-bundle
         key: ${{ steps.source-snapshot.outputs.source_cache_key }}
@@ -288,7 +299,7 @@ jobs:
   build-sukisu-lkm:
     name: ${{ inputs.kernelsu_variant }} 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -327,7 +338,7 @@ jobs:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
         KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
-        ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
+        ENABLE_SUSFS: ${{ true && (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore-official \
           --expected-ref "$KSU_REF" \
@@ -527,7 +538,10 @@ jobs:
         PY
   build-sukisu-manager:
     name: 编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK
-    if: github.event_name == 'workflow_dispatch'
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && ((inputs.kernelsu_variant == 'KernelSU-Next'
+      || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant == 'KowSU' || inputs.kernelsu_variant == 'FinaSU')
+      || ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && needs.build-sukisu-lkm.result ==
+      'success'))
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
     needs:
@@ -540,13 +554,16 @@ jobs:
       actions: read
     outputs:
       manager_job_id: ${{ steps.manager-producer.outputs.manager_job_id }}
-      manager_package: ${{ steps.sign.outputs.manager_package }}
-      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
-      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
-      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
-      manager_version_name: ${{ steps.sign.outputs.manager_version_name }}
-      manager_version_code: ${{ steps.sign.outputs.manager_version_code }}
-      apk_filename: ${{ steps.sign.outputs.apk_filename }}
+      manager_package: ${{ steps.sign.outputs.manager_package || steps.official-apk.outputs.manager_package }}
+      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size || steps.official-apk.outputs.manager_cert_size }}
+      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 || steps.official-apk.outputs.manager_cert_sha256 }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 || steps.official-apk.outputs.apk_sha256 }}
+      manager_version_name: ${{ steps.sign.outputs.manager_version_name || steps.official-apk.outputs.manager_version_name
+        }}
+      manager_version_code: ${{ steps.sign.outputs.manager_version_code || steps.official-apk.outputs.manager_version_code
+        }}
+      apk_filename: ${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
+      manager_metadata: ${{ steps.official-apk.outputs.manager_metadata }}
     steps:
     - name: 检出构建工具
       uses: actions/checkout@v6
@@ -568,6 +585,7 @@ jobs:
           echo '::error::请先按 README 配置 SUKISU_APK_KEYSTORE 和 SUKISU_APK_PASSWORD。签名密钥应长期保持不变。'
           exit 1
         fi
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 还原本次固定源码缓存
       id: source-cache
       uses: actions/cache/restore@v5
@@ -588,7 +606,7 @@ jobs:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
         KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
-        ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
+        ENABLE_SUSFS: ${{ true && (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore-official \
           --expected-ref "$KSU_REF" \
@@ -630,6 +648,7 @@ jobs:
                     'manager_cert_sha256':os.environ['MANAGER_CERT_SHA256']}
         pathlib.Path(os.environ['RUNNER_TEMP'],'manager-public-certificate.json').write_text(json.dumps(document)+'\n')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android12-5.10（第 1 次）
       id: manager-lkm-0
       uses: actions/cache/restore@v5
@@ -646,8 +665,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android12-5.10（等待后重试 1）
-      if: steps.manager-lkm-0.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-0.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android12-5.10（第 2 次）
@@ -666,9 +687,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-0.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-0.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android12-5.10（等待后重试 2）
-      if: steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android12-5.10（第 3 次）
@@ -687,7 +710,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android12-5.10
       id: manager-lkm-0-ready
       shell: bash
@@ -713,6 +737,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.10（第 1 次）
       id: manager-lkm-1
       uses: actions/cache/restore@v5
@@ -729,8 +754,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.10（等待后重试 1）
-      if: steps.manager-lkm-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-1.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android13-5.10（第 2 次）
@@ -749,9 +776,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-1.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.10（等待后重试 2）
-      if: steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android13-5.10（第 3 次）
@@ -770,7 +799,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.10
       id: manager-lkm-1-ready
       shell: bash
@@ -796,6 +826,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.15（第 1 次）
       id: manager-lkm-2
       uses: actions/cache/restore@v5
@@ -812,8 +843,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.15（等待后重试 1）
-      if: steps.manager-lkm-2.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-2.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android13-5.15（第 2 次）
@@ -832,9 +865,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-2.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-2.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.15（等待后重试 2）
-      if: steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android13-5.15（第 3 次）
@@ -853,7 +888,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.15
       id: manager-lkm-2-ready
       shell: bash
@@ -879,6 +915,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android14-5.15（第 1 次）
       id: manager-lkm-3
       uses: actions/cache/restore@v5
@@ -895,8 +932,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android14-5.15（等待后重试 1）
-      if: steps.manager-lkm-3.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-3.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android14-5.15（第 2 次）
@@ -915,9 +954,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-3.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-3.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android14-5.15（等待后重试 2）
-      if: steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android14-5.15（第 3 次）
@@ -936,7 +977,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android14-5.15
       id: manager-lkm-3-ready
       shell: bash
@@ -962,6 +1004,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android14-6.1（第 1 次）
       id: manager-lkm-4
       uses: actions/cache/restore@v5
@@ -978,8 +1021,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android14-6.1（等待后重试 1）
-      if: steps.manager-lkm-4.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-4.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android14-6.1（第 2 次）
@@ -998,9 +1043,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-4.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-4.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android14-6.1（等待后重试 2）
-      if: steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android14-6.1（第 3 次）
@@ -1019,7 +1066,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android14-6.1
       id: manager-lkm-4-ready
       shell: bash
@@ -1045,6 +1093,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android15-6.6（第 1 次）
       id: manager-lkm-5
       uses: actions/cache/restore@v5
@@ -1061,8 +1110,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android15-6.6（等待后重试 1）
-      if: steps.manager-lkm-5.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-5.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android15-6.6（第 2 次）
@@ -1081,9 +1132,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-5.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-5.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android15-6.6（等待后重试 2）
-      if: steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android15-6.6（第 3 次）
@@ -1102,7 +1155,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android15-6.6
       id: manager-lkm-5-ready
       shell: bash
@@ -1128,6 +1182,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android16-6.12（第 1 次）
       id: manager-lkm-6
       uses: actions/cache/restore@v5
@@ -1144,8 +1199,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android16-6.12（等待后重试 1）
-      if: steps.manager-lkm-6.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-6.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android16-6.12（第 2 次）
@@ -1164,9 +1221,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-6.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-6.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android16-6.12（等待后重试 2）
-      if: steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android16-6.12（第 3 次）
@@ -1185,7 +1244,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android16-6.12
       id: manager-lkm-6-ready
       shell: bash
@@ -1211,6 +1271,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android17-6.18（第 1 次）
       id: manager-lkm-7
       uses: actions/cache/restore@v5
@@ -1227,8 +1288,10 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android17-6.18（等待后重试 1）
-      if: steps.manager-lkm-7.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-7.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android17-6.18（第 2 次）
@@ -1247,9 +1310,11 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-7.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-7.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
     - name: 读取镜像修补模块 android17-6.18（等待后重试 2）
-      if: steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android17-6.18（第 3 次）
@@ -1268,7 +1333,8 @@ jobs:
           '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true'
+      if: (steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true') &&
+        (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 读取镜像修补模块 android17-6.18
       id: manager-lkm-7-ready
       shell: bash
@@ -1294,6 +1360,7 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 按官方流程打包完整 LKM 模块
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -1301,6 +1368,7 @@ jobs:
         python3 tools/prepare_manager_lkm.py stage --source manager-source --artifacts manager-lkm \
           --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF" \
           --expected-kmis "android12-5.10,android13-5.10,android13-5.15,android14-5.15,android14-6.1,android15-6.6,android16-6.12,android17-6.18" --report "$RUNNER_TEMP/manager-lkm-stage.json"
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 配置 BakaSU 配套管理器签名提示
       if: inputs.kernelsu_variant == 'BakaSU'
       run: |
@@ -1313,6 +1381,7 @@ jobs:
       with:
         distribution: temurin
         java-version: '21'
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 恢复管理器 Gradle 依赖
       id: manager-gradle-cache
       uses: actions/cache/restore@v5
@@ -1328,6 +1397,7 @@ jobs:
           'manager-source/manager/**/gradle.properties', 'manager-source/manager/**/libs.versions.toml', 'manager-source/manager/gradle/wrapper/gradle-wrapper.properties')
           }}
         restore-keys: gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 恢复管理器 Gradle 编译缓存
       id: manager-gradle-build-cache
       uses: actions/cache/restore@v5
@@ -1341,6 +1411,7 @@ jobs:
           'manager-source/manager/gradle/libs.versions.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
           'manager-source/manager/gradle/libs.versions.toml') }}-
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 准备 Android SDK 与 NDK
       run: |
         set -euo pipefail
@@ -1353,6 +1424,7 @@ jobs:
         else
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
         fi
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 准备 ARM64 Rust 工具链
       run: |
         set -euo pipefail
@@ -1361,9 +1433,11 @@ jobs:
         rustup toolchain install "$toolchain" --profile minimal
         rustup default "$toolchain"
         rustup target add aarch64-linux-android --toolchain "$toolchain"
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 记录 Rust 编译器缓存版本
       id: manager-rust-version
       run: echo "version=$(rustc -vV | sha256sum | cut -c1-20)" >> "$GITHUB_OUTPUT"
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 恢复管理器 Cargo 依赖
       id: manager-cargo-cache
       uses: actions/cache/restore@v5
@@ -1391,6 +1465,7 @@ jobs:
           }}
         restore-keys: gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{
           runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 编译管理器与同版本 ksud
       id: manager-build
       env:
@@ -1406,6 +1481,7 @@ jobs:
         esac
         bash -n "$script"
         bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 实际验证八种 KMI 的镜像修补与恢复
       env:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -1413,6 +1489,7 @@ jobs:
         python3 tools/verify_manager_boot_patch.py --source "$GITHUB_WORKSPACE/manager-source" \
           --module-report "$RUNNER_TEMP/manager-lkm-stage.json" --expected-ref "$KSU_REF" \
           --output "$RUNNER_TEMP/manager-boot-patch-check"
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 签名并校验可安装 APK
       id: sign
       env:
@@ -1425,6 +1502,7 @@ jobs:
         python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \
           --output-dir "$GITHUB_WORKSPACE/manager-artifact" \
           --build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
     - name: 记录管理器真实版本
       env:
         META_FILE: ${{ steps.sign.outputs.apk_filename }}
@@ -1436,19 +1514,35 @@ jobs:
         META_MANAGER_CERT_SIZE: ${{ steps.sign.outputs.manager_cert_size }}
         META_MANAGER_CERT_SHA256: ${{ steps.sign.outputs.manager_cert_sha256 }}
         META_APK_SHA256: ${{ steps.sign.outputs.apk_sha256 }}
-        META_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        META_ENABLE_SUSFS: ${{ (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') }}
       run: python3 tools/capture_manager_metadata.py --output manager-artifact/manager.json
+      if: (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+    - name: 获取并验证官方同版本管理器 APK
+      id: official-apk
+      if: (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+        == 'KowSU' || inputs.kernelsu_variant == 'FinaSU')
+      timeout-minutes: 15
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
+        KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
+        KSU_SOURCE_BRANCH: ${{ needs.prepare-matrix.outputs.ksu_source_branch }}
+      run: |
+        python3 tools/official_manager_apk.py --source manager-source --output manager-artifact \
+          --variant "$KSU_VARIANT" --expected-ref "$KSU_REF" --tier "$KSU_TIER" \
+          --source-branch "$KSU_SOURCE_BRANCH"
     - name: 上传管理器安装包
       uses: actions/upload-artifact@v7
       with:
-        path: manager-artifact/${{ steps.sign.outputs.apk_filename }}
+        path: manager-artifact/${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
         archive: false
         if-no-files-found: error
         overwrite: true
     - name: 保存管理器 Gradle 编译缓存
       uses: actions/cache/save@v5
-      if: always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-gradle-build-cache.outputs.cache-primary-key
-        != '' && steps.manager-gradle-build-cache.outputs.cache-hit != 'true'
+      if: (always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-gradle-build-cache.outputs.cache-primary-key
+        != '' && steps.manager-gradle-build-cache.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' ||
+        inputs.kernelsu_variant == 'BakaSU')
       continue-on-error: true
       timeout-minutes: 3
       with:
@@ -1456,8 +1550,9 @@ jobs:
         key: ${{ steps.manager-gradle-build-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Gradle 依赖
       uses: actions/cache/save@v5
-      if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key
-        != '' && steps.manager-gradle-cache.outputs.cache-hit != 'true'
+      if: (always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key
+        != '' && steps.manager-gradle-cache.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       continue-on-error: true
       timeout-minutes: 3
       with:
@@ -1467,8 +1562,9 @@ jobs:
         key: ${{ steps.manager-gradle-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Cargo 依赖
       uses: actions/cache/save@v5
-      if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key
-        != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'
+      if: (always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key
+        != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true') && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+        == 'BakaSU')
       continue-on-error: true
       timeout-minutes: 3
       with:
@@ -1510,12 +1606,13 @@ jobs:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
       KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
       KSU_BRANCH: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
-      ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+      ENABLE_SUSFS: ${{ (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') }}
       SUSFS_SOURCES: ${{ needs.prepare-matrix.outputs.susfs_sources }}
       AK3_REF: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
       PATCHES_REF: ${{ needs.prepare-matrix.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
       CCACHE_MAXSIZE: 1536M
+      GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs.manager_metadata }}
     steps:
     - name: 检出独立构建工具
       uses: actions/checkout@v6
@@ -1571,7 +1668,7 @@ jobs:
         KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
         PREPARED_SOURCE_IDENTITY: ${{ needs.prepare-matrix.outputs.source_identity }}
         KSU_TIER: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
-        ENABLE_SUSFS: ${{ true && inputs.enable_susfs || false }}
+        ENABLE_SUSFS: ${{ true && (inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU') || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore-official \
           --expected-ref "$KSU_REF" \
@@ -1778,6 +1875,7 @@ jobs:
       queue: max
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
+      GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs.manager_metadata }}
     steps:
     - name: 检出本次原生校验工具
       uses: actions/checkout@v6
@@ -1860,3 +1958,428 @@ jobs:
     - name: 显示统一的详细构建配置
       if: always() && !cancelled() && steps.assets.outcome == 'success'
       run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+  combo-sukisu:
+    name: SukiSU
+    if: inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next'
+    uses: ./.github/workflows/_oplus-manager-worker.yml
+    permissions:
+      contents: write
+      actions: write
+      issues: write
+      pull-requests: write
+    with:
+      kernelsu_variant: SukiSU
+      kernelsu_branch: ${{ inputs.kernelsu_branch }}
+      build_target: ${{ inputs.build_target }}
+      enable_susfs: ${{ inputs.enable_susfs }}
+      use_kpm: ${{ inputs.use_kpm }}
+      use_lz4kd: ${{ inputs.use_lz4kd }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_bbr: ${{ inputs.use_bbr }}
+      use_proxy_optimization: ${{ inputs.use_proxy_optimization }}
+      use_unicode_bypass: ${{ inputs.use_unicode_bypass }}
+    secrets: inherit
+  combo-bakasu:
+    name: BakaSU
+    if: inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next'
+    uses: ./.github/workflows/_oplus-manager-worker.yml
+    permissions:
+      contents: write
+      actions: write
+      issues: write
+      pull-requests: write
+    with:
+      kernelsu_variant: BakaSU
+      kernelsu_branch: ${{ inputs.kernelsu_branch }}
+      build_target: ${{ inputs.build_target }}
+      enable_susfs: ${{ inputs.enable_susfs }}
+      use_kpm: ${{ inputs.use_kpm }}
+      use_lz4kd: ${{ inputs.use_lz4kd }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_bbr: ${{ inputs.use_bbr }}
+      use_proxy_optimization: ${{ inputs.use_proxy_optimization }}
+      use_unicode_bypass: ${{ inputs.use_unicode_bypass }}
+    secrets: inherit
+  combo-next:
+    name: KernelSU-Next
+    if: inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next'
+    uses: ./.github/workflows/_oplus-manager-worker.yml
+    permissions:
+      contents: write
+      actions: write
+      issues: write
+      pull-requests: write
+    with:
+      kernelsu_variant: KernelSU-Next
+      kernelsu_branch: ${{ inputs.kernelsu_branch }}
+      build_target: ${{ inputs.build_target }}
+      enable_susfs: ${{ inputs.enable_susfs }}
+      use_kpm: ${{ inputs.use_kpm }}
+      use_lz4kd: ${{ inputs.use_lz4kd }}
+      use_bbg: ${{ inputs.use_bbg }}
+      use_bbr: ${{ inputs.use_bbr }}
+      use_proxy_optimization: ${{ inputs.use_proxy_optimization }}
+      use_unicode_bypass: ${{ inputs.use_unicode_bypass }}
+    secrets: inherit
+  publish-combo-sukisu:
+    name: 核验与发行 SukiSU
+    if: always() && !cancelled() && needs.combo-sukisu.result == 'success' && needs.combo-bakasu.result == 'success' && needs.combo-next.result
+      == 'success'
+    needs:
+    - combo-sukisu
+    - combo-bakasu
+    - combo-next
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+      queue: max
+    env:
+      KSU_VARIANT: ${{ 'SukiSU' }}
+      GKI_MANAGER_METADATA: ${{ needs.combo-sukisu.outputs.manager_metadata }}
+    steps:
+    - name: 检出本次原生校验工具
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 准备构建配置与 APK 签名验证依赖
+      run: python3 -c 'import yaml, cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check
+        PyYAML cryptography
+    - name: 下载本次原文件 APK 与全部平台 AK3
+      uses: actions/download-artifact@v8
+      with:
+        pattern: '{${{ needs.combo-sukisu.outputs.apk_filename }},Oplus-*-SukiSU-AnyKernel3.zip}'
+        path: oplus-input
+        merge-multiple: false
+        skip-decompress: true
+    - name: 逐件核对官方源、真实签名、完整矩阵与实际配置
+      id: assets
+      env:
+        OPLUS_MATRIX: ${{ needs.combo-sukisu.outputs.matrix }}
+      run: |
+        set -euo pipefail
+        python3 tools/oplus_assets.py collect --input oplus-input --output oplus-report \
+          --matrix "$OPLUS_MATRIX" --variants "$KSU_VARIANT"
+        python3 - <<'PY'
+        import pathlib,shutil,sys
+        sys.path.insert(0,'tools')
+        from transfer_ksu_snapshot import native_assets
+        source = pathlib.Path('oplus-input')
+        output = pathlib.Path('oplus-publish/assets')
+        output.mkdir(parents=True)
+        for path in source.rglob('*'):
+            if path.is_symlink():
+                raise SystemExit('Refusing linked original assets')
+            if path.is_file():
+                shutil.copyfile(path, output/path.name)
+        shutil.copyfile('oplus-report/SHA256SUMS.txt', output/'SHA256SUMS.txt')
+        native_assets(output.resolve())
+        PY
+    - name: 分配递增发行标签并绑定本次构建
+      id: release-tag
+      if: success() && needs.combo-sukisu.outputs.full_catalog == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      run: python3 tools/release_tags.py allocate --notes oplus-report/summary.md
+    - name: 发布独立安装包和刷机包
+      id: release
+      if: success() && needs.combo-sukisu.outputs.full_catalog == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
+        RELEASE_EXISTS: ${{ steps.release-tag.outputs.release_exists }}
+      run: |
+        set -euo pipefail
+        title="$(cat oplus-report/title.txt)"
+        if [ "$RELEASE_EXISTS" != true ]; then
+        gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          --draft --title "$title" --notes-file oplus-report/summary.md
+        fi
+        assets=(oplus-publish/assets/*)
+        gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+        gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \
+          --notes-file oplus-report/summary.md --repo "$GITHUB_REPOSITORY"
+        url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+        printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+        printf 'release_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+        printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"
+    - name: 核对原文件并清理发布中转包
+      if: steps.release.outcome == 'success'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+      run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"
+    - name: 显示统一的详细构建配置
+      if: always() && !cancelled() && steps.assets.outcome == 'success'
+      run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+    - name: 汇总该管理器已验证文件的校验值
+      id: combined-checksums
+      env:
+        CHECKSUM_FILE: oplus-report/SHA256SUMS.txt
+      run: |
+        python3 - <<'PY'
+        import json,os,pathlib
+        lines=pathlib.Path(os.environ['CHECKSUM_FILE']).read_text(encoding='utf-8').splitlines()
+        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
+            output.write('checksums='+json.dumps(lines,separators=(',',':'))+'\n')
+        PY
+    outputs:
+      checksums: ${{ steps.combined-checksums.outputs.checksums }}
+  publish-combo-bakasu:
+    name: 核验与发行 BakaSU
+    if: always() && !cancelled() && needs.combo-sukisu.result == 'success' && needs.combo-bakasu.result == 'success' && needs.combo-next.result
+      == 'success'
+    needs:
+    - combo-sukisu
+    - combo-bakasu
+    - combo-next
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+      queue: max
+    env:
+      KSU_VARIANT: ${{ 'BakaSU' }}
+      GKI_MANAGER_METADATA: ${{ needs.combo-bakasu.outputs.manager_metadata }}
+    steps:
+    - name: 检出本次原生校验工具
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 准备构建配置与 APK 签名验证依赖
+      run: python3 -c 'import yaml, cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check
+        PyYAML cryptography
+    - name: 下载本次原文件 APK 与全部平台 AK3
+      uses: actions/download-artifact@v8
+      with:
+        pattern: '{${{ needs.combo-bakasu.outputs.apk_filename }},Oplus-*-BakaSU-AnyKernel3.zip}'
+        path: oplus-input
+        merge-multiple: false
+        skip-decompress: true
+    - name: 逐件核对官方源、真实签名、完整矩阵与实际配置
+      id: assets
+      env:
+        OPLUS_MATRIX: ${{ needs.combo-bakasu.outputs.matrix }}
+      run: |
+        set -euo pipefail
+        python3 tools/oplus_assets.py collect --input oplus-input --output oplus-report \
+          --matrix "$OPLUS_MATRIX" --variants "$KSU_VARIANT"
+        python3 - <<'PY'
+        import pathlib,shutil,sys
+        sys.path.insert(0,'tools')
+        from transfer_ksu_snapshot import native_assets
+        source = pathlib.Path('oplus-input')
+        output = pathlib.Path('oplus-publish/assets')
+        output.mkdir(parents=True)
+        for path in source.rglob('*'):
+            if path.is_symlink():
+                raise SystemExit('Refusing linked original assets')
+            if path.is_file():
+                shutil.copyfile(path, output/path.name)
+        shutil.copyfile('oplus-report/SHA256SUMS.txt', output/'SHA256SUMS.txt')
+        native_assets(output.resolve())
+        PY
+    - name: 分配递增发行标签并绑定本次构建
+      id: release-tag
+      if: success() && needs.combo-bakasu.outputs.full_catalog == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      run: python3 tools/release_tags.py allocate --notes oplus-report/summary.md
+    - name: 发布独立安装包和刷机包
+      id: release
+      if: success() && needs.combo-bakasu.outputs.full_catalog == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
+        RELEASE_EXISTS: ${{ steps.release-tag.outputs.release_exists }}
+      run: |
+        set -euo pipefail
+        title="$(cat oplus-report/title.txt)"
+        if [ "$RELEASE_EXISTS" != true ]; then
+        gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          --draft --title "$title" --notes-file oplus-report/summary.md
+        fi
+        assets=(oplus-publish/assets/*)
+        gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+        gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \
+          --notes-file oplus-report/summary.md --repo "$GITHUB_REPOSITORY"
+        url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+        printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+        printf 'release_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+        printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"
+    - name: 核对原文件并清理发布中转包
+      if: steps.release.outcome == 'success'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+      run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"
+    - name: 显示统一的详细构建配置
+      if: always() && !cancelled() && steps.assets.outcome == 'success'
+      run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+    - name: 汇总该管理器已验证文件的校验值
+      id: combined-checksums
+      env:
+        CHECKSUM_FILE: oplus-report/SHA256SUMS.txt
+      run: |
+        python3 - <<'PY'
+        import json,os,pathlib
+        lines=pathlib.Path(os.environ['CHECKSUM_FILE']).read_text(encoding='utf-8').splitlines()
+        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
+            output.write('checksums='+json.dumps(lines,separators=(',',':'))+'\n')
+        PY
+    outputs:
+      checksums: ${{ steps.combined-checksums.outputs.checksums }}
+  publish-combo-next:
+    name: 核验与发行 KernelSU-Next
+    if: always() && !cancelled() && needs.combo-sukisu.result == 'success' && needs.combo-bakasu.result == 'success' && needs.combo-next.result
+      == 'success'
+    needs:
+    - combo-sukisu
+    - combo-bakasu
+    - combo-next
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      actions: write
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+      queue: max
+    env:
+      KSU_VARIANT: ${{ 'KernelSU-Next' }}
+      GKI_MANAGER_METADATA: ${{ needs.combo-next.outputs.manager_metadata }}
+    steps:
+    - name: 检出本次原生校验工具
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 准备构建配置与 APK 签名验证依赖
+      run: python3 -c 'import yaml, cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check
+        PyYAML cryptography
+    - name: 下载本次原文件 APK 与全部平台 AK3
+      uses: actions/download-artifact@v8
+      with:
+        pattern: '{${{ needs.combo-next.outputs.apk_filename }},Oplus-*-KernelSU-Next-AnyKernel3.zip}'
+        path: oplus-input
+        merge-multiple: false
+        skip-decompress: true
+    - name: 逐件核对官方源、真实签名、完整矩阵与实际配置
+      id: assets
+      env:
+        OPLUS_MATRIX: ${{ needs.combo-next.outputs.matrix }}
+      run: |
+        set -euo pipefail
+        python3 tools/oplus_assets.py collect --input oplus-input --output oplus-report \
+          --matrix "$OPLUS_MATRIX" --variants "$KSU_VARIANT"
+        python3 - <<'PY'
+        import pathlib,shutil,sys
+        sys.path.insert(0,'tools')
+        from transfer_ksu_snapshot import native_assets
+        source = pathlib.Path('oplus-input')
+        output = pathlib.Path('oplus-publish/assets')
+        output.mkdir(parents=True)
+        for path in source.rglob('*'):
+            if path.is_symlink():
+                raise SystemExit('Refusing linked original assets')
+            if path.is_file():
+                shutil.copyfile(path, output/path.name)
+        shutil.copyfile('oplus-report/SHA256SUMS.txt', output/'SHA256SUMS.txt')
+        native_assets(output.resolve())
+        PY
+    - name: 分配递增发行标签并绑定本次构建
+      id: release-tag
+      if: success() && needs.combo-next.outputs.full_catalog == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+      run: python3 tools/release_tags.py allocate --notes oplus-report/summary.md
+    - name: 发布独立安装包和刷机包
+      id: release
+      if: success() && needs.combo-next.outputs.full_catalog == 'true'
+      env:
+        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+        RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
+        RELEASE_EXISTS: ${{ steps.release-tag.outputs.release_exists }}
+      run: |
+        set -euo pipefail
+        title="$(cat oplus-report/title.txt)"
+        if [ "$RELEASE_EXISTS" != true ]; then
+        gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+          --draft --title "$title" --notes-file oplus-report/summary.md
+        fi
+        assets=(oplus-publish/assets/*)
+        gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
+        gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \
+          --notes-file oplus-report/summary.md --repo "$GITHUB_REPOSITORY"
+        url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
+        printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+        printf 'release_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
+        printf '直接下载 APK、AK3 及详细构建配置：[打开 Release](%s)\n' "$url" >> "$GITHUB_STEP_SUMMARY"
+    - name: 核对原文件并清理发布中转包
+      if: steps.release.outcome == 'success'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
+      run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"
+    - name: 显示统一的详细构建配置
+      if: always() && !cancelled() && steps.assets.outcome == 'success'
+      run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"
+    - name: 汇总该管理器已验证文件的校验值
+      id: combined-checksums
+      env:
+        CHECKSUM_FILE: oplus-report/SHA256SUMS.txt
+      run: |
+        python3 - <<'PY'
+        import json,os,pathlib
+        lines=pathlib.Path(os.environ['CHECKSUM_FILE']).read_text(encoding='utf-8').splitlines()
+        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
+            output.write('checksums='+json.dumps(lines,separators=(',',':'))+'\n')
+        PY
+    outputs:
+      checksums: ${{ steps.combined-checksums.outputs.checksums }}
+  combined-checksums:
+    name: 生成三管理器统一校验清单
+    needs:
+    - publish-combo-sukisu
+    - publish-combo-bakasu
+    - publish-combo-next
+    if: always() && !cancelled() && needs.publish-combo-sukisu.result == 'success' && needs.publish-combo-bakasu.result ==
+      'success' && needs.publish-combo-next.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+    - name: 生成同名校验文件
+      env:
+        CHECKSUMS_0: ${{ needs.publish-combo-sukisu.outputs.checksums }}
+        CHECKSUMS_1: ${{ needs.publish-combo-bakasu.outputs.checksums }}
+        CHECKSUMS_2: ${{ needs.publish-combo-next.outputs.checksums }}
+      run: |
+        python3 - <<'PY'
+        import json,os,pathlib,re
+        rows={}
+        for i in range(3):
+            lines=json.loads(os.environ['CHECKSUMS_'+str(i)])
+            if not isinstance(lines,list) or not lines: raise SystemExit('Missing verified checksums')
+            for line in lines:
+                match=re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9_.+-]+)',line)
+                if not match or match[2] in rows: raise SystemExit('Invalid or duplicate combined filename')
+                rows[match[2]]=match[1]
+        key=lambda n:[int(p) if p.isdigit() else p for p in re.split(r'(\d+)',n)]
+        pathlib.Path('SHA256SUMS.txt').write_text(''.join(rows[n]+'  '+n+'\n' for n in sorted(rows,key=key)),encoding='utf-8')
+        PY
+    - name: 上传原文件校验清单
+      uses: actions/upload-artifact@v7
+      with:
+        path: SHA256SUMS.txt
+        archive: false
+        if-no-files-found: error
+        overwrite: true

@@ -16,7 +16,28 @@ import stat
 import struct
 import zipfile
 
-from manager_variants import MANAGERS, manager_profile, valid_manager_apk_filename
+from manager_variants import MANAGERS, ADDITIONAL_MANAGERS, manager_profile, valid_manager_apk_filename
+
+
+def official_receipt_from_environment() -> dict | None:
+    """Read only the producer job output, never a downloaded public sidecar."""
+    import os
+    raw = os.environ.get('GKI_MANAGER_METADATA', '')
+    if not raw:
+        return None
+    if len(raw.encode('utf-8')) > 16384:
+        raise ValueError('Official manager producer receipt is too large')
+    receipt = metadata_json(raw.encode('utf-8'))
+    for field, variable in (('producer_repository', 'GITHUB_REPOSITORY'),
+                            ('producer_head_sha', 'GITHUB_SHA')):
+        if os.environ.get(variable) != receipt.get(field):
+            raise ValueError('Official manager receipt belongs to another workflow')
+    if str(receipt.get('producer_run_id')) != os.environ.get('GITHUB_RUN_ID'):
+        raise ValueError('Official manager receipt belongs to another run')
+    attempt = receipt.get('producer_run_attempt')
+    if type(attempt) is not int or not 1 <= attempt <= int(os.environ.get('GITHUB_RUN_ATTEMPT', '0')):
+        raise ValueError('Official manager receipt belongs to an invalid attempt')
+    return receipt
 
 APK_MEMBER = 'assets/gki-build.json'
 KERNEL_MEMBER = 'META-INF/gki/build.json'
@@ -261,7 +282,8 @@ def validate_manager_document(metadata: dict) -> None:
 
 
 def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
-                     allow_legacy_signing_blocks: bool = False) -> dict:
+                     allow_legacy_signing_blocks: bool = False,
+                     external_metadata: dict | None = None) -> dict:
     if type(allow_legacy_signing_blocks) is not bool:
         raise ValueError('Legacy APK signing-block inspection requires an explicit boolean')
     if isinstance(source, (str, Path)):
@@ -271,6 +293,8 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
         data, filename = path.read_bytes(), filename or path.name
     else:
         data = bytes(source)
+    if external_metadata is not None:
+        return read_official_manager(data, external_metadata, filename=filename)
     certificate = verify_apk_v2(data) if allow_legacy_signing_blocks else verify_sukisu_apk(data)
     with zipfile.ZipFile(io.BytesIO(data)) as archive:
         members = validate_members(archive)
@@ -288,10 +312,8 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
             or '..' in name or len(name) > 250 or filename is not None and filename != name):
         raise ValueError('Embedded manager APK filename does not match its final artifact')
     prefixes = manager_profile(metadata['ksu_variant'])['apk_prefixes']
-    for variant in MANAGERS:
-        for prefix in manager_profile(variant)['apk_prefixes']:
-            if name.startswith(prefix + '_') and prefix not in prefixes:
-                raise ValueError('Embedded manager APK filename belongs to a different variant')
+    if not valid_manager_apk_filename(name, metadata['ksu_variant']):
+        raise ValueError('Embedded manager APK filename belongs to a different variant')
     if metadata['ksu_variant'] == 'BakaSU' and not valid_manager_apk_filename(name, 'BakaSU'):
         raise ValueError('Invalid native BakaSU APK filename')
     native = re.fullmatch(r'(SukiSU|BakaSU|ReSukiSU)_.+_([0-9]+)(?:-arm64-v8a)?-release\.apk', name)
@@ -303,3 +325,49 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
             or metadata.get('manager_cert_sha256') != hashlib.sha256(certificate).hexdigest()):
         raise ValueError('Embedded manager certificate differs from the actual APK v2 signer')
     return {**metadata, 'apk_sha256': hashlib.sha256(data).hexdigest()}
+
+
+def read_official_manager(data: bytes, receipt: dict, *, filename: str | None = None) -> dict:
+    """Keep an official APK unchanged; bind it to a trusted producer receipt.
+
+    The caller supplies the immutable output of its official-APK producer job.
+    A receipt is never extracted from the unsigned ZIP or guessed from a name.
+    Same-run/source validation is still required by wait_manager_identity.
+    """
+    from apk_manifest import manifest_identity
+    if not isinstance(data, bytes) or not 0 < len(data) <= MAX_APK_BYTES:
+        raise ValueError('Official APK exceeds its size bound')
+    if not isinstance(receipt, dict) or receipt.get('ksu_variant') not in ADDITIONAL_MANAGERS:
+        raise ValueError('Official APK receipts are limited to the additional manager variants')
+    metadata = dict(receipt)
+    expected = metadata.pop('apk_sha256', None)
+    validate_manager_document(metadata)
+    profile = manager_profile(metadata['ksu_variant'])
+    upstream = metadata.get('upstream_apk')
+    if (not isinstance(upstream, dict) or upstream.get('repository') != profile['repository']
+            or upstream.get('head_sha') != metadata['ksu_ref']
+            or not isinstance(expected, str) or not re.fullmatch(r'[0-9a-f]{64}', expected)
+            or hashlib.sha256(data).hexdigest() != expected):
+        raise ValueError('Official APK bytes differ from their fixed upstream source receipt')
+    name = metadata.get('file')
+    if (not valid_manager_apk_filename(name, metadata['ksu_variant'])
+            or filename is not None and filename != name):
+        raise ValueError('Official APK filename differs from its producer receipt')
+    # Official APKs may legitimately carry v2 and v3. Verify the real v2
+    # signature/content here; the fetch job additionally runs Android apksigner.
+    certificate = verify_apk_v2(data)
+    with zipfile.ZipFile(io.BytesIO(data)) as archive:
+        members = validate_members(archive)
+        for required in ('AndroidManifest.xml', 'classes.dex', 'lib/arm64-v8a/libksud.so'):
+            if required not in members or not 0 < members[required].file_size <= 128 * 1024 * 1024:
+                raise ValueError('Official manager APK lacks a required ARM64 runtime input')
+        if sum(entry.file_size for entry in members.values()) > 256 * 1024 * 1024 or archive.testzip():
+            raise ValueError('Official manager APK archive integrity failed')
+        identity = manifest_identity(archive.read('AndroidManifest.xml'))
+    if (identity['package'] != profile['package'] or metadata.get('package') != identity['package']
+            or str(metadata['ksu_version_code']) != str(identity['version_code'])
+            or metadata['ksu_version_name'] != identity['version_name']
+            or str(metadata.get('manager_cert_size')) != str(len(certificate))
+            or metadata.get('manager_cert_sha256') != hashlib.sha256(certificate).hexdigest()):
+        raise ValueError('Official APK package/version/signer differs from its verified producer receipt')
+    return {**metadata, 'apk_sha256': expected}

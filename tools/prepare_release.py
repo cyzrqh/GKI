@@ -11,7 +11,8 @@ import shutil
 import sys
 import zipfile
 
-from embedded_build_metadata import APK_MEMBER, KERNEL_MEMBER, metadata_json, read_manager_apk
+from embedded_build_metadata import (APK_MEMBER, KERNEL_MEMBER, metadata_json, read_manager_apk,
+                                     official_receipt_from_environment)
 from package_release_kernel import AK3_NAME, read_kernel_ak3
 from release_notes import asset_names, render_notes
 from manager_variants import MANAGERS
@@ -195,7 +196,7 @@ def prepare(source: Path, output: Path, *, expected_kernel_count: int | None = N
         if path.suffix.lower() == '.apk':
             if manager is not None:
                 raise ValueError('Expected at most one manager APK')
-            manager = read_manager_apk(path)
+            manager = read_manager_apk(path, external_metadata=official_receipt_from_environment())
             manager_verified = True
             entries.append(path)
             claimed.add(path)

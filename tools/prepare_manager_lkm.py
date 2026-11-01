@@ -107,7 +107,15 @@ def native_version_code(source: Path, count: int, *, variant: str | None = None)
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 1024 * 1024:
         raise LkmError("Native KernelSU version formula is missing or unsafe")
     text = path.read_text(encoding="utf-8")
-    if selected_variant(variant) == 'BakaSU':
+    selected = selected_variant(variant)
+    if selected in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+        counts = re.findall(r'^KSU_GIT_VERSION[ \t]*:=[^\r\n]+', text, re.M)
+        formulas = re.findall(r'^\$\(eval KSU_VERSION=\$\(shell expr 30000 \+ \$\(KSU_GIT_VERSION\)\)\)[ \t]*$', text, re.M)
+        if (len(counts) != 1 or 'git rev-list --count HEAD' not in counts[0] and '$(GIT) rev-list --count HEAD' not in counts[0]
+                or len(formulas) != 1 or type(count) is not int or count < 1):
+            raise LkmError('Native manager version formula changed; review its full-history calculation')
+        return 30000 + count
+    if selected == 'BakaSU':
         count_lines = re.findall(r'^KSU_LOCAL_VERSION[ \t]*:=[^\r\n]+', text, re.M)
         formula = re.findall(r'^KSU_VERSION[ \t]*:=[^\r\n]+', text, re.M)
         expected_count = 'KSU_LOCAL_VERSION := $(shell cd $(KSU_SRC); $(GIT_BIN) rev-list --count HEAD)'

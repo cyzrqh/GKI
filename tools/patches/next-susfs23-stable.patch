@@ -3084,7 +3084,7 @@ index 866fb6ad95cdad932f9e63785aeac0fcf655ce0f..b0cdcc489f41bcb5d7928fcb6d823da6
  int ksu_sulog_emit_grant_root(int retval, __u32 uid, __u32 euid, gfp_t gfp);
  
 diff --git a/kernel/supercall/dispatch.c b/kernel/supercall/dispatch.c
-index a8ed01013452e532edce1ac5ca62192d5a6b9ed0..603e948769f9bc51918e5d111e99446d69e95fd2 100644
+index a8ed01013452e532edce1ac5ca62192d5a6b9ed0..7968c4fe50a5224db30ecefca235103f72684221 100644
 --- a/kernel/supercall/dispatch.c
 +++ b/kernel/supercall/dispatch.c
 @@ -5,6 +5,8 @@
@@ -3316,14 +3316,14 @@ index a8ed01013452e532edce1ac5ca62192d5a6b9ed0..603e948769f9bc51918e5d111e99446d
 +    if (magic2 == KSU_INSTALL_MAGIC2)
 +        return ksu_supercall_reboot_handler(arg);
 +
-+    return -EINVAL;
++    return ksu_handle_toolkit_reboot(magic2, cmd, *arg);
 +}
 +
  static int do_nuke_ext4_sysfs(void __user *arg)
  {
      struct ksu_nuke_ext4_sysfs_cmd cmd;
 diff --git a/kernel/supercall/supercall.c b/kernel/supercall/supercall.c
-index f0dd427b0dce3b6baeaa30b02f617812469b72ff..4dd2fc8b5d0548cc1456606c49e618a5c299a18a 100644
+index f0dd427b0dce3b6baeaa30b02f617812469b72ff..82e4355b3cea2a6f50b83e7c94543cc2b18908fc 100644
 --- a/kernel/supercall/supercall.c
 +++ b/kernel/supercall/supercall.c
 @@ -69,21 +69,21 @@ static int ksu_install_fd_with_permissions(unsigned int fd_flags, unsigned long
@@ -3351,7 +3351,7 @@ index f0dd427b0dce3b6baeaa30b02f617812469b72ff..4dd2fc8b5d0548cc1456606c49e618a5
      return fd;
  }
  
-@@ -119,30 +119,20 @@ static void ksu_install_fd_tw_func(struct callback_head *cb)
+@@ -119,32 +119,30 @@ static void ksu_install_fd_tw_func(struct callback_head *cb)
      kfree(tw);
  }
  
@@ -3373,28 +3373,42 @@ index f0dd427b0dce3b6baeaa30b02f617812469b72ff..4dd2fc8b5d0548cc1456606c49e618a5
 -        if (!tw)
 -            return 0;
 +    struct ksu_install_fd_tw *tw;
- 
--        tw->outp = (int __user *)arg4;
--        tw->cb.func = ksu_install_fd_tw_func;
++
 +    tw = kzalloc(sizeof(*tw), GFP_KERNEL);
 +    if (!tw)
 +        return 0;
+ 
+-        tw->outp = (int __user *)arg4;
+-        tw->cb.func = ksu_install_fd_tw_func;
++    tw->outp = (int __user *)(*arg);
++    tw->cb.func = ksu_install_fd_tw_func;
  
 -        if (task_work_add(current, &tw->cb, TWA_RESUME)) {
 -            kfree(tw);
 -            pr_warn("install fd add task_work failed\n");
 -        }
-+    tw->outp = (int __user *)(*arg);
-+    tw->cb.func = ksu_install_fd_tw_func;
-+
 +    if (task_work_add(current, &tw->cb, TWA_RESUME)) {
 +        kfree(tw);
 +        pr_warn("install fd add task_work failed\n");
      }
  
++    return 0;
++}
++
++int ksu_handle_toolkit_reboot(int magic2, unsigned int cmd, void __user *arg)
++{
++    unsigned long arg4 = (unsigned long)arg;
++    unsigned long reply = arg4;
++
      if (magic2 == CHANGE_MANAGER_UID) {
-@@ -261,27 +251,12 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
-     return 0;
+         /* only root is allowed for this command */
+         if (current_uid().val != 0)
+@@ -258,30 +256,15 @@ static int reboot_handler_pre(struct kprobe *p, struct pt_regs *regs)
+             return 0;
+     }
+ 
+-    return 0;
++    return -EINVAL;
  }
  
 -static struct kprobe reboot_kp = {
@@ -3422,12 +3436,13 @@ index f0dd427b0dce3b6baeaa30b02f617812469b72ff..4dd2fc8b5d0548cc1456606c49e618a5
      ksu_supercall_cleanup_state();
  }
 diff --git a/kernel/supercall/supercall.h b/kernel/supercall/supercall.h
-index 4728b17a1a6d97ed3779ebe28cb51823f815abe7..7ec1f95cb3515bd1e73ba7220bd5d481cf4092f2 100644
+index 4728b17a1a6d97ed3779ebe28cb51823f815abe7..08ce37f479368dc0a5e9be1792a25f6096458cd8 100644
 --- a/kernel/supercall/supercall.h
 +++ b/kernel/supercall/supercall.h
-@@ -26,4 +26,5 @@ bool ksu_is_su_session_fd(const struct file *filp);
+@@ -26,4 +26,6 @@ bool ksu_is_su_session_fd(const struct file *filp);
  
  void ksu_supercalls_init(void);
  void ksu_supercalls_exit(void);
 +int ksu_supercall_reboot_handler(void __user **arg);
++int ksu_handle_toolkit_reboot(int magic2, unsigned int cmd, void __user *arg);
  #endif // __KSU_H_SUPERCALL

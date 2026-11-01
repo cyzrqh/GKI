@@ -116,6 +116,19 @@ def verify_legacy_next_lifecycle(source: Path) -> None:
         _, definitions = inspect_c_source(profile, profile.read_text(encoding='utf-8'), symbols=('ksu_app_profile_init',))
         if not any(item.symbol == 'ksu_app_profile_init' and not item.is_static for item in definitions):
             raise ValueError('Next lifecycle calls a profile initializer removed by its SUSFS integration')
+    from validate_susfs_hooks import strip_comments_and_literals
+    supercall = (source / 'kernel/supercall/supercall.c').read_text(encoding='utf-8')
+    dispatch = (source / 'kernel/supercall/dispatch.c').read_text(encoding='utf-8')
+    declaration = (source / 'kernel/supercall/supercall.h').read_text(encoding='utf-8')
+    signature = r'int\s+ksu_handle_toolkit_reboot\(int magic2, unsigned int cmd, void __user \*arg\)'
+    if (not re.search(signature + r'\s*\{', supercall)
+            or not re.search(signature + r'\s*;', declaration)
+            or dispatch.count('return ksu_handle_toolkit_reboot(magic2, cmd, *arg);') != 1):
+        raise ValueError('Next native toolkit reboot parameters are not connected to the SUSFS dispatcher')
+    fd_handler = supercall.split('int ksu_supercall_reboot_handler(void __user **arg)', 1)[-1]
+    fd_handler = fd_handler.split('\nint ksu_handle_toolkit_reboot', 1)[0]
+    if re.search(r'\b(magic2|cmd|arg4|reply)\b', strip_comments_and_literals(fd_handler)):
+        raise ValueError('Next FD installer incorrectly contains the toolkit command dispatcher')
 
 
 def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:

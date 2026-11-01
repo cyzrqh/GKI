@@ -103,7 +103,7 @@ def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str,
                  manager_source: Path | None = None) -> tuple[str, str] | None:
     if not TARGET.fullmatch(target):
         raise CompatibilityError("Invalid Android/kernel target")
-    if variant in ('KernelSU-Next', 'KernelSU'):
+    if variant in ('KernelSU-Next', 'KernelSU', 'KowSU'):
         path = root / 'config/manager-susfs-pins.json'
         if path.is_file():
             document = json.loads(path.read_text(encoding='utf-8'))
@@ -111,7 +111,7 @@ def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str,
             legacy = (manager_source is not None
                       and (manager_source / 'kernel/feature/preinit.c').is_file()
                       and not (manager_source / 'kernel/preinit/preinit.c').is_file())
-            if ksu_ref in profile.get('source_refs', []) or legacy:
+            if ksu_ref in profile.get('source_refs', []) or legacy or variant == 'KowSU':
                 reference = profile.get('pins', {}).get(target)
                 if (not isinstance(reference, str) or not SHA.fullmatch(reference)
                         or document.get('version') != 'v2.3.0'):

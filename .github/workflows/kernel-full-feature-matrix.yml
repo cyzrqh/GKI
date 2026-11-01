@@ -226,8 +226,7 @@ jobs:
         python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS" \
           --include-lts "$INCLUDE_LTS" --github-output --summary
     - name: 校验旧版内核 SUSFS 映射兼容性
-      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核' && (inputs.enable_susfs && env.KSU_VARIANT
-        != 'KowSU')
+      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核' && inputs.enable_susfs
       run: |
         set -euo pipefail
         command -v cc >/dev/null
@@ -256,15 +255,16 @@ jobs:
         KSU_VARIANT: ${{ env.KSU_VARIANT }}
         KSU_TIER: ${{ inputs.kernelsu_branch }}
         CUSTOM_REF: ${{ vars.KSU_CUSTOM_REF }}
-        ENABLE_SUSFS: ${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}
+        ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         GH_TOKEN: ${{ github.token }}
       run: |
         python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \
           --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
     - name: 读取固定签名的公开证书
       id: certificate
-      if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (env.KSU_VARIANT
-        == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((env.KSU_VARIANT
+        == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') || (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU'
+        || env.KSU_VARIANT == 'KowSU' || env.KSU_VARIANT == 'FinaSU'))
       env:
         SUKISU_APK_KEYSTORE: ${{ secrets.SUKISU_APK_KEYSTORE }}
         SUKISU_APK_PASSWORD: ${{ secrets.SUKISU_APK_PASSWORD }}
@@ -296,8 +296,7 @@ jobs:
         persist-credentials: false
     - name: 矩阵展开前统一下载并固定 SUSFS
       id: shared-susfs
-      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核' && (inputs.enable_susfs && env.KSU_VARIANT
-        != 'KowSU')
+      if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核' && inputs.enable_susfs
       env:
         SUSFS_MATRIX: ${{ steps.matrix.outputs.matrix }}
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
@@ -314,7 +313,7 @@ jobs:
       env:
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
         KSU_TIER: ${{ steps.sources.outputs.effective_ksu_branch }}
-        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') || false }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         set -euo pipefail
         snapshot_args=()
@@ -393,8 +392,9 @@ jobs:
   build-sukisu-lkm:
     name: ${{ inputs.kernelsu_variant }} 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
-    if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (inputs.kernelsu_variant
-      == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+    if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((inputs.kernelsu_variant
+      == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant
+      == 'KernelSU' || inputs.kernelsu_variant == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -441,7 +441,7 @@ jobs:
         KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
         PREPARED_SOURCE_IDENTITY: ${{ env.GKI_PREPARE_SOURCE_IDENTITY }}
         KSU_TIER: ${{ env.GKI_PREPARE_EFFECTIVE_KSU_BRANCH }}
-        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') || false }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore-official \
           --expected-ref "$KSU_REF" \
@@ -506,7 +506,8 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ matrix.kmi }}-${{ matrix.ddk_short
           }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}
+          || '' }}${{ env.KSU_VARIANT != 'SukiSU' && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
     - name: 核实已缓存的原生模块
       if: steps.lkm-cache.outputs.cache-hit == 'true'
       env:
@@ -542,6 +543,11 @@ jobs:
             if [ "$KSU_VARIANT" = BakaSU ]; then
               extra+=(CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y CONFIG_KPM=y)
               extra+=(KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
+            elif [ "$KSU_VARIANT" = KernelSU-Next ]; then
+              extra+=(CONFIG_KPM=y KSU_NEXT_MANAGER_SIZE="$KSU_EXPECTED_SIZE" KSU_NEXT_MANAGER_HASH="$KSU_EXPECTED_HASH")
+              extra+=(KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
+            elif [ "$KSU_VARIANT" = KernelSU ] || [ "$KSU_VARIANT" = KowSU ] || [ "$KSU_VARIANT" = FinaSU ]; then
+              extra+=(CONFIG_KPM=y KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
             fi
             CONFIG_KSU=m CC=clang make -j "$(nproc)"       KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME" KSU_EXPECTED_SIZE="$KSU_EXPECTED_SIZE"       KSU_EXPECTED_HASH="$KSU_EXPECTED_HASH" KSU_VERSION="$KSU_VERSION" "${extra[@]}"
             cp kernelsu.ko "$MODULE_OUTPUT"
@@ -558,7 +564,8 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ matrix.kmi }}-${{ matrix.ddk_short
           }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}
+          || '' }}${{ env.KSU_VARIANT != 'SukiSU' && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
     - name: 确认管理器可读取原生模块缓存（第 1 次）
       id: lkm-published
       uses: actions/cache/restore@v5
@@ -571,7 +578,8 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ matrix.kmi }}-${{ matrix.ddk_short
           }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}
+          || '' }}${{ env.KSU_VARIANT != 'SukiSU' && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: true
         fail-on-cache-miss: false
     - name: 确认管理器可读取原生模块缓存（等待后重试 1）
@@ -590,7 +598,8 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ matrix.kmi }}-${{ matrix.ddk_short
           }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}
+          || '' }}${{ env.KSU_VARIANT != 'SukiSU' && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: true
         fail-on-cache-miss: false
       if: steps.lkm-published.outputs.cache-hit != 'true'
@@ -610,7 +619,8 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ matrix.kmi }}-${{ matrix.ddk_short
           }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}
+          || '' }}${{ env.KSU_VARIANT != 'SukiSU' && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: true
         fail-on-cache-miss: false
       if: steps.lkm-published.outputs.cache-hit != 'true' && steps.lkm-published-retry-1.outputs.cache-hit != 'true'
@@ -621,7 +631,8 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ matrix.kmi }}-${{ matrix.ddk_short
           }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}
+          || '' }}${{ env.KSU_VARIANT != 'SukiSU' && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.lkm-published.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.lkm-published.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.lkm-published-retry-1.outputs.cache-hit }}
@@ -640,10 +651,9 @@ jobs:
         PY
   build-sukisu-manager:
     name: 编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK
-    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && ((inputs.kernelsu_variant == 'KernelSU-Next'
-      || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant == 'KowSU' || inputs.kernelsu_variant == 'FinaSU')
-      || ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && needs.build-sukisu-lkm.result ==
-      'success'))
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && ((inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant
+      == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant == 'KernelSU' || inputs.kernelsu_variant
+      == 'KowSU' || inputs.kernelsu_variant == 'FinaSU')) && needs.build-sukisu-lkm.result == 'success'
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
       GKI_PREPARE_SOURCE_CACHE_KEY: ${{ needs.prepare-matrix.outputs.source_cache_key }}
@@ -655,7 +665,6 @@ jobs:
       GKI_PREPARE_MANAGER_CERT_SHA256: ${{ needs.prepare-matrix.outputs.manager_cert_sha256 }}
       GKI_PREPARE_DDK_MATRIX: ${{ needs.prepare-matrix.outputs.ddk_matrix }}
       GKI_PREPARE_KSU_SHORT: ${{ needs.prepare-matrix.outputs.ksu_short }}
-      GKI_PREPARE_KSU_SOURCE_BRANCH: ${{ needs.prepare-matrix.outputs.ksu_source_branch }}
       GKI_COMBINED_WORKER: 'false'
     needs:
     - prepare-matrix
@@ -667,16 +676,14 @@ jobs:
       actions: read
     outputs:
       manager_job_id: ${{ steps.manager-producer.outputs.manager_job_id }}
-      manager_package: ${{ steps.sign.outputs.manager_package || steps.official-apk.outputs.manager_package }}
-      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size || steps.official-apk.outputs.manager_cert_size }}
-      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 || steps.official-apk.outputs.manager_cert_sha256 }}
-      apk_sha256: ${{ steps.sign.outputs.apk_sha256 || steps.official-apk.outputs.apk_sha256 }}
-      manager_version_name: ${{ steps.sign.outputs.manager_version_name || steps.official-apk.outputs.manager_version_name
-        }}
-      manager_version_code: ${{ steps.sign.outputs.manager_version_code || steps.official-apk.outputs.manager_version_code
-        }}
-      apk_filename: ${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
-      manager_metadata: ${{ steps.official-apk.outputs.manager_metadata }}
+      manager_package: ${{ steps.sign.outputs.manager_package }}
+      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
+      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+      manager_version_name: ${{ steps.sign.outputs.manager_version_name }}
+      manager_version_code: ${{ steps.sign.outputs.manager_version_code }}
+      apk_filename: ${{ steps.sign.outputs.apk_filename }}
+      manager_metadata: ''
     steps: &id003
     - name: 检出构建工具
       uses: actions/checkout@v6
@@ -698,7 +705,6 @@ jobs:
           echo '::error::请先按 README 配置 SUKISU_APK_KEYSTORE 和 SUKISU_APK_PASSWORD。签名密钥应长期保持不变。'
           exit 1
         fi
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 还原本次固定源码缓存
       id: source-cache
       uses: actions/cache/restore@v5
@@ -719,7 +725,7 @@ jobs:
         KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
         PREPARED_SOURCE_IDENTITY: ${{ env.GKI_PREPARE_SOURCE_IDENTITY }}
         KSU_TIER: ${{ env.GKI_PREPARE_EFFECTIVE_KSU_BRANCH }}
-        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') || false }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore-official \
           --expected-ref "$KSU_REF" \
@@ -761,7 +767,6 @@ jobs:
                     'manager_cert_sha256':os.environ['MANAGER_CERT_SHA256']}
         pathlib.Path(os.environ['RUNNER_TEMP'],'manager-public-certificate.json').write_text(json.dumps(document)+'\n')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android12-5.10（第 1 次）
       id: manager-lkm-0
       uses: actions/cache/restore@v5
@@ -774,12 +779,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android12-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[0].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android12-5.10（等待后重试 1）
-      if: (steps.manager-lkm-0.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-0.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android12-5.10（第 2 次）
@@ -794,13 +800,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android12-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[0].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-0.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-0.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android12-5.10（等待后重试 2）
-      if: (steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android12-5.10（第 3 次）
@@ -815,11 +822,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android12-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[0].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-0.outputs.cache-hit != 'true' && steps.manager-lkm-0-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android12-5.10
       id: manager-lkm-0-ready
       shell: bash
@@ -827,7 +835,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android12-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[0].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-0.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-0.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-0-retry-1.outputs.cache-hit }}
@@ -844,7 +854,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.10（第 1 次）
       id: manager-lkm-1
       uses: actions/cache/restore@v5
@@ -857,12 +866,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[1].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.10（等待后重试 1）
-      if: (steps.manager-lkm-1.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android13-5.10（第 2 次）
@@ -877,13 +887,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[1].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-1.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android13-5.10（等待后重试 2）
-      if: (steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android13-5.10（第 3 次）
@@ -898,11 +909,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[1].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-1.outputs.cache-hit != 'true' && steps.manager-lkm-1-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android13-5.10
       id: manager-lkm-1-ready
       shell: bash
@@ -910,7 +922,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.10' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[1].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-1.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-1.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-1-retry-1.outputs.cache-hit }}
@@ -927,7 +941,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.15（第 1 次）
       id: manager-lkm-2
       uses: actions/cache/restore@v5
@@ -940,12 +953,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[2].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android13-5.15（等待后重试 1）
-      if: (steps.manager-lkm-2.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-2.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android13-5.15（第 2 次）
@@ -960,13 +974,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[2].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-2.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-2.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android13-5.15（等待后重试 2）
-      if: (steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android13-5.15（第 3 次）
@@ -981,11 +996,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[2].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-2.outputs.cache-hit != 'true' && steps.manager-lkm-2-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android13-5.15
       id: manager-lkm-2-ready
       shell: bash
@@ -993,7 +1009,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android13-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[2].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-2.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-2.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-2-retry-1.outputs.cache-hit }}
@@ -1010,7 +1028,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android14-5.15（第 1 次）
       id: manager-lkm-3
       uses: actions/cache/restore@v5
@@ -1023,12 +1040,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[3].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android14-5.15（等待后重试 1）
-      if: (steps.manager-lkm-3.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-3.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android14-5.15（第 2 次）
@@ -1043,13 +1061,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[3].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-3.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-3.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android14-5.15（等待后重试 2）
-      if: (steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android14-5.15（第 3 次）
@@ -1064,11 +1083,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[3].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-3.outputs.cache-hit != 'true' && steps.manager-lkm-3-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android14-5.15
       id: manager-lkm-3-ready
       shell: bash
@@ -1076,7 +1096,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-5.15' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[3].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-3.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-3.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-3-retry-1.outputs.cache-hit }}
@@ -1093,7 +1115,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android14-6.1（第 1 次）
       id: manager-lkm-4
       uses: actions/cache/restore@v5
@@ -1106,12 +1127,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-6.1' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[4].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android14-6.1（等待后重试 1）
-      if: (steps.manager-lkm-4.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-4.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android14-6.1（第 2 次）
@@ -1126,13 +1148,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-6.1' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[4].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-4.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-4.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android14-6.1（等待后重试 2）
-      if: (steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android14-6.1（第 3 次）
@@ -1147,11 +1170,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-6.1' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[4].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-4.outputs.cache-hit != 'true' && steps.manager-lkm-4-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android14-6.1
       id: manager-lkm-4-ready
       shell: bash
@@ -1159,7 +1183,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android14-6.1' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[4].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-4.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-4.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-4-retry-1.outputs.cache-hit }}
@@ -1176,7 +1202,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android15-6.6（第 1 次）
       id: manager-lkm-5
       uses: actions/cache/restore@v5
@@ -1189,12 +1214,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android15-6.6' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[5].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android15-6.6（等待后重试 1）
-      if: (steps.manager-lkm-5.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-5.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android15-6.6（第 2 次）
@@ -1209,13 +1235,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android15-6.6' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[5].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-5.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-5.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android15-6.6（等待后重试 2）
-      if: (steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android15-6.6（第 3 次）
@@ -1230,11 +1257,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android15-6.6' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[5].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-5.outputs.cache-hit != 'true' && steps.manager-lkm-5-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android15-6.6
       id: manager-lkm-5-ready
       shell: bash
@@ -1242,7 +1270,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android15-6.6' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[5].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-5.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-5.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-5-retry-1.outputs.cache-hit }}
@@ -1259,7 +1289,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android16-6.12（第 1 次）
       id: manager-lkm-6
       uses: actions/cache/restore@v5
@@ -1272,12 +1301,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android16-6.12' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[6].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android16-6.12（等待后重试 1）
-      if: (steps.manager-lkm-6.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-6.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android16-6.12（第 2 次）
@@ -1292,13 +1322,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android16-6.12' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[6].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-6.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-6.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android16-6.12（等待后重试 2）
-      if: (steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android16-6.12（第 3 次）
@@ -1313,11 +1344,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android16-6.12' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[6].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-6.outputs.cache-hit != 'true' && steps.manager-lkm-6-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android16-6.12
       id: manager-lkm-6-ready
       shell: bash
@@ -1325,7 +1357,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android16-6.12' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[6].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-6.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-6.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-6-retry-1.outputs.cache-hit }}
@@ -1342,7 +1376,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android17-6.18（第 1 次）
       id: manager-lkm-7
       uses: actions/cache/restore@v5
@@ -1355,12 +1388,13 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android17-6.18' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[7].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 读取镜像修补模块 android17-6.18（等待后重试 1）
-      if: (steps.manager-lkm-7.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-7.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 10
     - name: 读取镜像修补模块 android17-6.18（第 2 次）
@@ -1375,13 +1409,14 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android17-6.18' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[7].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-7.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-7.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android17-6.18（等待后重试 2）
-      if: (steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true'
       shell: bash
       run: sleep 20
     - name: 读取镜像修补模块 android17-6.18（第 3 次）
@@ -1396,11 +1431,12 @@ jobs:
         key: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android17-6.18' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[7].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
-      if: (steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true') &&
-        (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
+      if: steps.manager-lkm-7.outputs.cache-hit != 'true' && steps.manager-lkm-7-retry-1.outputs.cache-hit != 'true'
     - name: 读取镜像修补模块 android17-6.18
       id: manager-lkm-7-ready
       shell: bash
@@ -1408,7 +1444,9 @@ jobs:
         EXPECTED_CACHE_KEY: gki-sukisu-lkm-v2-${{ runner.os }}-${{ runner.arch }}-${{ env.GKI_PREPARE_KSU_REF }}-${{ env.GKI_PREPARE_MANAGER_PACKAGE
           }}-${{ env.GKI_PREPARE_MANAGER_CERT_SIZE }}-${{ env.GKI_PREPARE_MANAGER_CERT_SHA256 }}-${{ 'android17-6.18' }}-${{
           fromJSON(env.GKI_PREPARE_DDK_MATRIX).include[7].ddk_short }}${{ env.KSU_VARIANT == 'BakaSU' && format('-kpm-{0}',
-          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
+          hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}${{ env.KSU_VARIANT != 'SukiSU'
+          && env.KSU_VARIANT != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch',
+          'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-7.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-7.outputs.cache-matched-key }}
         CACHE_HIT_1: ${{ steps.manager-lkm-7-retry-1.outputs.cache-hit }}
@@ -1425,7 +1463,6 @@ jobs:
             raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
         print('The exact verified manager LKM cache is available.')
         PY
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 按官方流程打包完整 LKM 模块
       env:
         KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
@@ -1433,7 +1470,6 @@ jobs:
         python3 tools/prepare_manager_lkm.py stage --source manager-source --artifacts manager-lkm \
           --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF" \
           --expected-kmis "android12-5.10,android13-5.10,android13-5.15,android14-5.15,android14-6.1,android15-6.6,android16-6.12,android17-6.18" --report "$RUNNER_TEMP/manager-lkm-stage.json"
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 配置 BakaSU 配套管理器签名提示
       if: env.KSU_VARIANT == 'BakaSU'
       run: |
@@ -1446,7 +1482,6 @@ jobs:
       with:
         distribution: temurin
         java-version: '21'
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 恢复管理器 Gradle 依赖
       id: manager-gradle-cache
       uses: actions/cache/restore@v5
@@ -1462,7 +1497,6 @@ jobs:
           'manager-source/manager/**/gradle.properties', 'manager-source/manager/**/libs.versions.toml', 'manager-source/manager/gradle/wrapper/gradle-wrapper.properties')
           }}
         restore-keys: gki-manager-gradle-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 恢复管理器 Gradle 编译缓存
       id: manager-gradle-build-cache
       uses: actions/cache/restore@v5
@@ -1476,20 +1510,18 @@ jobs:
           'manager-source/manager/gradle/libs.versions.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
           'manager-source/manager/gradle/libs.versions.toml') }}-
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 准备 Android SDK 与 NDK
       run: |
         set -euo pipefail
         sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
         python3 -c "print('y\n' * 100)" | "$sdkmanager" --licenses > /dev/null
-        "$sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;29.0.14206865'
+        "$sdkmanager" 'platforms;android-37.0' 'platforms;android-36' 'build-tools;37.0.0' 'build-tools;36.1.0' 'ndk;29.0.14206865'
         if [ "$KSU_VARIANT" = BakaSU ]; then
           "$sdkmanager" 'build-tools;36.1.0' 'ndk;30.0.16248370'
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
         else
           echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
         fi
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 准备 ARM64 Rust 工具链
       run: |
         set -euo pipefail
@@ -1498,11 +1530,9 @@ jobs:
         rustup toolchain install "$toolchain" --profile minimal
         rustup default "$toolchain"
         rustup target add aarch64-linux-android --toolchain "$toolchain"
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 记录 Rust 编译器缓存版本
       id: manager-rust-version
       run: echo "version=$(rustc -vV | sha256sum | cut -c1-20)" >> "$GITHUB_OUTPUT"
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 恢复管理器 Cargo 依赖
       id: manager-cargo-cache
       uses: actions/cache/restore@v5
@@ -1530,7 +1560,6 @@ jobs:
           }}
         restore-keys: gki-manager-cargo-${{ env.KSU_VARIANT == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch
           }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 编译管理器与同版本 ksud
       id: manager-build
       env:
@@ -1542,11 +1571,11 @@ jobs:
         case "$KSU_VARIANT" in
           SukiSU) script=tools/build_sukisu_manager.sh ;;
           BakaSU) script=tools/build_bakasu_manager.sh ;;
+          KernelSU-Next|KernelSU|KowSU|FinaSU) script=tools/build_additional_manager.sh ;;
           *) echo 'Unknown manager variant' >&2; exit 1 ;;
         esac
         bash -n "$script"
         bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 实际验证八种 KMI 的镜像修补与恢复
       env:
         KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
@@ -1554,7 +1583,6 @@ jobs:
         python3 tools/verify_manager_boot_patch.py --source "$GITHUB_WORKSPACE/manager-source" \
           --module-report "$RUNNER_TEMP/manager-lkm-stage.json" --expected-ref "$KSU_REF" \
           --output "$RUNNER_TEMP/manager-boot-patch-check"
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 签名并校验可安装 APK
       id: sign
       env:
@@ -1567,7 +1595,6 @@ jobs:
         python3 tools/sign_sukisu_manager.py --unsigned "$RUNNER_TEMP/manager-build/manager-unsigned.apk" \
           --output-dir "$GITHUB_WORKSPACE/manager-artifact" \
           --build-metadata "$RUNNER_TEMP/manager-build/manager-build-metadata.json"
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
     - name: 记录管理器真实版本
       env:
         META_FILE: ${{ steps.sign.outputs.apk_filename }}
@@ -1579,35 +1606,19 @@ jobs:
         META_MANAGER_CERT_SIZE: ${{ steps.sign.outputs.manager_cert_size }}
         META_MANAGER_CERT_SHA256: ${{ steps.sign.outputs.manager_cert_sha256 }}
         META_APK_SHA256: ${{ steps.sign.outputs.apk_sha256 }}
-        META_ENABLE_SUSFS: ${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}
+        META_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
       run: python3 tools/capture_manager_metadata.py --output manager-artifact/manager.json
-      if: (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')
-    - name: 获取并验证官方同版本管理器 APK
-      id: official-apk
-      if: (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU' || env.KSU_VARIANT == 'KowSU' || env.KSU_VARIANT
-        == 'FinaSU')
-      timeout-minutes: 15
-      env:
-        GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
-        KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
-        KSU_TIER: ${{ env.GKI_PREPARE_EFFECTIVE_KSU_BRANCH }}
-        KSU_SOURCE_BRANCH: ${{ env.GKI_PREPARE_KSU_SOURCE_BRANCH }}
-      run: |
-        python3 tools/official_manager_apk.py --source manager-source --output manager-artifact \
-          --variant "$KSU_VARIANT" --expected-ref "$KSU_REF" --tier "$KSU_TIER" \
-          --source-branch "$KSU_SOURCE_BRANCH"
     - name: 上传管理器安装包
       uses: actions/upload-artifact@v7
       with:
-        path: manager-artifact/${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
+        path: manager-artifact/${{ steps.sign.outputs.apk_filename }}
         archive: false
         if-no-files-found: error
         overwrite: true
     - name: 保存管理器 Gradle 编译缓存
       uses: actions/cache/save@v5
-      if: (always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-gradle-build-cache.outputs.cache-primary-key
-        != '' && steps.manager-gradle-build-cache.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
-        == 'BakaSU')
+      if: always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-gradle-build-cache.outputs.cache-primary-key
+        != '' && steps.manager-gradle-build-cache.outputs.cache-hit != 'true'
       continue-on-error: true
       timeout-minutes: 3
       with:
@@ -1615,9 +1626,8 @@ jobs:
         key: ${{ steps.manager-gradle-build-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Gradle 依赖
       uses: actions/cache/save@v5
-      if: (always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key
-        != '' && steps.manager-gradle-cache.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
-        == 'BakaSU')
+      if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-gradle-cache.outputs.cache-primary-key
+        != '' && steps.manager-gradle-cache.outputs.cache-hit != 'true'
       continue-on-error: true
       timeout-minutes: 3
       with:
@@ -1627,9 +1637,8 @@ jobs:
         key: ${{ steps.manager-gradle-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Cargo 依赖
       uses: actions/cache/save@v5
-      if: (always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key
-        != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true') && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
-        == 'BakaSU')
+      if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key
+        != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'
       continue-on-error: true
       timeout-minutes: 3
       with:
@@ -1736,7 +1745,7 @@ jobs:
         echo "KSU 分支      : $effective_ksu_branch"
         echo "管理器包名    : ${GKI_MANAGER_PACKAGE:-由所选 KernelSU 决定}"
         echo "构建时间      : ${{ inputs.build_time }}"
-        echo "SUSFS 状态    : ${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}"
+        echo "SUSFS 状态    : ${{ inputs.enable_susfs }}"
         echo "ZRAM 增强     : $effective_use_zram"
         echo "ZRAM 完整算法 : $effective_zram_full_algo"
         echo "ZRAM 额外算法 : $zram_extra_label"
@@ -1744,8 +1753,8 @@ jobs:
         echo "DDK LSM       : ${{ inputs.use_ddk }}"
         echo "NTsync 补丁   : ${{ inputs.use_ntsync }}"
         echo "Networing 增强: ${{ inputs.use_networking }}"
-        echo "KPM 功能      : ${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) }}"
-        echo "KPM 密码      : ${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') && inputs.kpm_password || '') && '已自定义' || '默认' }}"
+        echo "KPM 功能      : ${{ inputs.use_kpm }}"
+        echo "KPM 密码      : ${{ (inputs.use_kpm && inputs.kpm_password || '') && '已自定义' || '默认' }}"
         echo "Re-Kernel     : ${{ inputs.use_rekernel }}"
         echo "虚拟化支持   : ${{ (inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version == '6.12' && 'on' || (inputs.virtualization_support == 'on' && '678' || inputs.virtualization_support))) }}"
         echo "自定义注入    : ${{ inputs.custom_external_modules != '' }}"
@@ -1774,7 +1783,7 @@ jobs:
             ;;
         esac
 
-        if [ "${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) }}" = "true" ] \
+        if [ "${{ inputs.use_kpm }}" = "true" ] \
           && [ "${{ env.KSU_VARIANT }}" = "Official" ]; then
           echo "::error::Official / KernelSU 变体不支持 KPM，请关闭 KPM 后重试。"
           exit 1
@@ -1997,7 +2006,7 @@ jobs:
         KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
         PREPARED_SOURCE_IDENTITY: ${{ env.GKI_PREPARE_SOURCE_IDENTITY }}
         KSU_TIER: ${{ env.GKI_PREPARE_EFFECTIVE_KSU_BRANCH }}
-        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') || false }}
+        ENABLE_SUSFS: ${{ inputs.operation == '编译内核' && inputs.enable_susfs || false }}
       run: |
         python3 tools/transfer_ksu_snapshot.py restore-official \
           --expected-ref "$KSU_REF" \
@@ -2032,7 +2041,7 @@ jobs:
           https://github.com/WildKernels/AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH" --depth 1
         rm -rf AnyKernel3/.git
 
-        if [ "${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}" == "true" ]; then
+        if [ "${{ inputs.enable_susfs }}" == "true" ]; then
           echo "离线还原本次固定的 SUSFS (分支: $SUSFS_BRANCH)..."
           python3 "$GITHUB_WORKSPACE/tools/shared_susfs_source.py" restore \
             --input "$GITHUB_WORKSPACE/ksu-source-bundle" --output "$SUSFS4KSU" \
@@ -2059,7 +2068,7 @@ jobs:
       env:
         SUSFS_SOURCES: ${{ env.GKI_PREPARE_SUSFS_SOURCES }}
     - name: 选择配套的 SUSFS 源码版本
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && env.KSU_VARIANT == 'SukiSU'
+      if: inputs.enable_susfs && env.KSU_VARIANT == 'SukiSU'
       env:
         PIN_KSU_VARIANT: ${{ env.KSU_VARIANT }}
         PIN_KSU_REF: ${{ env.BRANCH }}
@@ -2353,8 +2362,7 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/apply_susfs23.py" \
           --kernel-root "$KERNEL_ROOT" --susfs-dir "$SUSFS4KSU"
     - name: 确保 KernelSU SUSFS ABI 兼容
-      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && ((env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') && (inputs.enable_susfs
-        && env.KSU_VARIANT != 'KowSU'))
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && ((env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') && inputs.enable_susfs)
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -2420,11 +2428,11 @@ jobs:
 
         echo "已更新 get_ksu_version_full 模板: $VERSION_TEMPLATE"
     - name: 接入新增管理器的原生 SUSFS 接口
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT ==
-        'KernelSU' || env.KSU_VARIANT == 'KowSU' || env.KSU_VARIANT == 'FinaSU')
+      if: inputs.enable_susfs && (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU' || env.KSU_VARIANT ==
+        'KowSU' || env.KSU_VARIANT == 'FinaSU')
       run: python3 tools/additional_manager_integration.py --kernel-root "$KERNEL_ROOT" --susfs-dir "$SUSFS4KSU"
     - name: 应用 SUSFS 补丁
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && env.KSU_VARIANT != 'None'
+      if: inputs.enable_susfs && env.KSU_VARIANT != 'None'
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -3238,7 +3246,7 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/historical_susfs23.py" --kernel-root "$KERNEL_ROOT" \
           --version "$SUSFS_VERSION" --kernel "$ABK_KERNEL_VERSION" --sublevel "$ABK_SUB_LEVEL" --phase finish
     - name: 确保 SUSFS Kconfig 与核心对象
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && env.KSU_VARIANT != 'None'
+      if: inputs.enable_susfs && env.KSU_VARIANT != 'None'
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -3361,9 +3369,8 @@ jobs:
             raise SystemExit(f"{fs_makefile} 注入后仍未接入 susfs.o")
         print("SUSFS Kconfig 与核心链接契约校验通过")
         PY
-    - name: 注入 SukiSU/BakaSU KPM Kconfig
-      if: (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) && (env.KSU_VARIANT == 'SukiSU'
-        || env.KSU_VARIANT == 'BakaSU')
+    - name: 注入 全部管理器 KPM Kconfig
+      if: inputs.use_kpm
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -3926,7 +3933,7 @@ jobs:
 
         echo "虚拟化支持集成完成"
     - name: 应用 Unicode 绕过修复
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU')
+      if: inputs.enable_susfs
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -4419,9 +4426,9 @@ jobs:
         ABK_FEATURE_USE_DDK: ${{ inputs.use_ddk }}
         ABK_FEATURE_USE_NTSYNC: ${{ inputs.use_ntsync }}
         ABK_FEATURE_USE_NETWORKING: ${{ inputs.use_networking }}
-        ABK_FEATURE_USE_KPM: ${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) }}
+        ABK_FEATURE_USE_KPM: ${{ inputs.use_kpm }}
         ABK_FEATURE_USE_REKERNEL: ${{ inputs.use_rekernel }}
-        ABK_FEATURE_ENABLE_SUSFS: ${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}
+        ABK_FEATURE_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         ABK_FEATURE_SUPP_OP: ${{ inputs.supp_op }}
         ABK_FEATURE_ZRAM_FULL_ALGO: ${{ inputs.zram_full_algo }}
       run: |
@@ -4503,7 +4510,7 @@ jobs:
           fi
         fi
 
-        if [ "${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) }}" == "true" ] && ! feature_disabled kpm && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; }; then
+        if [ "${{ inputs.use_kpm }}" == "true" ] && ! feature_disabled kpm && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; }; then
           if [ "$kpm_config_supported" = "true" ]; then
             echo "CONFIG_KPM=y" >> "$DEFCONFIG"
             case "$kpm_kconfig_status" in
@@ -4528,7 +4535,7 @@ jobs:
           fi
         fi
 
-        if [ "${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}" != "true" ] && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; }; then
+        if [ "${{ inputs.enable_susfs }}" != "true" ] && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; }; then
           cat >> "$DEFCONFIG" << 'EOF'
         # CONFIG_KSU_SUSFS is not set
         # CONFIG_KSU_SUSFS_SUS_PATH is not set
@@ -4556,14 +4563,13 @@ jobs:
 
         sed -i 's/check_defconfig//' ./common/build.config.gki
     - name: 配置 KPM 超级密码
-      if: (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) && (inputs.use_kpm && (env.KSU_VARIANT
-        == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') && inputs.kpm_password || '') != '' && (env.KSU_VARIANT == 'SukiSU' ||
-        env.KSU_VARIANT == 'BakaSU')
+      if: inputs.use_kpm && (inputs.use_kpm && inputs.kpm_password || '') != '' && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
+        == 'BakaSU')
       run: |
         echo "KPM 超级密码将在 Image KPM patch 阶段写入。"
         echo "CONFIG_KPM_SUPER_KEY 不是当前 KSU Kconfig 符号，不能写入 defconfig fragment。"
     - name: 添加 SUSFS 配置
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && env.KSU_VARIANT != 'None'
+      if: inputs.enable_susfs && env.KSU_VARIANT != 'None'
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -4694,9 +4700,9 @@ jobs:
         ABK_FEATURE_USE_DDK: ${{ inputs.use_ddk }}
         ABK_FEATURE_USE_NTSYNC: ${{ inputs.use_ntsync }}
         ABK_FEATURE_USE_NETWORKING: ${{ inputs.use_networking }}
-        ABK_FEATURE_USE_KPM: ${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) }}
+        ABK_FEATURE_USE_KPM: ${{ inputs.use_kpm }}
         ABK_FEATURE_USE_REKERNEL: ${{ inputs.use_rekernel }}
-        ABK_FEATURE_ENABLE_SUSFS: ${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}
+        ABK_FEATURE_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         ABK_FEATURE_SUPP_OP: ${{ inputs.supp_op }}
         ABK_FEATURE_ZRAM_FULL_ALGO: ${{ inputs.zram_full_algo }}
       run: |
@@ -4872,7 +4878,7 @@ jobs:
         )
         PY
     - name: 修复 Official SUSFS 源码兼容
-      if: env.KSU_VARIANT == 'Official' && (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU')
+      if: env.KSU_VARIANT == 'Official' && inputs.enable_susfs
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -6272,8 +6278,8 @@ jobs:
             print("Official SUSFS 源码兼容修复无需修改。")
         PY
     - name: 修复 Official SUSFS 6.1-6.12 SELinux 导出
-      if: env.KSU_VARIANT == 'Official' && (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && (matrix.kernel_version ==
-        '6.1' || matrix.kernel_version == '6.6' || matrix.kernel_version == '6.12')
+      if: env.KSU_VARIANT == 'Official' && inputs.enable_susfs && (matrix.kernel_version == '6.1' || matrix.kernel_version
+        == '6.6' || matrix.kernel_version == '6.12')
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -6450,8 +6456,7 @@ jobs:
             print(f"{path} 的 Official 6.1-6.12 SELinux 导出已满足要求")
         PY
     - name: 补齐 SukiSU SUSFS 内联 hook 符号
-      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (env.KSU_VARIANT == 'SukiSU' && (inputs.enable_susfs && env.KSU_VARIANT
-        != 'KowSU'))
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (env.KSU_VARIANT == 'SukiSU' && inputs.enable_susfs)
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -6890,16 +6895,15 @@ jobs:
           sed -i '/^CONFIG_KSU_MULTI_MANAGER_SUPPORT=/d; /^# CONFIG_KSU_MULTI_MANAGER_SUPPORT is not set$/d' "$DEFCONFIG"
           echo 'CONFIG_KSU_MULTI_MANAGER_SUPPORT=y' >> "$DEFCONFIG"
         fi
-    - name: 绑定官方原始 APK 的证书与版本
+    - name: 绑定配套 APK 的自定义证书与版本
       if: (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU' || env.KSU_VARIANT == 'KowSU' || env.KSU_VARIANT
         == 'FinaSU')
       run: python3 tools/additional_manager_integration.py --kernel-root "$KERNEL_ROOT"
     - name: 检查 SUSFS 与 KernelSU 接口配套
-      if: (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') && env.KSU_VARIANT != 'None'
+      if: inputs.enable_susfs && env.KSU_VARIANT != 'None'
       run: python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"
     - name: 编译前核实官方 KPM 工具及真实载荷
-      if: (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) && (env.KSU_VARIANT == 'SukiSU'
-        || env.KSU_VARIANT == 'BakaSU')
+      if: inputs.use_kpm
       run: |
         python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \
           --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \
@@ -7313,12 +7317,10 @@ jobs:
       with:
         path: ${{ env.BAZEL_DISK_CACHE }}
         key: ${{ steps.bazel-cache.outputs.cache-primary-key }}
-    - name: 应用 KPM 补丁 (SukiSU/BakaSU)
-      if: (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU')) && (env.KSU_VARIANT == 'SukiSU'
-        || env.KSU_VARIANT == 'BakaSU')
+    - name: 应用 KPM 补丁 (全部管理器)
+      if: inputs.use_kpm
       env:
-        KPM_PASSWORD: ${{ (inputs.use_kpm && (env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') && inputs.kpm_password
-          || '') }}
+        KPM_PASSWORD: ${{ (inputs.use_kpm && inputs.kpm_password || '') }}
         GKI_ANDROID: ${{ matrix.android_version }}
         GKI_KERNEL: ${{ matrix.kernel_version }}
       run: |
@@ -7454,9 +7456,17 @@ jobs:
         META_KSU_REF: ${{ env.GKI_PREPARE_KSU_REF }}
         META_KSU_VERSION_CODE: ${{ env.MANAGER_VERSION_CODE }}
         META_KSU_VERSION_NAME: ${{ env.MANAGER_VERSION_NAME }}
-        META_ENABLE_SUSFS: ${{ (inputs.enable_susfs && env.KSU_VARIANT != 'KowSU') }}
+        META_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         META_EXPECTED_SUSFS_VERSION: ${{ env.SUSFS_COMPAT_VERSION }}
         ARTIFACT_MODE: ${{ inputs.artifact_mode }}
+        GKI_REQUEST_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        GKI_REQUEST_USE_KPM: ${{ inputs.use_kpm }}
+        GKI_REQUEST_USE_ZRAM: ${{ inputs.use_zram }}
+        GKI_REQUEST_USE_BBG: ${{ inputs.use_bbg }}
+        GKI_REQUEST_USE_DDK: ${{ inputs.use_ddk }}
+        GKI_REQUEST_USE_NTSYNC: ${{ inputs.use_ntsync }}
+        GKI_REQUEST_USE_REKERNEL: ${{ inputs.use_rekernel }}
+        GKI_REQUEST_USE_NETWORKING: ${{ inputs.use_networking }}
       run: |
         if [ "${GKI_COMBINED_WORKER:-false}" = true ]; then
           META_FILE="${META_FILE%-AnyKernel3.zip}-${KSU_VARIANT}-AnyKernel3.zip"
@@ -7511,8 +7521,10 @@ jobs:
         if-no-files-found: ignore
         compression-level: 9
     if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && (github.event_name == 'workflow_dispatch'
-      && inputs.operation == '编译内核') && needs.build-sukisu-manager.result == 'success' && (!(inputs.kernelsu_variant == 'SukiSU'
-      || inputs.kernelsu_variant == 'BakaSU') || needs.build-sukisu-lkm.result == 'success')
+      && inputs.operation == '编译内核') && needs.build-sukisu-manager.result == 'success' && (!((inputs.kernelsu_variant == 'SukiSU'
+      || inputs.kernelsu_variant == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant ==
+      'KernelSU' || inputs.kernelsu_variant == 'KowSU' || inputs.kernelsu_variant == 'FinaSU')) || needs.build-sukisu-lkm.result
+      == 'success')
     needs:
     - prepare-matrix
     - build-sukisu-lkm
@@ -7666,8 +7678,9 @@ jobs:
     name: ${{ 'SukiSU' }} 原生模块 / ${{ matrix.kmi }}
     needs:
     - combo-sukisu-prepare
-    if: (github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ('SukiSU'
-      == 'SukiSU' || 'SukiSU' == 'BakaSU')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (('SukiSU'
+      == 'SukiSU' || 'SukiSU' == 'BakaSU') || ('SukiSU' == 'KernelSU-Next' || 'SukiSU' == 'KernelSU' || 'SukiSU' == 'KowSU'
+      || 'SukiSU' == 'FinaSU'))) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -7692,9 +7705,9 @@ jobs:
     steps: *id002
   combo-sukisu-manager:
     name: 编译配套 ${{ 'SukiSU' }} 管理器 APK
-    if: (always() && !cancelled() && needs.combo-sukisu-prepare.result == 'success' && (('SukiSU' == 'KernelSU-Next' || 'SukiSU'
-      == 'KernelSU' || 'SukiSU' == 'KowSU' || 'SukiSU' == 'FinaSU') || (('SukiSU' == 'SukiSU' || 'SukiSU' == 'BakaSU') &&
-      needs.combo-sukisu-lkm.result == 'success'))) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+    if: (always() && !cancelled() && needs.combo-sukisu-prepare.result == 'success' && (('SukiSU' == 'SukiSU' || 'SukiSU'
+      == 'BakaSU') || ('SukiSU' == 'KernelSU-Next' || 'SukiSU' == 'KernelSU' || 'SukiSU' == 'KowSU' || 'SukiSU' == 'FinaSU'))
+      && needs.combo-sukisu-lkm.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     env:
       KSU_VARIANT: ${{ 'SukiSU' }}
       GKI_PREPARE_SOURCE_CACHE_KEY: ${{ needs.combo-sukisu-prepare.outputs.source_cache_key }}
@@ -7706,7 +7719,6 @@ jobs:
       GKI_PREPARE_MANAGER_CERT_SHA256: ${{ needs.combo-sukisu-prepare.outputs.manager_cert_sha256 }}
       GKI_PREPARE_DDK_MATRIX: ${{ needs.combo-sukisu-prepare.outputs.ddk_matrix }}
       GKI_PREPARE_KSU_SHORT: ${{ needs.combo-sukisu-prepare.outputs.ksu_short }}
-      GKI_PREPARE_KSU_SOURCE_BRANCH: ${{ needs.combo-sukisu-prepare.outputs.ksu_source_branch }}
       GKI_COMBINED_WORKER: 'true'
     needs:
     - combo-sukisu-prepare
@@ -7718,16 +7730,14 @@ jobs:
       actions: read
     outputs:
       manager_job_id: ${{ steps.manager-producer.outputs.manager_job_id }}
-      manager_package: ${{ steps.sign.outputs.manager_package || steps.official-apk.outputs.manager_package }}
-      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size || steps.official-apk.outputs.manager_cert_size }}
-      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 || steps.official-apk.outputs.manager_cert_sha256 }}
-      apk_sha256: ${{ steps.sign.outputs.apk_sha256 || steps.official-apk.outputs.apk_sha256 }}
-      manager_version_name: ${{ steps.sign.outputs.manager_version_name || steps.official-apk.outputs.manager_version_name
-        }}
-      manager_version_code: ${{ steps.sign.outputs.manager_version_code || steps.official-apk.outputs.manager_version_code
-        }}
-      apk_filename: ${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
-      manager_metadata: ${{ steps.official-apk.outputs.manager_metadata }}
+      manager_package: ${{ steps.sign.outputs.manager_package }}
+      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
+      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+      manager_version_name: ${{ steps.sign.outputs.manager_version_name }}
+      manager_version_code: ${{ steps.sign.outputs.manager_version_code }}
+      apk_filename: ${{ steps.sign.outputs.apk_filename }}
+      manager_metadata: ''
     steps: *id003
   combo-sukisu-kernel:
     name: ${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}-${{
@@ -7757,8 +7767,9 @@ jobs:
       GKI_MANAGER_APK_FILENAME: ${{ needs.combo-sukisu-manager.outputs.apk_filename }}
       GKI_COMBINED_WORKER: 'true'
     if: (always() && !cancelled() && needs.combo-sukisu-prepare.result == 'success' && (github.event_name == 'workflow_dispatch'
-      && inputs.operation == '编译内核') && needs.combo-sukisu-manager.result == 'success' && (!('SukiSU' == 'SukiSU' || 'SukiSU'
-      == 'BakaSU') || needs.combo-sukisu-lkm.result == 'success')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+      && inputs.operation == '编译内核') && needs.combo-sukisu-manager.result == 'success' && (!(('SukiSU' == 'SukiSU' || 'SukiSU'
+      == 'BakaSU') || ('SukiSU' == 'KernelSU-Next' || 'SukiSU' == 'KernelSU' || 'SukiSU' == 'KowSU' || 'SukiSU' == 'FinaSU'))
+      || needs.combo-sukisu-lkm.result == 'success')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     needs:
     - combo-sukisu-prepare
     - combo-sukisu-lkm
@@ -7843,8 +7854,9 @@ jobs:
     name: ${{ 'BakaSU' }} 原生模块 / ${{ matrix.kmi }}
     needs:
     - combo-bakasu-prepare
-    if: (github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ('BakaSU'
-      == 'SukiSU' || 'BakaSU' == 'BakaSU')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (('BakaSU'
+      == 'SukiSU' || 'BakaSU' == 'BakaSU') || ('BakaSU' == 'KernelSU-Next' || 'BakaSU' == 'KernelSU' || 'BakaSU' == 'KowSU'
+      || 'BakaSU' == 'FinaSU'))) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -7869,9 +7881,9 @@ jobs:
     steps: *id002
   combo-bakasu-manager:
     name: 编译配套 ${{ 'BakaSU' }} 管理器 APK
-    if: (always() && !cancelled() && needs.combo-bakasu-prepare.result == 'success' && (('BakaSU' == 'KernelSU-Next' || 'BakaSU'
-      == 'KernelSU' || 'BakaSU' == 'KowSU' || 'BakaSU' == 'FinaSU') || (('BakaSU' == 'SukiSU' || 'BakaSU' == 'BakaSU') &&
-      needs.combo-bakasu-lkm.result == 'success'))) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+    if: (always() && !cancelled() && needs.combo-bakasu-prepare.result == 'success' && (('BakaSU' == 'SukiSU' || 'BakaSU'
+      == 'BakaSU') || ('BakaSU' == 'KernelSU-Next' || 'BakaSU' == 'KernelSU' || 'BakaSU' == 'KowSU' || 'BakaSU' == 'FinaSU'))
+      && needs.combo-bakasu-lkm.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     env:
       KSU_VARIANT: ${{ 'BakaSU' }}
       GKI_PREPARE_SOURCE_CACHE_KEY: ${{ needs.combo-bakasu-prepare.outputs.source_cache_key }}
@@ -7883,7 +7895,6 @@ jobs:
       GKI_PREPARE_MANAGER_CERT_SHA256: ${{ needs.combo-bakasu-prepare.outputs.manager_cert_sha256 }}
       GKI_PREPARE_DDK_MATRIX: ${{ needs.combo-bakasu-prepare.outputs.ddk_matrix }}
       GKI_PREPARE_KSU_SHORT: ${{ needs.combo-bakasu-prepare.outputs.ksu_short }}
-      GKI_PREPARE_KSU_SOURCE_BRANCH: ${{ needs.combo-bakasu-prepare.outputs.ksu_source_branch }}
       GKI_COMBINED_WORKER: 'true'
     needs:
     - combo-bakasu-prepare
@@ -7895,16 +7906,14 @@ jobs:
       actions: read
     outputs:
       manager_job_id: ${{ steps.manager-producer.outputs.manager_job_id }}
-      manager_package: ${{ steps.sign.outputs.manager_package || steps.official-apk.outputs.manager_package }}
-      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size || steps.official-apk.outputs.manager_cert_size }}
-      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 || steps.official-apk.outputs.manager_cert_sha256 }}
-      apk_sha256: ${{ steps.sign.outputs.apk_sha256 || steps.official-apk.outputs.apk_sha256 }}
-      manager_version_name: ${{ steps.sign.outputs.manager_version_name || steps.official-apk.outputs.manager_version_name
-        }}
-      manager_version_code: ${{ steps.sign.outputs.manager_version_code || steps.official-apk.outputs.manager_version_code
-        }}
-      apk_filename: ${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
-      manager_metadata: ${{ steps.official-apk.outputs.manager_metadata }}
+      manager_package: ${{ steps.sign.outputs.manager_package }}
+      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
+      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+      manager_version_name: ${{ steps.sign.outputs.manager_version_name }}
+      manager_version_code: ${{ steps.sign.outputs.manager_version_code }}
+      apk_filename: ${{ steps.sign.outputs.apk_filename }}
+      manager_metadata: ''
     steps: *id003
   combo-bakasu-kernel:
     name: ${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}-${{
@@ -7934,8 +7943,9 @@ jobs:
       GKI_MANAGER_APK_FILENAME: ${{ needs.combo-bakasu-manager.outputs.apk_filename }}
       GKI_COMBINED_WORKER: 'true'
     if: (always() && !cancelled() && needs.combo-bakasu-prepare.result == 'success' && (github.event_name == 'workflow_dispatch'
-      && inputs.operation == '编译内核') && needs.combo-bakasu-manager.result == 'success' && (!('BakaSU' == 'SukiSU' || 'BakaSU'
-      == 'BakaSU') || needs.combo-bakasu-lkm.result == 'success')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+      && inputs.operation == '编译内核') && needs.combo-bakasu-manager.result == 'success' && (!(('BakaSU' == 'SukiSU' || 'BakaSU'
+      == 'BakaSU') || ('BakaSU' == 'KernelSU-Next' || 'BakaSU' == 'KernelSU' || 'BakaSU' == 'KowSU' || 'BakaSU' == 'FinaSU'))
+      || needs.combo-bakasu-lkm.result == 'success')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     needs:
     - combo-bakasu-prepare
     - combo-bakasu-lkm
@@ -8020,8 +8030,9 @@ jobs:
     name: ${{ 'KernelSU-Next' }} 原生模块 / ${{ matrix.kmi }}
     needs:
     - combo-next-prepare
-    if: (github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ('KernelSU-Next'
-      == 'SukiSU' || 'KernelSU-Next' == 'BakaSU')) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
+    if: (github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (('KernelSU-Next'
+      == 'SukiSU' || 'KernelSU-Next' == 'BakaSU') || ('KernelSU-Next' == 'KernelSU-Next' || 'KernelSU-Next' == 'KernelSU'
+      || 'KernelSU-Next' == 'KowSU' || 'KernelSU-Next' == 'FinaSU'))) && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -8046,10 +8057,10 @@ jobs:
     steps: *id002
   combo-next-manager:
     name: 编译配套 ${{ 'KernelSU-Next' }} 管理器 APK
-    if: (always() && !cancelled() && needs.combo-next-prepare.result == 'success' && (('KernelSU-Next' == 'KernelSU-Next'
-      || 'KernelSU-Next' == 'KernelSU' || 'KernelSU-Next' == 'KowSU' || 'KernelSU-Next' == 'FinaSU') || (('KernelSU-Next'
-      == 'SukiSU' || 'KernelSU-Next' == 'BakaSU') && needs.combo-next-lkm.result == 'success'))) && (inputs.kernelsu_variant
-      == 'SukiSU + BakaSU + KernelSU-Next')
+    if: (always() && !cancelled() && needs.combo-next-prepare.result == 'success' && (('KernelSU-Next' == 'SukiSU' || 'KernelSU-Next'
+      == 'BakaSU') || ('KernelSU-Next' == 'KernelSU-Next' || 'KernelSU-Next' == 'KernelSU' || 'KernelSU-Next' == 'KowSU' ||
+      'KernelSU-Next' == 'FinaSU')) && needs.combo-next-lkm.result == 'success') && (inputs.kernelsu_variant == 'SukiSU +
+      BakaSU + KernelSU-Next')
     env:
       KSU_VARIANT: ${{ 'KernelSU-Next' }}
       GKI_PREPARE_SOURCE_CACHE_KEY: ${{ needs.combo-next-prepare.outputs.source_cache_key }}
@@ -8061,7 +8072,6 @@ jobs:
       GKI_PREPARE_MANAGER_CERT_SHA256: ${{ needs.combo-next-prepare.outputs.manager_cert_sha256 }}
       GKI_PREPARE_DDK_MATRIX: ${{ needs.combo-next-prepare.outputs.ddk_matrix }}
       GKI_PREPARE_KSU_SHORT: ${{ needs.combo-next-prepare.outputs.ksu_short }}
-      GKI_PREPARE_KSU_SOURCE_BRANCH: ${{ needs.combo-next-prepare.outputs.ksu_source_branch }}
       GKI_COMBINED_WORKER: 'true'
     needs:
     - combo-next-prepare
@@ -8073,16 +8083,14 @@ jobs:
       actions: read
     outputs:
       manager_job_id: ${{ steps.manager-producer.outputs.manager_job_id }}
-      manager_package: ${{ steps.sign.outputs.manager_package || steps.official-apk.outputs.manager_package }}
-      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size || steps.official-apk.outputs.manager_cert_size }}
-      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 || steps.official-apk.outputs.manager_cert_sha256 }}
-      apk_sha256: ${{ steps.sign.outputs.apk_sha256 || steps.official-apk.outputs.apk_sha256 }}
-      manager_version_name: ${{ steps.sign.outputs.manager_version_name || steps.official-apk.outputs.manager_version_name
-        }}
-      manager_version_code: ${{ steps.sign.outputs.manager_version_code || steps.official-apk.outputs.manager_version_code
-        }}
-      apk_filename: ${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}
-      manager_metadata: ${{ steps.official-apk.outputs.manager_metadata }}
+      manager_package: ${{ steps.sign.outputs.manager_package }}
+      manager_cert_size: ${{ steps.sign.outputs.manager_cert_size }}
+      manager_cert_sha256: ${{ steps.sign.outputs.manager_cert_sha256 }}
+      apk_sha256: ${{ steps.sign.outputs.apk_sha256 }}
+      manager_version_name: ${{ steps.sign.outputs.manager_version_name }}
+      manager_version_code: ${{ steps.sign.outputs.manager_version_code }}
+      apk_filename: ${{ steps.sign.outputs.apk_filename }}
+      manager_metadata: ''
     steps: *id003
   combo-next-kernel:
     name: ${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}-${{
@@ -8112,9 +8120,10 @@ jobs:
       GKI_MANAGER_APK_FILENAME: ${{ needs.combo-next-manager.outputs.apk_filename }}
       GKI_COMBINED_WORKER: 'true'
     if: (always() && !cancelled() && needs.combo-next-prepare.result == 'success' && (github.event_name == 'workflow_dispatch'
-      && inputs.operation == '编译内核') && needs.combo-next-manager.result == 'success' && (!('KernelSU-Next' == 'SukiSU' ||
-      'KernelSU-Next' == 'BakaSU') || needs.combo-next-lkm.result == 'success')) && (inputs.kernelsu_variant == 'SukiSU +
-      BakaSU + KernelSU-Next')
+      && inputs.operation == '编译内核') && needs.combo-next-manager.result == 'success' && (!(('KernelSU-Next' == 'SukiSU' ||
+      'KernelSU-Next' == 'BakaSU') || ('KernelSU-Next' == 'KernelSU-Next' || 'KernelSU-Next' == 'KernelSU' || 'KernelSU-Next'
+      == 'KowSU' || 'KernelSU-Next' == 'FinaSU')) || needs.combo-next-lkm.result == 'success')) && (inputs.kernelsu_variant
+      == 'SukiSU + BakaSU + KernelSU-Next')
     needs:
     - combo-next-prepare
     - combo-next-lkm

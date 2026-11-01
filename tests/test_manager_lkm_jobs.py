@@ -54,6 +54,14 @@ def render_key(template, *, root=ROOT, **changes):
                 raise ValueError('Unsupported hashFiles path expression in the actual cache key')
             return ('-kpm-' + github_exact_file_hash(Path(root), paths)
                     if values['inputs.kernelsu_variant'] == 'BakaSU' else '')
+        extra = re.fullmatch(r"inputs\.kernelsu_variant != 'SukiSU' && inputs\.kernelsu_variant != 'BakaSU' && "
+                             r"format\('-kpm-\{0\}', hashFiles\((.*?)\)\) \|\| ''", expression)
+        if extra:
+            paths = re.findall(r"'([^']+)'", extra[1])
+            if ', '.join(repr(path) for path in paths) != extra[1]:
+                raise ValueError('Unsupported additional port hash expression')
+            return ('-kpm-' + github_exact_file_hash(Path(root), paths)
+                    if values['inputs.kernelsu_variant'] not in ('SukiSU', 'BakaSU') else '')
         return expression[1:-1] if expression.startswith("'") and expression.endswith("'") else values[expression]
     return re.sub(r'\$\{\{(.*?)\}\}', replace, template)
 
@@ -391,7 +399,9 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertIn('CONFIG_KSU_TRACEPOINT_HOOK=y', arguments[-1])
         baka = arguments[-1].split('if [ "$KSU_VARIANT" = BakaSU ]; then', 1)[1].split('    fi', 1)[0]
         self.assertIn('CONFIG_KPM=y', baka)
-        self.assertEqual(1, arguments[-1].count('CONFIG_KPM=y'))
+        self.assertEqual(3, arguments[-1].count('CONFIG_KPM=y'))
+        self.assertIn('KSU_NEXT_MANAGER_SIZE="$KSU_EXPECTED_SIZE"', arguments[-1])
+        self.assertIn('KSU_NEXT_MANAGER_HASH="$KSU_EXPECTED_HASH"', arguments[-1])
         self.assertIn('KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE"', arguments[-1])
         self.assertIn('CONFIG_KSU=m CC=clang make -j "$(nproc)"', arguments[-1])
         self.assertIn('KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"', arguments[-1])

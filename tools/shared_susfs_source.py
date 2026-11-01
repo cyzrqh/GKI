@@ -172,7 +172,7 @@ def prepare_sources(source: Path, matrix: dict, reference: str, *, root: Path = 
     custom, requested_refs, refspecs = {}, {}, []
     for target in targets:
         pin = (selected_pin(root, variant, reference, tier, target, manager_source=source)
-               if variant in ('KernelSU-Next', 'KernelSU') else
+               if variant in ('KernelSU-Next', 'KernelSU', 'KowSU') else
                selected_pin(root, variant, reference, tier, target))
         requested = configured_custom_ref(root, target)
         if requested is not None:

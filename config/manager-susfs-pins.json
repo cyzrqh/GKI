@@ -2,7 +2,7 @@
   "schema_version": 1,
   "version": "v2.3.0",
   "source": "https://gitlab.com/simonpunk/susfs4ksu",
-  "reason": "Native legacy exec/input hook ABI in the official stable Next and KernelSU sources",
+  "reason": "Reviewed native SUSFS 2.3 hook ABI for the source-built Next, KernelSU and KowSU ports",
   "managers": {
     "KernelSU-Next": {
       "source_refs": [
@@ -19,6 +19,18 @@
     "KernelSU": {
       "source_refs": [
         "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d"
+      ],
+      "pins": {
+        "android12-5.10": "82f08351fadb8b19dd6591bd14634d02ad832145",
+        "android13-5.15": "bd27d727b27fc90bfbb6eaccd28060a53c473266",
+        "android14-6.1": "5192aa2d33b381b58c1051532f9e1dfa5de6e8d3",
+        "android15-6.6": "bd7d199ac87808001127e8a6d076832e2938cf0d",
+        "android16-6.12": "5e0b2b925865000ca7dce993ecf1d281ee312887"
+      }
+    },
+    "KowSU": {
+      "source_refs": [
+        "6ecdd69224fe6769e6c8715a4ef2b91602b23362"
       ],
       "pins": {
         "android12-5.10": "82f08351fadb8b19dd6591bd14634d02ad832145",

@@ -25,8 +25,7 @@ def effective_susfs(variant: str, requested: bool) -> bool:
     manager_profile(variant)
     if variant == 'FinaSU' and not requested:
         raise ValueError('FinaSU 官方内核依赖 SUSFS，请启用 SUSFS')
-    # KowSU upstream intentionally has no SUSFS support (same policy as WildKernels).
-    return requested and variant != 'KowSU'
+    return requested
 
 
 def configure(root: Path, size: str, digest: str, package: str, code: str, *, variant: str) -> Path:
@@ -73,10 +72,12 @@ def integrate_susfs(root: Path, dependency: Path, variant: str) -> None:
         return
     source = root / 'KernelSU'
     if variant == 'KowSU':
-        raise ValueError('KowSU 官方源码不支持 SUSFS')
+        from additional_manager_kpm import with_susfs
+        with_susfs(source, variant, lambda: apply_next_port(source, name='kow-susfs23'))
     if variant == 'KernelSU-Next':
         name = 'next-susfs23' if (source / 'kernel/preinit/preinit.c').is_file() else 'next-susfs23-stable'
-        apply_next_port(source, name=name)
+        from additional_manager_kpm import with_susfs
+        with_susfs(source, variant, lambda: apply_next_port(source, name=name))
     if variant == 'KernelSU':
         patch = dependency / 'kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch'
         if not patch.is_file():
@@ -88,11 +89,14 @@ def integrate_susfs(root: Path, dependency: Path, variant: str) -> None:
             check = subprocess.run([*command, str(patch.resolve())], capture_output=True, timeout=30)
             if check.returncode == 0:
                 if not reverse:
-                    subprocess.run(['git', '-C', str(source), 'apply', '--recount', str(patch.resolve())],
-                                   check=True, capture_output=True, timeout=30)
+                    from additional_manager_kpm import with_susfs
+                    with_susfs(source, variant, lambda: subprocess.run(
+                        ['git', '-C', str(source), 'apply', '--recount', str(patch.resolve())],
+                        check=True, capture_output=True, timeout=30))
                 return
         name = 'official-susfs23' if (source / 'kernel/preinit/preinit.c').is_file() else 'official-susfs23-stable'
-        apply_next_port(source, name=name)
+        from additional_manager_kpm import with_susfs
+        with_susfs(source, variant, lambda: apply_next_port(source, name=name))
     files = list((source / 'kernel').rglob('*.c'))
     combined = '\n'.join(p.read_text(encoding='utf-8') for p in files)
     symbols = (('susfs', 'ksu_preinit_handle_post_execveat', 'ksu_setup_preinit_file')
@@ -140,7 +144,7 @@ def verify_legacy_next_lifecycle(source: Path) -> None:
 
 
 def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
-    if name not in ('next-susfs23', 'official-susfs23', 'next-susfs23-stable', 'official-susfs23-stable'):
+    if name not in ('next-susfs23', 'official-susfs23', 'next-susfs23-stable', 'official-susfs23-stable', 'kow-susfs23'):
         raise ValueError('Unsupported reviewed SUSFS compatibility port')
     directory = Path(__file__).resolve().parent / 'patches'
     patch = directory / (name + '.patch')
@@ -150,6 +154,9 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     def verify():
         if name == 'next-susfs23-stable':
             verify_legacy_next_lifecycle(source)
+        elif name == 'kow-susfs23':
+            from verify_kow_susfs import verify_kow_port
+            verify_kow_port(source)
     def call(repo, *args):
         return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false', *args],
                               capture_output=True, timeout=120)

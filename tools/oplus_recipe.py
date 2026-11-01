@@ -122,7 +122,7 @@ def native_inputs(inputs: dict, profile: dict) -> dict[str, str]:
               'KernelSU-Next': 'ksunext', 'KernelSU': 'ksu', 'KowSU': 'kowsu', 'FinaSU': 'finasu'}
     return {'ksu_type': native[variant],
             'susfs_enable': 'true' if effective_susfs(variant, flags['enable_susfs']) else 'false',
-            'kpm_enable': yes('use_kpm') if variant in ('SukiSU', 'BakaSU') else 'false',
+            'kpm_enable': yes('use_kpm'),
             'lz4kd_enable': yes('use_lz4kd'), 'baseband_guard': yes('use_bbg'),
             'bbr_enable': yes('use_bbr'),
             'better_net': 'false' if profile['platform'].startswith('mt') else yes('use_proxy_optimization'),

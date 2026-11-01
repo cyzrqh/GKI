@@ -90,6 +90,10 @@ def selected_source(source: Path, reference: str) -> dict:
         except ValueError as error:
             raise LkmError('BakaSU LKM source port verification failed: ' + str(error)) from None
         metadata['bakasu_kpm_port_sha256'] = port['port_sha256']
+    elif variant in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+        from additional_manager_kpm import verify
+        metadata['additional_kpm_port_sha256'] = verify(source, reference, variant,
+            scopes=('kernel', 'uapi'))['sha256']
     else:
         git(source, "diff", "--quiet", "HEAD", "--", "kernel", "uapi", "userspace/ksud/src/assets.rs")
     version = native_version_code(source, metadata["git_count"], variant=variant)
@@ -248,7 +252,9 @@ def validate_kpm_command(command: str, version: int) -> None:
 
 
 def kpm_proof_binding(proof: dict, metadata: dict) -> str:
-    body = {'proof': proof, 'module': {key: metadata[key] for key in KPM_MODULE_BINDINGS}}
+    bindings = tuple('additional_kpm_port_sha256' if key == 'bakasu_kpm_port_sha256'
+                     and 'additional_kpm_port_sha256' in metadata else key for key in KPM_MODULE_BINDINGS)
+    body = {'proof': proof, 'module': {key: metadata[key] for key in bindings}}
     return hashlib.sha256(json.dumps(body, sort_keys=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
@@ -386,7 +392,7 @@ def record(source: Path, module: Path, kmi: str, identity_file: Path, reference:
     filename = kmi + "_kernelsu.ko"
     metadata = {"schema_version": 1, "arch": "aarch64", "kmi": kmi, "file": filename,
                 "ddk_image": ddk_image, **provenance, **identity, **inspected, **version_proof}
-    if selected_variant() == 'BakaSU':
+    if selected_variant() in ('BakaSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
         metadata['kpm_compiler_proof'] = compiled_kpm_proof(source, metadata)
         validate_compiled_kpm_proof(metadata)
         if len(json.dumps(metadata, ensure_ascii=True, indent=2).encode('utf-8')) + 1 > MAX_JSON:
@@ -433,7 +439,7 @@ def stage(source: Path, artifacts: Path, identity_file: Path, reference: str,
                 or not isinstance(metadata.get("compiler_records_sha256"), str)
                 or not re.fullmatch(r"[0-9a-f]{64}", metadata["compiler_records_sha256"])):
             raise LkmError("LKM artifact lacks verified native compiler version evidence")
-        if selected_variant() == 'BakaSU':
+        if selected_variant() in ('BakaSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
             validate_compiled_kpm_proof(metadata)
         actual = inspect_module(module, kmi, identity, provenance["ksu_ref"])
         if any(metadata.get(key) != value for key, value in actual.items()):

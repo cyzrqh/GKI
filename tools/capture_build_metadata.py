@@ -59,6 +59,8 @@ def collect(kernel_root: Path, image_path: Path, context: dict[str, str]) -> dic
         raise ValueError('Unexpectedly large kernel Image')
     image = image_path.read_bytes()
     config, origin, config_sha = kernel_config(kernel_root, image)
+    from verify_requested_features import requests_from_environment, verify_requested
+    verify_requested(config, requests_from_environment())
     entry = validate_image(image)
     susfs = config.get('CONFIG_KSU_SUSFS') == 'y'
     variant = context.get('ksu_variant', 'None')

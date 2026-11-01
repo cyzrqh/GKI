@@ -124,8 +124,10 @@ def lkm_cache_key(kmi_expr: str, ddk_short_expr: str) -> str:
     # Same upstream SHA/certificate can now have a different native BakaSU
     # bridge. Bind both producer and consumer to the exact reviewed port;
     # the false branch is empty so every existing SukiSU cache key is intact.
-    return key + expression("inputs.kernelsu_variant == 'BakaSU' && "
+    return (key + expression("inputs.kernelsu_variant == 'BakaSU' && "
         "format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || ''")
+        + expression("inputs.kernelsu_variant != 'SukiSU' && inputs.kernelsu_variant != 'BakaSU' && "
+        "format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || ''"))
 
 
 def lkm_cache_restore_steps(cache_key: str, cache_path: str, *, id_prefix: str,
@@ -271,6 +273,11 @@ docker run --rm --network none \
     if [ "$KSU_VARIANT" = BakaSU ]; then
       extra+=(CONFIG_KSU_MULTI_MANAGER_SUPPORT=y CONFIG_KSU_TRACEPOINT_HOOK=y CONFIG_KPM=y)
       extra+=(KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
+    elif [ "$KSU_VARIANT" = KernelSU-Next ]; then
+      extra+=(CONFIG_KPM=y KSU_NEXT_MANAGER_SIZE="$KSU_EXPECTED_SIZE" KSU_NEXT_MANAGER_HASH="$KSU_EXPECTED_HASH")
+      extra+=(KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
+    elif [ "$KSU_VARIANT" = KernelSU ] || [ "$KSU_VARIANT" = KowSU ] || [ "$KSU_VARIANT" = FinaSU ]; then
+      extra+=(CONFIG_KPM=y KSU_MANAGER_PACKAGE="$KSU_MANAGER_PACKAGE")
     fi
     CONFIG_KSU=m CC=clang make -j "$(nproc)" \
       KSU_PACKAGE_NAME="$KSU_PACKAGE_NAME" KSU_EXPECTED_SIZE="$KSU_EXPECTED_SIZE" \

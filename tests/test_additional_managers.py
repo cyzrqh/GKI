@@ -155,7 +155,7 @@ class CombinedWorkflowTests(unittest.TestCase):
                     self.assertIn('-' + job['name'].split()[-1] + '-AnyKernel3.zip', download['with']['pattern'])
 
     def test_kow_and_fina_capabilities_do_not_change_suki_and_baka(self):
-        self.assertFalse(effective_susfs('KowSU', True))
+        self.assertTrue(effective_susfs('KowSU', True))
         self.assertTrue(effective_susfs('FinaSU', True))
         with self.assertRaises(ValueError):
             effective_susfs('FinaSU', False)

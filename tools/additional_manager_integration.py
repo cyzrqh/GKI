@@ -139,6 +139,76 @@ def verify_legacy_next_lifecycle(source: Path) -> None:
         raise ValueError('Next native boot callback is missing its Kbuild object or feature lifecycle')
 
 
+def verify_native_policy_generation(source: Path) -> None:
+    """Keep the selected upstream's real policy generation and notifications."""
+    selected = git(source, 'show', 'HEAD:kernel/selinux/rules.c')
+    marker = 'pol->latest_granting = old_pol->latest_granting + 1;'
+    if marker not in selected:
+        return
+    actual = (source / 'kernel/selinux/rules.c').read_text(encoding='utf-8')
+    from validate_susfs_hooks import strip_comments_and_literals
+    original = strip_comments_and_literals(selected)
+    current = strip_comments_and_literals(actual)
+    helper = r'\bstatic\s+void\s+reset_avc_cache\s*\(\s*u32\s+seqno\s*\)\s*\{.*?^\}'
+    expected = re.search(helper, original, re.M | re.S)
+    observed = re.search(helper, current, re.M | re.S)
+    compact = lambda value: re.sub(r'\s+', '', value)
+    if expected is None or observed is None or compact(expected[0]) != compact(observed[0]):
+        raise ValueError('Native SELinux policy generation and notifications must retain the selected source')
+    assignment = r'pol->latest_granting\s*=\s*old_pol->latest_granting\s*\+\s*1\s*;'
+    publication = (assignment + r'\s*rcu_assign_pointer\(selinux_state.policy, pol\);\s*'
+                   r'synchronize_rcu\(\);\s*ksu_destroy_sepolicy\(old_pol\);\s*'
+                   r'reset_avc_cache\(pol->latest_granting\);')
+    for pattern in (assignment, publication, r'\breset_avc_cache\(pol->latest_granting\);'):
+        required = len(re.findall(pattern, original))
+        if not required or len(re.findall(pattern, current)) != required:
+            raise ValueError('Native SELinux policy publication and generation updates must survive the SUSFS port')
+
+
+def resolve_policy_sid_addition(source: Path, *, reverse: bool = False) -> bool:
+    """Resolve only the reviewed SID hook adjacent to upstream's seqno fix.
+
+    The old patch adds a hook after reset_avc_cache(); the selected upstream
+    independently passes the policy's real generation into that call. Keep
+    both. All other overlapping edits remain conflicts requiring review.
+    """
+    relative = 'kernel/selinux/rules.c'
+    paths = git(source, 'diff', '--name-only', '--diff-filter=U').splitlines()
+    if paths != [relative]:
+        return False
+    path = source / relative
+    if path.is_symlink() or not path.is_file():
+        return False
+    text = path.read_text(encoding='utf-8')
+    conflict = re.compile(r'^<<<<<<< [^\n]*\n(.*?)^\|\|\|\|\|\|\| [^\n]*\n(.*?)'
+                          r'^=======\n(.*?)^>>>>>>> [^\n]*\n', re.M | re.S)
+    matches = list(conflict.finditer(text))
+    if len(matches) != 1 or len(re.findall(r'^<<<<<<< ', text, re.M)) != 1:
+        return False
+    ours, base, theirs = matches[0].groups()
+    old_call = 'reset_avc_cache();'
+    new_call = 'reset_avc_cache(pol->latest_granting);'
+    hook = r'(?:#ifdef CONFIG_KSU_SUSFS\s+susfs_set_batch_sid\(\);\s+#endif|susfs_set_batch_sid\(\);)'
+    def with_hook(value: str, call: str) -> bool:
+        return re.fullmatch(r'\s*' + re.escape(call) + r'\s+' + hook + r'\s*', value) is not None
+    if not reverse:
+        if (base.strip() != old_call or ours.strip() != new_call
+                or not with_hook(theirs, old_call)):
+            return False
+        replacement = theirs.replace(old_call, new_call, 1)
+    else:
+        if (theirs.strip() != old_call or not with_hook(base, old_call)
+                or not with_hook(ours, new_call)):
+            return False
+        replacement = theirs.replace(old_call, new_call, 1)
+    updated = text[:matches[0].start()] + replacement + text[matches[0].end():]
+    if re.search(r'^(?:<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)', updated, re.M):
+        return False
+    path.write_text(updated, encoding='utf-8', newline='\n')
+    git(source, 'add', '--', relative)
+    return True
+
+
 def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     if name not in ('next-susfs23', 'official-susfs23', 'next-susfs23-stable', 'official-susfs23-stable'):
         raise ValueError('Unsupported reviewed SUSFS compatibility port')
@@ -150,8 +220,10 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     def verify():
         if name == 'next-susfs23-stable':
             verify_legacy_next_lifecycle(source)
+        verify_native_policy_generation(source)
     def call(repo, *args):
-        return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false', *args],
+        return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false',
+                               '-c', 'merge.conflictStyle=diff3', *args],
                               capture_output=True, timeout=120)
     if call(source, 'apply', '--reverse', '--check', str(patch)).returncode == 0:
         verify()
@@ -166,7 +238,7 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     # --3way --check alone: it may report success while leaving conflicted hunks.
     with tempfile.TemporaryDirectory(prefix='gki-next-port-') as temporary:
         checked = Path(temporary) / 'source'
-        result = subprocess.run(['git', 'clone', '--no-hardlinks', '--config', 'core.autocrlf=false',
+        result = subprocess.run(['git', 'clone', '--shared', '--no-checkout', '--config', 'core.autocrlf=false',
                                  str(source.resolve()), str(checked)], capture_output=True, timeout=120)
         if result.returncode:
             raise ValueError('Could not prepare the independent Next port validation checkout')
@@ -183,10 +255,20 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
             if seeded.returncode or seeded.stdout.strip().decode() != identity:
                 raise ValueError('Cannot seed the reviewed Next SUSFS merge preimage')
         merged = call(checked, 'apply', '--3way', str(patch))
-        if merged.returncode or call(checked, 'ls-files', '--unmerged').stdout.strip():
-            raise ValueError('Next official source conflicts with the reviewed SUSFS port; review required')
+        if merged.returncode and not resolve_policy_sid_addition(checked):
+            conflicts = call(checked, 'diff', '--name-only', '--diff-filter=U').stdout.decode().strip()
+            raise ValueError('Official source conflicts with the reviewed SUSFS port; review required: '
+                             + (conflicts or 'patch application failed'))
+        if call(checked, 'ls-files', '--unmerged').stdout.strip():
+            raise ValueError('Official SUSFS port still contains unresolved source conflicts')
+        verify_native_policy_generation(checked)
         prepared = Path(temporary) / 'rebased.patch'
         prepared.write_bytes(call(checked, 'diff', '--binary', '--full-index', 'HEAD', '--', 'kernel').stdout)
+        reversed_port = call(checked, 'apply', '--reverse', '--3way', str(patch))
+        reverse_ok = reversed_port.returncode == 0 or resolve_policy_sid_addition(checked, reverse=True)
+        if (not reverse_ok or call(checked, 'ls-files', '--unmerged').stdout.strip()
+                or call(checked, 'diff', '--quiet', 'HEAD', '--', 'kernel', 'uapi').returncode):
+            raise ValueError('SUSFS port could not reverse back to the exact selected official source')
         if (not prepared.stat().st_size or call(source, 'apply', '--check', str(prepared)).returncode
                 or call(source, 'apply', str(prepared)).returncode):
             raise ValueError('Rebased Next SUSFS port could not pass the real source dry run')

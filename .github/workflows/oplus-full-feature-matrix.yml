@@ -135,6 +135,8 @@ jobs:
         command -v cc >/dev/null
         python3 -m unittest discover -s tests -p 'test_oplus_*.py'
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+    - name: 验证管理器原生生命周期及真实 C 状态行为
+      run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (true || false) && ((env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
         == 'BakaSU') || (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU' || env.KSU_VARIANT == 'KowSU'

@@ -172,7 +172,7 @@ index f3485588554bf4ae5f98708bef13c9b94c82d7f2..14a40b6162d4b7e30aaca863332aa999
 +
  # Keep a new line here!! Because someone may append config
 diff --git a/kernel/core/init.c b/kernel/core/init.c
-index 87a17ef0feddae45aed26189d0e825d442969ac5..f42b2f7c42b4e956080ddf298d066052b7a74eed 100644
+index 87a17ef0feddae45aed26189d0e825d442969ac5..9b4511d0e57523ea1aa1e1f0b9ece36e2332c93b 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
 @@ -5,6 +5,8 @@
@@ -216,15 +216,7 @@ index 87a17ef0feddae45aed26189d0e825d442969ac5..f42b2f7c42b4e956080ddf298d066052
  
  // workaround for A12-5.10 kernel
  // Some third-party kernel (e.g. linegaeOS) uses wrong toolchain, which supports
-@@ -74,7 +68,6 @@ __attribute__((naked)) int __init kernelsu_init_early(void)
- #endif
- 
- struct cred *ksu_cred;
--bool ksu_late_loaded;
- 
- #ifdef CONFIG_KSU_DEBUG
- bool allow_shell = true;
-@@ -86,11 +79,6 @@ module_param(allow_shell, bool, 0);
+@@ -86,11 +80,6 @@ module_param(allow_shell, bool, 0);
  bool ksu_no_custom_rc = false;
  module_param_named(norc, ksu_no_custom_rc, bool, 0);
  
@@ -236,7 +228,7 @@ index 87a17ef0feddae45aed26189d0e825d442969ac5..f42b2f7c42b4e956080ddf298d066052
  int __init kernelsu_init(void)
  {
  #ifdef KSU_MANAGER_PACKAGE
-@@ -129,9 +117,10 @@ int __init kernelsu_init(void)
+@@ -129,9 +118,10 @@ int __init kernelsu_init(void)
  	pr_alert("**     NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE NOTICE    **");
  	pr_alert("*************************************************************");
  #endif
@@ -250,7 +242,7 @@ index 87a17ef0feddae45aed26189d0e825d442969ac5..f42b2f7c42b4e956080ddf298d066052
  
  	ksu_cred = prepare_creds();
  	if (!ksu_cred) {
-@@ -140,81 +129,45 @@ int __init kernelsu_init(void)
+@@ -140,81 +130,44 @@ int __init kernelsu_init(void)
  	}
  
  	ksu_init_symbol_resolver();
@@ -285,7 +277,6 @@ index 87a17ef0feddae45aed26189d0e825d442969ac5..f42b2f7c42b4e956080ddf298d066052
 -		// with KSU SELinux domain before enforcing SELinux, so it
 -		// can continue to access /data/app etc. after enforcement.
 -		escape_to_root_for_init();
-+    ksu_app_profile_init();
 +    ksu_supercalls_init();
  
 -		ksu_allowlist_init();
@@ -2132,14 +2123,12 @@ index 3a3dfea8eb8d65f42c1eb62b9bf428e759a95b36..b84862386de114396368a8373323da10
 -
  #endif
 diff --git a/kernel/include/ksu.h b/kernel/include/ksu.h
-index 32edab0ca1ac8a44aa3a57f059652427de8ad003..4af4acb919f250405a6834dbb3c8b20303650525 100644
+index 32edab0ca1ac8a44aa3a57f059652427de8ad003..62155c9f8bac2b88ce47ba58c9ef6009499ad5c7 100644
 --- a/kernel/include/ksu.h
 +++ b/kernel/include/ksu.h
-@@ -9,11 +9,7 @@
- #define KERNEL_SU_VERSION_TAG KSU_VERSION_TAG
- 
+@@ -11,9 +11,6 @@
  extern struct cred *ksu_cred;
--extern bool ksu_late_loaded;
+ extern bool ksu_late_loaded;
  extern bool allow_shell;
 -#ifdef MODULE
 -extern bool ksu_bundled;

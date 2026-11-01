@@ -696,6 +696,8 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
                        ('ksu_ref', 'ksu_repo', 'ksu_short', 'ksu_source_branch', 'effective_ksu_branch')}},
         'steps': [
             {'name': '检出 gki', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
+            {'name': '验证管理器原生生命周期及真实 C 状态行为',
+             'run': "python3 -m unittest discover -s tests -p 'test_manager_port_native.py'"},
             {'name': '检查管理器构建脚本', 'if': MANAGER_IF,
              'run': 'for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done'},
             {'name': '检查并生成矩阵', 'id': 'matrix', 'shell': 'bash', 'if': BUILD_IF,

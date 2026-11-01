@@ -102,6 +102,22 @@ def integrate_susfs(root: Path, dependency: Path, variant: str) -> None:
         raise ValueError('Selected manager lacks the required native SUSFS implementation')
 
 
+def verify_legacy_next_lifecycle(source: Path) -> None:
+    """Preserve Next's real late-load state without a removed profile initializer."""
+    core = (source / 'kernel/core/init.c').read_text(encoding='utf-8')
+    header = (source / 'kernel/include/ksu.h').read_text(encoding='utf-8')
+    if (len(re.findall(r'^bool ksu_late_loaded\s*;', core, re.M)) != 1
+            or len(re.findall(r'^extern bool ksu_late_loaded\s*;', header, re.M)) != 1):
+        raise ValueError('Next native late-load state definition/declaration is missing')
+    from validate_susfs_hooks import inspect_c_source
+    calls, _ = inspect_c_source(source / 'kernel/core/init.c', core, symbols=('ksu_app_profile_init',))
+    if calls:
+        profile = source / 'kernel/policy/app_profile.c'
+        _, definitions = inspect_c_source(profile, profile.read_text(encoding='utf-8'), symbols=('ksu_app_profile_init',))
+        if not any(item.symbol == 'ksu_app_profile_init' and not item.is_static for item in definitions):
+            raise ValueError('Next lifecycle calls a profile initializer removed by its SUSFS integration')
+
+
 def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     if name not in ('next-susfs23', 'official-susfs23', 'next-susfs23-stable', 'official-susfs23-stable'):
         raise ValueError('Unsupported reviewed SUSFS compatibility port')
@@ -110,15 +126,20 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     inventory = json.loads((directory / (name + '-base') / 'objects.json').read_text(encoding='utf-8'))
     if hashlib.sha256(patch.read_bytes()).hexdigest() != inventory['patch_sha256']:
         raise ValueError('Next SUSFS port differs from its reviewed digest')
+    def verify():
+        if name == 'next-susfs23-stable':
+            verify_legacy_next_lifecycle(source)
     def call(repo, *args):
         return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false', *args],
                               capture_output=True, timeout=120)
     if call(source, 'apply', '--reverse', '--check', str(patch)).returncode == 0:
+        verify()
         return
     if call(source, 'apply', '--check', str(patch)).returncode == 0:
         result = call(source, 'apply', str(patch))
         if result.returncode:
             raise ValueError('The reviewed Next SUSFS port could not be applied')
+        verify()
         return
     # Rebase the complete reviewed port in a disposable checkout. Never accept
     # --3way --check alone: it may report success while leaving conflicted hunks.
@@ -148,6 +169,7 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
         if (not prepared.stat().st_size or call(source, 'apply', '--check', str(prepared)).returncode
                 or call(source, 'apply', str(prepared)).returncode):
             raise ValueError('Rebased Next SUSFS port could not pass the real source dry run')
+        verify()
 
 
 def main():

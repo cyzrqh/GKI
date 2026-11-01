@@ -191,6 +191,8 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
+    - name: 验证管理器原生生命周期及真实 C 状态行为
+      run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((env.KSU_VARIANT
         == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') || (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU'

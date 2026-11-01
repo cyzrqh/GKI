@@ -1,12 +1,45 @@
-"""Use one reusable worker per manager, avoiding the 256-entry matrix limit."""
+"""Keep three isolated matrices inside each existing public build workflow."""
 from __future__ import annotations
 
 import copy
-from pathlib import Path
+import json
+import re
 
 from manager_variants import COMBINED_SELECTION, COMBINED_MANAGERS
 
 CALLERS = ('combo-sukisu', 'combo-bakasu', 'combo-next')
+
+
+class SharedSteps(list):
+    """One YAML sequence, referenced by aliases in the independent build jobs."""
+    _gki_shared_steps = True
+
+
+def bind_steps(job: dict) -> None:
+    """Bind job-specific needs once; keep the executable step bodies shared."""
+    names = {'prepare-matrix': 'PREPARE', 'build-sukisu-manager': 'MANAGER',
+             'build-sukisu-lkm': 'LKM', 'build-kernel': 'KERNEL', 'build-oplus-kernel': 'KERNEL'}
+    aliases = {}
+    def value(source):
+        if isinstance(source, str):
+            def replace(match):
+                name, field, result = match.groups()
+                if name not in names:
+                    raise ValueError('Unexpected build dependency in shared steps: ' + name)
+                alias = 'GKI_' + names[name] + '_' + (field or result).upper()
+                aliases[alias] = '${{ ' + match[0] + ' }}'
+                return 'env.' + alias
+            source = source.replace('inputs.kernelsu_variant', 'env.KSU_VARIANT')
+            return re.sub(r'needs\.([\w-]+)\.(?:outputs\.([A-Za-z_]\w*)|(result))', replace, source)
+        if isinstance(source, list):
+            return [value(child) for child in source]
+        if isinstance(source, dict):
+            return {key: value(child) for key, child in source.items()}
+        return source
+    job['steps'] = value(job['steps'])
+    job.setdefault('env', {}).update(aliases)
+    job['env'].setdefault('KSU_VARIANT', '${{ inputs.kernelsu_variant }}')
+    job['env']['GKI_COMBINED_WORKER'] = 'false'
 
 
 def rewrite(value, replacements):
@@ -21,42 +54,44 @@ def rewrite(value, replacements):
     return value
 
 
-def add_combined(workflow: dict, *, oplus: bool) -> tuple[dict, tuple[Path, dict]]:
+def add_combined(workflow: dict, *, oplus: bool) -> tuple[dict, None]:
     root = copy.deepcopy(workflow)
-    worker = copy.deepcopy(workflow)
-    worker_path = Path('.github/workflows/_oplus-manager-worker.yml' if oplus
-                       else '.github/workflows/_gki-manager-worker.yml')
-    fields = root['on']['workflow_dispatch']['inputs']
-    worker_fields = {}
-    for name, definition in fields.items():
-        worker_fields[name] = {key: value for key, value in definition.items()
-                               if key in ('description', 'required', 'default')}
-        worker_fields[name]['type'] = 'string' if definition['type'] == 'choice' else definition['type']
-        if worker_fields[name].get('required'):
-            worker_fields[name].pop('default', None)
     published_job = 'verify-oplus-assets' if oplus else 'publish-release'
-    worker['jobs'].pop(published_job)
-    worker.pop('run-name', None)
-    worker['name'] = '欧加真单管理器构建执行器' if oplus else 'GKI 单管理器构建执行器'
-    worker['env'] = {'GKI_COMBINED_WORKER': 'true'}
-    outputs = {}
-    prepare_outputs = worker['jobs']['prepare-matrix']['outputs']
-    manager_outputs = worker['jobs']['build-sukisu-manager']['outputs']
-    for name in prepare_outputs:
-        outputs[name] = {'value': '${{ jobs.prepare-matrix.outputs.' + name + ' }}'}
-    for name in manager_outputs:
-        # The prepare job's certificate describes local builds; the actual
-        # producer output is authoritative for both local and official APKs.
-        outputs[name] = {'value': '${{ jobs.build-sukisu-manager.outputs.' + name + ' }}'}
-    worker['on'] = {'workflow_call': {'inputs': worker_fields, 'outputs': outputs}}
+    kernel_job = 'build-oplus-kernel' if oplus else 'build-kernel'
+    core = ('prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager', kernel_job)
+    for name in core:
+        bind_steps(root['jobs'][name])
+    blueprints = {name: copy.deepcopy(root['jobs'][name]) for name in core}
     combo = "inputs.kernelsu_variant == '" + COMBINED_SELECTION + "'"
     root['jobs']['prepare-matrix']['if'] = '(' + root['jobs']['prepare-matrix']['if'] + ') && !(' + combo + ')'
     for caller, variant in zip(CALLERS, COMBINED_MANAGERS):
+        ids = {name: caller + '-' + suffix for name, suffix in zip(core, ('prepare', 'lkm', 'manager', 'kernel'))}
+        replacements = [('needs.' + name + '.', 'needs.' + ids[name] + '.') for name in core]
+        replacements.append(('inputs.kernelsu_variant', "'" + variant + "'"))
+        for name in core:
+            job = copy.deepcopy(blueprints[name])
+            steps = job.pop('steps')
+            job = rewrite(job, replacements)
+            if 'needs' in job:
+                dependencies = [job['needs']] if isinstance(job['needs'], str) else job['needs']
+                job['needs'] = [ids[dependency] for dependency in dependencies]
+            job['steps'] = steps
+            job['env']['GKI_COMBINED_WORKER'] = 'true'
+            job['if'] = '(' + job['if'] + ') && (' + combo + ')'
+            root['jobs'][ids[name]] = job
+        outputs = {key: '${{ needs.' + ids['prepare-matrix'] + '.outputs.' + key + ' }}'
+                   for key in blueprints['prepare-matrix']['outputs']}
+        outputs.update({key: '${{ needs.' + ids['build-sukisu-manager'] + '.outputs.' + key + ' }}'
+                        for key in blueprints['build-sukisu-manager']['outputs']})
+        kernel_done = "needs." + ids[kernel_job] + ".result == 'success'"
+        if not oplus:
+            kernel_done = "(inputs.operation == '仅编译管理器安装包' || " + kernel_done + ')'
         root['jobs'][caller] = {
-            'name': variant, 'if': combo, 'uses': './' + worker_path.as_posix(),
-            'permissions': {'contents': 'write', 'actions': 'write', 'issues': 'write', 'pull-requests': 'write'},
-            'with': {key: variant if key == 'kernelsu_variant' else '${{ inputs.' + key + ' }}'
-                     for key in fields}, 'secrets': 'inherit'}
+            'name': '核实 ' + variant + ' 分支完成', 'needs': list(ids.values()),
+            'if': "always() && !cancelled() && (" + combo + ") && needs." + ids['prepare-matrix']
+                  + ".result == 'success' && needs." + ids['build-sukisu-manager'] + ".result == 'success' && " + kernel_done,
+            'outputs': outputs, 'runs-on': 'ubuntu-24.04', 'permissions': {'contents': 'read'},
+            'steps': [{'name': '确认本管理器全部目标完成', 'run': 'true'}]}
     completed = "always() && !cancelled() && " + ' && '.join(
         "needs." + caller + ".result == 'success'" for caller in CALLERS)
     for caller, variant in zip(CALLERS, COMBINED_MANAGERS):
@@ -111,4 +146,9 @@ PY
 '''},
             {'name': '上传原文件校验清单', 'uses': 'actions/upload-artifact@v7',
              'with': {'path': 'SHA256SUMS.txt', 'archive': False, 'if-no-files-found': 'error', 'overwrite': True}}]}
-    return root, (worker_path, worker)
+    pool = {}
+    for name in (*core, *(caller + '-' + suffix for caller in CALLERS for suffix in ('prepare', 'lkm', 'manager', 'kernel'))):
+        job = root['jobs'][name]
+        identity = json.dumps(job['steps'], sort_keys=True, ensure_ascii=False, separators=(',', ':'))
+        job['steps'] = pool.setdefault(identity, SharedSteps(job['steps']))
+    return root, None

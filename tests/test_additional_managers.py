@@ -136,14 +136,17 @@ class CombinedWorkflowTests(unittest.TestCase):
 
     def test_combo_uses_three_isolated_matrices_and_all_success_release_gate(self):
         for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):
-            document, (_, worker) = add_combined(single, oplus=oplus)
+            document, worker = add_combined(single, oplus=oplus)
             calls = [job for job in document['jobs'].values() if 'uses' in job]
-            self.assertEqual(3, len(calls))
-            self.assertEqual(set(COMBINED_MANAGERS), {job['with']['kernelsu_variant'] for job in calls})
-            self.assertEqual({'workflow_call'}, set(worker['on']))
-            self.assertNotIn('publish-release', worker['jobs'])
-            self.assertNotIn('verify-oplus-assets', worker['jobs'])
-            self.assertEqual('true', worker['env']['GKI_COMBINED_WORKER'])
+            self.assertFalse(calls, 'Build workflows must not create extra reusable workflow entries')
+            self.assertIsNone(worker)
+            self.assertEqual({'workflow_dispatch'}, set(document['on']))
+            kernel = 'build-oplus-kernel' if oplus else 'build-kernel'
+            for caller, variant in zip(('combo-sukisu', 'combo-bakasu', 'combo-next'), COMBINED_MANAGERS):
+                self.assertEqual('true', document['jobs'][caller + '-kernel']['env']['GKI_COMBINED_WORKER'])
+                self.assertEqual([caller + '-prepare', caller + '-lkm', caller + '-manager', caller + '-kernel'],
+                                 document['jobs'][caller]['needs'])
+                self.assertIs(document['jobs'][kernel]['steps'], document['jobs'][caller + '-kernel']['steps'])
             for key, job in document['jobs'].items():
                 if key.startswith('publish-combo-'):
                     self.assertEqual(3, len(job['needs']))
@@ -183,8 +186,8 @@ class CombinedWorkflowTests(unittest.TestCase):
 
     def test_all_embedded_python_steps_compile(self):
         for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):
-            document, (_, worker) = add_combined(single, oplus=oplus)
-            for workflow in (document, worker):
+            document, _ = add_combined(single, oplus=oplus)
+            for workflow in (document,):
                 for job in workflow['jobs'].values():
                     for step in job.get('steps', []):
                         script = step.get('run', '')
@@ -193,6 +196,37 @@ class CombinedWorkflowTests(unittest.TestCase):
                                 body = block.split('\nPY', 1)[0]
                                 if '${{' not in body:
                                     compile(body, step.get('name', 'workflow'), 'exec')
+
+    def test_shared_step_bindings_preserve_every_original_script_and_condition(self):
+        def restore(value, aliases):
+            if isinstance(value, str):
+                for alias, original in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
+                    value = value.replace('env.' + alias, original)
+                return value.replace('env.KSU_VARIANT', 'inputs.kernelsu_variant')
+            if isinstance(value, list):
+                return [restore(item, aliases) for item in value]
+            if isinstance(value, dict):
+                return {key: restore(item, aliases) for key, item in value.items()}
+            return value
+        for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):
+            document, _ = add_combined(single, oplus=oplus)
+            for name in ('prepare-matrix', 'build-sukisu-manager', 'build-sukisu-lkm',
+                         'build-oplus-kernel' if oplus else 'build-kernel'):
+                job, original = document['jobs'][name], single['jobs'][name]
+                aliases = {key: value[3:-3].strip() for key, value in job['env'].items()
+                           if key not in original.get('env', {})}
+                aliases.pop('GKI_COMBINED_WORKER', None)
+                self.assertEqual(original['steps'], restore(job['steps'], aliases))
+
+    def test_yaml_aliases_fit_the_size_limit_and_roundtrip_all_independent_jobs(self):
+        import yaml
+        from generate_workflow import Dumper, Loader
+        for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):
+            document, _ = add_combined(single, oplus=oplus)
+            raw = yaml.dump(document, Dumper=Dumper, allow_unicode=True, sort_keys=False, width=120)
+            self.assertLess(len(raw.encode('utf-8')), 500_000)
+            self.assertIn('&id', raw)
+            self.assertEqual(document, yaml.load(raw, Loader=Loader))
 
 
 class AdditionalUpstreamTests(unittest.TestCase):

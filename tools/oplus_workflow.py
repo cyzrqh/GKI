@@ -61,6 +61,12 @@ from oplus_catalog import strict_json
 from oplus_recipe import native_inputs
 profile = profile_identity(strict_json(os.environ['OPLUS_PROFILE'].encode()))
 inputs = strict_json(os.environ['OPLUS_INPUTS'].encode())
+from manager_variants import COMBINED_SELECTION, COMBINED_MANAGERS
+if inputs.get('kernelsu_variant') == COMBINED_SELECTION:
+    variant = os.environ.get('KSU_VARIANT')
+    if os.environ.get('GKI_COMBINED_WORKER') != 'true' or variant not in COMBINED_MANAGERS:
+        raise SystemExit('Unexpected combined OPlus manager selection')
+    inputs['kernelsu_variant'] = variant
 native_inputs(inputs, profile)
 directory = pathlib.Path(os.environ['RUNNER_TEMP'])
 for name, value in [('oplus-profile.json',profile), ('oplus-inputs.json',inputs)]:

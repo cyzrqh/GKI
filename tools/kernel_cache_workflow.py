@@ -44,3 +44,34 @@ def wire_gki_cache(job):
     # Stay below GitHub's 2GiB per release-asset bound, including tar metadata.
     trim = next(step for step in steps if step.get('id') == 'bazel-cache-trim')
     trim['env']['BAZEL_CACHE_MAX_BYTES'] = str(1536 * 1024 * 1024)
+    key = next(step for step in steps if step.get('id') == 'persistent-ccache-restore')['env']['OBJECT_CACHE_KEY']
+    wire_thinlto(job, key.replace('gki-ccache-ecs-v1-', 'gki-thinlto-v1-'), oplus=False)
+
+
+def wire_thinlto(job, key, *, oplus):
+    """Keep Make's LTO results separate from ccache and all published assets."""
+    steps = job['steps']
+    job['env']['GKI_THINLTO_CACHE_DIR'] = '${{ github.workspace }}/.gki-thinlto-cache'
+    condition = 'success()' if oplus else "success() && steps.ccache-config.outputs.enabled == 'true'"
+    source = '$GITHUB_WORKSPACE/kernel_workspace/common' if oplus else '$KERNEL_ROOT/common'
+    compile_id = 'oplus-build' if oplus else 'compile-kernel'
+    compile_step = next(step for step in steps if step.get('id') == compile_id)
+    setup = {'name': '配置独立 ThinLTO 链接缓存', 'id': 'thinlto-config', 'if': condition,
+             'continue-on-error': True,
+             'run': 'python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" configure --source "' + source
+                    + '" --directory "$GKI_THINLTO_CACHE_DIR"'}
+    ready = "success() && steps.thinlto-config.outputs.enabled == 'true'"
+    restore = persistent_step('thinlto', 'restore', '${{ env.GKI_THINLTO_CACHE_DIR }}', key, ready)
+    restore['timeout-minutes'] = 3
+    report = {'name': '显示本次恢复的 ThinLTO 链接对象', 'if': ready, 'continue-on-error': True,
+              'run': 'python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" report --directory "$GKI_THINLTO_CACHE_DIR"'}
+    index = steps.index(compile_step)
+    steps[index:index] = [setup, restore, report]
+    successful = "always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps." + compile_id + ".outcome == 'success'"
+    trim = {'name': '限制并统计 ThinLTO 链接缓存', 'id': 'thinlto-trim', 'if': successful,
+            'continue-on-error': True,
+            'run': 'python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" trim --directory "$GKI_THINLTO_CACHE_DIR"'}
+    save = persistent_step('thinlto', 'save', '${{ env.GKI_THINLTO_CACHE_DIR }}', key, successful)
+    save['timeout-minutes'] = 3
+    index = next(i for i, step in enumerate(steps) if step.get('id') == 'persistent-ccache-save')
+    steps[index:index] = [trim, save]

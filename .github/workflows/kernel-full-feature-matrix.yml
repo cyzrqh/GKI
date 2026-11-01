@@ -193,6 +193,8 @@ jobs:
         persist-credentials: false
     - name: 验证管理器原生生命周期及真实 C 状态行为
       run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
+    - name: 验证 ThinLTO 链接缓存与真实增量链接
+      run: PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((env.KSU_VARIANT
         == 'SukiSU' || env.KSU_VARIANT == 'BakaSU') || (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU'
@@ -1657,6 +1659,7 @@ jobs:
       CCACHE_COMPRESS: 'true'
       CCACHE_MAXSIZE: 1536M
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs.manager_metadata }}
       GKI_PREPARE_EFFECTIVE_KSU_BRANCH: ${{ needs.prepare-matrix.outputs.effective_ksu_branch }}
       GKI_PREPARE_KSU_REF: ${{ needs.prepare-matrix.outputs.ksu_ref }}
@@ -6891,6 +6894,29 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \
           --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \
           --ksu-source "$KERNEL_ROOT/KernelSU"
+    - name: 配置独立 ThinLTO 链接缓存
+      id: thinlto-config
+      if: success() && steps.ccache-config.outputs.enabled == 'true'
+      continue-on-error: true
+      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" configure --source "$KERNEL_ROOT/common" --directory "$GKI_THINLTO_CACHE_DIR"
+    - name: 恢复独立仓库编译缓存（thinlto）
+      id: persistent-thinlto-restore
+      if: success() && steps.thinlto-config.outputs.enabled == 'true'
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: gki-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
+          }}-${{ matrix.os_patch_level }}-${{ env.KSU_VARIANT }}
+        OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
+    - name: 显示本次恢复的 ThinLTO 链接对象
+      if: success() && steps.thinlto-config.outputs.enabled == 'true'
+      continue-on-error: true
+      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" report --directory "$GKI_THINLTO_CACHE_DIR"
     - name: 编译内核
       id: compile-kernel
       uses: nick-fields/retry@v4
@@ -7164,6 +7190,25 @@ jobs:
           cat "$report"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+    - name: 限制并统计 ThinLTO 链接缓存
+      id: thinlto-trim
+      if: always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps.compile-kernel.outcome == 'success'
+      continue-on-error: true
+      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" trim --directory "$GKI_THINLTO_CACHE_DIR"
+    - name: 保存独立仓库编译缓存（thinlto）
+      id: persistent-thinlto-save
+      if: always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps.compile-kernel.outcome == 'success'
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: gki-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
+          }}-${{ matrix.os_patch_level }}-${{ env.KSU_VARIANT }}
+        OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
     - name: 保存独立仓库编译缓存（ccache）
       id: persistent-ccache-save
       if: always() && !cancelled() && steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
@@ -7689,6 +7734,7 @@ jobs:
       CCACHE_COMPRESS: 'true'
       CCACHE_MAXSIZE: 1536M
       KSU_VARIANT: ${{ 'SukiSU' }}
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.combo-sukisu-manager.outputs.manager_metadata }}
       GKI_PREPARE_EFFECTIVE_KSU_BRANCH: ${{ needs.combo-sukisu-prepare.outputs.effective_ksu_branch }}
       GKI_PREPARE_KSU_REF: ${{ needs.combo-sukisu-prepare.outputs.ksu_ref }}
@@ -7865,6 +7911,7 @@ jobs:
       CCACHE_COMPRESS: 'true'
       CCACHE_MAXSIZE: 1536M
       KSU_VARIANT: ${{ 'BakaSU' }}
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.combo-bakasu-manager.outputs.manager_metadata }}
       GKI_PREPARE_EFFECTIVE_KSU_BRANCH: ${{ needs.combo-bakasu-prepare.outputs.effective_ksu_branch }}
       GKI_PREPARE_KSU_REF: ${{ needs.combo-bakasu-prepare.outputs.ksu_ref }}
@@ -8042,6 +8089,7 @@ jobs:
       CCACHE_COMPRESS: 'true'
       CCACHE_MAXSIZE: 1536M
       KSU_VARIANT: ${{ 'KernelSU-Next' }}
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.combo-next-manager.outputs.manager_metadata }}
       GKI_PREPARE_EFFECTIVE_KSU_BRANCH: ${{ needs.combo-next-prepare.outputs.effective_ksu_branch }}
       GKI_PREPARE_KSU_REF: ${{ needs.combo-next-prepare.outputs.ksu_ref }}

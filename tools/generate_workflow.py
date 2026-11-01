@@ -698,6 +698,8 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
             {'name': '检出 gki', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
             {'name': '验证管理器原生生命周期及真实 C 状态行为',
              'run': "python3 -m unittest discover -s tests -p 'test_manager_port_native.py'"},
+            {'name': '验证 ThinLTO 链接缓存与真实增量链接',
+             'run': 'PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically'},
             {'name': '检查管理器构建脚本', 'if': MANAGER_IF,
              'run': 'for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done'},
             {'name': '检查并生成矩阵', 'id': 'matrix', 'shell': 'bash', 'if': BUILD_IF,

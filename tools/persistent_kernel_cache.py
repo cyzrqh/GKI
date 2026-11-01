@@ -55,7 +55,7 @@ def checked_root(path: Path, *, create=False) -> Path:
 
 
 def key_identity(key: str, kind: str) -> str:
-    if (kind not in ('ccache', 'bazel') or not isinstance(key, str)
+    if (kind not in ('ccache', 'bazel', 'thinlto') or not isinstance(key, str)
             or not re.fullmatch(r'[A-Za-z0-9_.-]{1,400}', key)):
         raise ValueError('Invalid compilation cache identity')
     return 'objects-v1-' + hashlib.sha256((kind + ':' + key).encode()).hexdigest()[:40]
@@ -78,7 +78,7 @@ def valid_name(name: str) -> bool:
 def excluded(name: str) -> bool:
     parts = name.split('/')
     return (any(part in ('tmp', 'temp') for part in parts)
-            or parts[-1] in ('ccache.conf', 'stats', 'stats.lock', 'CACHEDIR.TAG')
+            or parts[-1] in ('ccache.conf', 'stats', 'stats.lock', 'CACHEDIR.TAG', 'llvmcache.timestamp')
             or parts[-1].endswith(('.lock', '.tmp')))
 
 
@@ -322,7 +322,7 @@ def main(argv=None) -> int:
     parser.add_argument('operation', choices=('restore', 'save'))
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--key', required=True)
-    parser.add_argument('--kind', required=True, choices=('ccache', 'bazel'))
+    parser.add_argument('--kind', required=True, choices=('ccache', 'bazel', 'thinlto'))
     args = parser.parse_args(argv)
     started = time.monotonic()
     repository = os.environ.get('CACHE_REPOSITORY', '')

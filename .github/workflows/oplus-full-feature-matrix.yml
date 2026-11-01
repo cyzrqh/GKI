@@ -137,6 +137,8 @@ jobs:
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
     - name: 验证管理器原生生命周期及真实 C 状态行为
       run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
+    - name: 验证 ThinLTO 链接缓存与真实增量链接
+      run: PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (true || false) && ((env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
         == 'BakaSU') || (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU' || env.KSU_VARIANT == 'KowSU'
@@ -1586,6 +1588,7 @@ jobs:
       PATCHES_REF: ${{ needs.prepare-matrix.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
       CCACHE_MAXSIZE: 1536M
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs.manager_metadata }}
       GKI_MANAGER_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs.apk_filename }}
       GKI_MANAGER_MANAGER_JOB_ID: ${{ needs.build-sukisu-manager.outputs.manager_job_id }}
@@ -1779,6 +1782,29 @@ jobs:
         ccache --zero-stats
         ccache --version
         echo 'started=true' >> "$GITHUB_OUTPUT"
+    - name: 配置独立 ThinLTO 链接缓存
+      id: thinlto-config
+      if: success()
+      continue-on-error: true
+      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" configure --source "$GITHUB_WORKSPACE/kernel_workspace/common"
+        --directory "$GKI_THINLTO_CACHE_DIR"
+    - name: 恢复独立仓库编译缓存（thinlto）
+      id: persistent-thinlto-restore
+      if: success() && steps.thinlto-config.outputs.enabled == 'true'
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: oplus-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ env.KSU_VARIANT }}-${{ matrix.recipe_ref }}-objects
+        OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
+    - name: 显示本次恢复的 ThinLTO 链接对象
+      if: success() && steps.thinlto-config.outputs.enabled == 'true'
+      continue-on-error: true
+      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" report --directory "$GKI_THINLTO_CACHE_DIR"
     - name: 使用原生 Make 与对应 Clang/Rust 编译内核
       run: |
         python3 tools/oplus_recipe.py --phase build --recipe-root "$GITHUB_WORKSPACE/oplus-reference" \
@@ -1822,6 +1848,24 @@ jobs:
           cat "$report"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
+    - name: 限制并统计 ThinLTO 链接缓存
+      id: thinlto-trim
+      if: always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps.oplus-build.outcome == 'success'
+      continue-on-error: true
+      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" trim --directory "$GKI_THINLTO_CACHE_DIR"
+    - name: 保存独立仓库编译缓存（thinlto）
+      id: persistent-thinlto-save
+      if: always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps.oplus-build.outcome == 'success'
+      continue-on-error: true
+      timeout-minutes: 3
+      env:
+        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
+        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
+        OBJECT_CACHE_KEY: oplus-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ env.KSU_VARIANT }}-${{ matrix.recipe_ref }}-objects
+        OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
+      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
+        --key "$OBJECT_CACHE_KEY"
     - name: 保存独立仓库编译缓存（ccache）
       id: persistent-ccache-save
       if: always() && !cancelled() && steps.oplus-build.outcome == 'success'
@@ -2072,6 +2116,7 @@ jobs:
       PATCHES_REF: ${{ needs.combo-sukisu-prepare.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
       CCACHE_MAXSIZE: 1536M
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.combo-sukisu-manager.outputs.manager_metadata }}
       GKI_MANAGER_APK_FILENAME: ${{ needs.combo-sukisu-manager.outputs.apk_filename }}
       GKI_MANAGER_MANAGER_JOB_ID: ${{ needs.combo-sukisu-manager.outputs.manager_job_id }}
@@ -2247,6 +2292,7 @@ jobs:
       PATCHES_REF: ${{ needs.combo-bakasu-prepare.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
       CCACHE_MAXSIZE: 1536M
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.combo-bakasu-manager.outputs.manager_metadata }}
       GKI_MANAGER_APK_FILENAME: ${{ needs.combo-bakasu-manager.outputs.apk_filename }}
       GKI_MANAGER_MANAGER_JOB_ID: ${{ needs.combo-bakasu-manager.outputs.manager_job_id }}
@@ -2423,6 +2469,7 @@ jobs:
       PATCHES_REF: ${{ needs.combo-next-prepare.outputs.patches_ref }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
       CCACHE_MAXSIZE: 1536M
+      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.combo-next-manager.outputs.manager_metadata }}
       GKI_MANAGER_APK_FILENAME: ${{ needs.combo-next-manager.outputs.apk_filename }}
       GKI_MANAGER_MANAGER_JOB_ID: ${{ needs.combo-next-manager.outputs.manager_job_id }}

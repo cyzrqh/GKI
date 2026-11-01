@@ -249,7 +249,7 @@ ccache --show-stats --verbose | tee "$report"
          'uses': 'actions/cache/save@v5', 'timeout-minutes': 2, 'continue-on-error': True,
          'with': {'path': '${{ env.CCACHE_DIR }}', 'key': '${{ steps.oplus-ccache.outputs.cache-primary-key }}'}},
     ]
-    return {
+    job = {
         'name': "${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel }} · ${{ inputs.kernelsu_variant }}",
         'if': "always() && !cancelled() && " + DISPATCH + " && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'",
         'needs': ['prepare-matrix', 'build-sukisu-manager'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 120,
@@ -267,6 +267,9 @@ ccache --show-stats --verbose | tee "$report"
                 'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '1536M'},
         'steps': steps,
     }
+    from kernel_cache_workflow import wire_thinlto
+    wire_thinlto(job, prefix.replace('oplus-ccache-ecs-v1-', 'oplus-thinlto-v1-') + 'objects', oplus=True)
+    return job
 
 
 def collect_job():

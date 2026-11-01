@@ -115,14 +115,26 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
                 checks = ['KPM 完整还原及正反向校验', '原生符号接口', '管理器/内核版本公式一致']
             else:
                 from additional_manager_integration import apply_next_port, configure
-                if variant in ('KernelSU-Next', 'KernelSU'):
-                    name = 'next-susfs23' if variant == 'KernelSU-Next' else 'official-susfs23'
+                from additional_manager_kpm import port, verify, with_susfs
+                port(source, reference, variant)
+                verify(source, reference, variant)
+                if variant in ('KernelSU-Next', 'KernelSU', 'KowSU'):
+                    name = {'KernelSU-Next': 'next-susfs23', 'KernelSU': 'official-susfs23',
+                            'KowSU': 'kow-susfs23'}[variant]
                     if not (source / 'kernel/preinit/preinit.c').is_file():
                         name += '-stable'
-                    apply_next_port(source, name=name)
+                    with_susfs(source, variant, lambda: apply_next_port(source, name=name))
                 configure(temporary, '827', 'a' * 64, manager_profile(variant)['package'], str(code), variant=variant)
-                checks = ['官方管理器/内核完整历史版本一致', '原生包名及证书绑定接口',
-                          '完整 SUSFS 适配' if variant != 'KowSU' else 'KowSU 原生构建（不支持 SUSFS）']
+                checks = ['管理器/内核完整历史版本一致', '官方包名与固定自定义证书绑定接口',
+                          'KPM ABI-2 内核接口、内置页面及持久加载源码接线',
+                          '完整 SUSFS 适配']
+            from manager_ui_defaults import apply_defaults
+            apply_defaults(source, variant)
+            checks.append('管理器更新默认关闭，模块更新独立保留')
+            if variant not in ('SukiSU', 'BakaSU'):
+                from prepare_additional_gradle import prepare
+                prepare(source, variant)
+                checks.append('原生 APK 构建配置及官方包名')
         except (OSError, ValueError, RuntimeError) as error:
             raise SourceIntegrationError(str(error), code) from None
         return {'version_code': code, 'checks': checks}

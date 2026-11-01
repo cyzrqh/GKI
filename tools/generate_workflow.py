@@ -175,7 +175,7 @@ PREPARE_IF = "github.event_name == 'workflow_dispatch' && (inputs.operation == '
 MANAGER_VARIANT_IF = ALL_IF
 MANAGER_IF = PREPARE_IF + ' && ' + MANAGER_VARIANT_IF
 KERNEL_JOB_IF = ("always() && !cancelled() && needs.prepare-matrix.result == 'success' && (" + BUILD_IF + ")"
-                 " && needs.build-sukisu-manager.result == 'success' && (!" + LOCAL_IF
+                 " && needs.build-sukisu-manager.result == 'success' && (!" + ALL_IF
                  + " || needs.build-sukisu-lkm.result == 'success')")
 
 # Cache dependency downloads, Gradle task results and reusable Rust objects.
@@ -278,7 +278,7 @@ python3 tools/configure_bakasu_manager_notice.py --source "$GITHUB_WORKSPACE/man
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
 python3 -c "print('y\\n' * 100)" | "$sdkmanager" --licenses > /dev/null
-"$sdkmanager" 'platforms;android-37.0' 'build-tools;37.0.0' 'ndk;29.0.14206865'
+"$sdkmanager" 'platforms;android-37.0' 'platforms;android-36' 'build-tools;37.0.0' 'build-tools;36.1.0' 'ndk;29.0.14206865'
 if [ "$KSU_VARIANT" = BakaSU ]; then
   "$sdkmanager" 'build-tools;36.1.0' 'ndk;30.0.16248370'
   echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/30.0.16248370" >> "$GITHUB_ENV"
@@ -311,6 +311,7 @@ rustup target add aarch64-linux-android --toolchain "$toolchain"
 case "$KSU_VARIANT" in
   SukiSU) script=tools/build_sukisu_manager.sh ;;
   BakaSU) script=tools/build_bakasu_manager.sh ;;
+  KernelSU-Next|KernelSU|KowSU|FinaSU) script=tools/build_additional_manager.sh ;;
   *) echo 'Unknown manager variant' >&2; exit 1 ;;
 esac
 bash -n "$script"
@@ -397,8 +398,8 @@ def create_workflow(root):
         'ksu_branch': 'needs.prepare-matrix.outputs.effective_ksu_branch', 'upload_aux_artifacts': 'false',
         'custom_ref': 'vars.KSU_CUSTOM_REF',
         'virtualization_support': "(inputs.virtualization_support == 'off' && 'off' || (matrix.kernel_version == '6.12' && 'on' || (inputs.virtualization_support == 'on' && '678' || inputs.virtualization_support)))",
-        'use_kpm': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'))",
-        'kpm_password': "(inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') && inputs.kpm_password || '')",
+        'use_kpm': 'inputs.use_kpm',
+        'kpm_password': "(inputs.use_kpm && inputs.kpm_password || '')",
     })
     # Required values are supplied by the matrix / renamed inputs above.
     job = copy.deepcopy(source['job'])
@@ -762,7 +763,7 @@ python3 -m unittest discover -s tests -p 'test_bakasu_kpm_port.py'
              'run': '''python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \\
   --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
 '''},
-            {'name': '读取固定签名的公开证书', 'id': 'certificate', 'if': PREPARE_IF + ' && ' + LOCAL_IF,
+            {'name': '读取固定签名的公开证书', 'id': 'certificate', 'if': PREPARE_IF + ' && ' + ALL_IF,
              'env': {'SUKISU_APK_KEYSTORE': '${{ secrets.SUKISU_APK_KEYSTORE }}',
                      'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}'},
              'run': 'python3 tools/export_manager_certificate.py --output "$RUNNER_TEMP/manager-public-certificate.json"'},
@@ -856,7 +857,7 @@ PY
         'run-name': "${{ inputs.operation == '仅编译管理器安装包' && format('仅编译 {0} · {1} 安装包', inputs.kernelsu_variant, inputs.kernelsu_branch) || format('{0} · {1} · {2} · {3}', inputs.kernelsu_variant, inputs.kernelsu_branch, inputs.kernel_versions == 'all' && '全部内核' || inputs.kernel_versions, inputs.artifact_mode) }}",
         'on': {'workflow_dispatch': {'inputs': dispatch}},
         'permissions': {'contents': 'read'},
-        'jobs': {'prepare-matrix': prepare, 'build-sukisu-lkm': manager_lkm_job(PREPARE_IF + ' && ' + LOCAL_IF),
+        'jobs': {'prepare-matrix': prepare, 'build-sukisu-lkm': manager_lkm_job(PREPARE_IF + ' && ' + ALL_IF),
                  'build-sukisu-manager': manager_job(),
                  'build-kernel': job, 'publish-release': release_job()},
     }

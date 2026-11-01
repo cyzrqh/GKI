@@ -7,7 +7,7 @@ from additional_manager_jobs import ALL_IF, LOCAL_IF, ADDITIONAL_IF
 from manager_variants import MANAGER_SELECTIONS
 
 RECEIPT = '${{ needs.build-sukisu-manager.outputs.manager_metadata }}'
-EFFECTIVE_SUSFS = "(inputs.enable_susfs && inputs.kernelsu_variant != 'KowSU')"
+EFFECTIVE_SUSFS = 'inputs.enable_susfs'
 
 
 def effective_inputs(value):
@@ -32,7 +32,7 @@ def extend_gki(workflow: dict) -> dict:
                     '从官方固定提交恢复并核实源码', '核对固定源码与准备任务的完整身份'}
     old = "inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU'"
     for step in job['steps']:
-        # Only immutable-source/identity steps: KPM remains limited to its two native bridges.
+        # Expand immutable source/identity handling to every paired manager.
         if step.get('name') in source_steps or any(word in step.get('name', '') for word in ('源码缓存', '源码备份')):
             if 'if' in step:
                 step['if'] = step['if'].replace(old, ALL_IF)
@@ -46,6 +46,11 @@ def extend_gki(workflow: dict) -> dict:
                            '  *) echo "Unsupported paired manager" >&2; exit 1 ;;\nesac\n')
         if step.get('name') == '配对管理器包名与签名':
             step['if'] = LOCAL_IF
+        if step.get('name') in ('注入 SukiSU/BakaSU KPM Kconfig',
+                                 '编译前核实官方 KPM 工具及真实载荷',
+                                 '应用 KPM 补丁 (SukiSU/BakaSU)'):
+            step['if'] = 'inputs.use_kpm'
+            step['name'] = step['name'].replace('SukiSU/BakaSU', '全部管理器')
     position = next(i for i, step in enumerate(job['steps']) if step.get('name') == '应用 SUSFS 补丁')
     job['steps'].insert(position, {
         'name': '接入新增管理器的原生 SUSFS 接口',
@@ -53,12 +58,17 @@ def extend_gki(workflow: dict) -> dict:
         'run': 'python3 tools/additional_manager_integration.py --kernel-root "$KERNEL_ROOT" --susfs-dir "$SUSFS4KSU"'})
     position = next(i for i, step in enumerate(job['steps']) if step.get('name') == '配对管理器包名与签名')
     job['steps'].insert(position + 1, {
-        'name': '绑定官方原始 APK 的证书与版本', 'if': ADDITIONAL_IF,
+        'name': '绑定配套 APK 的自定义证书与版本', 'if': ADDITIONAL_IF,
         'run': 'python3 tools/additional_manager_integration.py --kernel-root "$KERNEL_ROOT"'})
     # In combined workers, each target has a manager-qualified file basename.
     ak3 = next(step for step in job['steps'] if step.get('name') == '准备 AnyKernel3 刷机包')
     ak3['run'] = ak3['run'].replace('-AnyKernel3.zip"', '${GKI_MANAGER_SUFFIX:-}-AnyKernel3.zip"')
     capture = next(step for step in job['steps'] if step.get('name') == '记录内核实际配置')
+    from verify_requested_features import FEATURES
+    dispatch_fields = workflow['on']['workflow_dispatch']['inputs']
+    for field in (*FEATURES, 'use_networking'):
+        if field in dispatch_fields:
+            capture['env']['GKI_REQUEST_' + field.upper()] = '${{ inputs.' + field + ' }}'
     capture['run'] = ('if [ "${GKI_COMBINED_WORKER:-false}" = true ]; then\n'
                       '  META_FILE="${META_FILE%-AnyKernel3.zip}-${KSU_VARIANT}-AnyKernel3.zip"\n'
                       '  export META_FILE\n'

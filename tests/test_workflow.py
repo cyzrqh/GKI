@@ -49,7 +49,7 @@ class WorkflowTests(unittest.TestCase):
                      if 'tools/verify_manager_boot_patch.py' in step.get('run', ''))
         verify = steps[index]
         self.assertNotIn('continue-on-error', verify)
-        self.assertEqual(LOCAL_IF, verify['if'])
+        self.assertNotIn('if', verify)  # Every source-built manager must pass it.
         self.assertIn('--module-report "$RUNNER_TEMP/manager-lkm-stage.json"', verify['run'])
         self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-build'), index)
         self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'sign'))
@@ -82,11 +82,11 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(self.find('记录内核实际配置')['env']['META_KSU_BRANCH'], canonical)
         summary = self.find('构建信息摘要')['run']
         self.assertIn('effective_ksu_branch="' + canonical + '"', summary)
-        # Both supported managers now expose the restored native KPM bridge;
-        # source tier selection must not silently disable BakaSU Latest.
+        # Every paired manager now exposes the native KPM bridge. Neither the
+        # manager name nor the source tier may silently disable the request.
         kpm = next(line for line in summary.splitlines() if 'KPM 功能' in line)
-        self.assertIn("inputs.kernelsu_variant == 'BakaSU'", kpm)
-        self.assertIn("inputs.kernelsu_variant == 'SukiSU'", kpm)
+        self.assertIn('${{ inputs.use_kpm }}', kpm)
+        self.assertNotIn('inputs.kernelsu_variant', kpm)
         self.assertNotIn('effective_ksu_branch', kpm)
         self.assertNotIn("== 'Latest(最新)'", kpm)
         self.assertNotIn("== 'Dev(开发)'", kpm)
@@ -458,7 +458,7 @@ class WorkflowTests(unittest.TestCase):
         upload = next(step for step in manager['steps'] if step['name'] == '上传管理器安装包')
         self.assertEqual(upload['uses'], 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)
-        self.assertEqual(upload['with']['path'], 'manager-artifact/${{ steps.sign.outputs.apk_filename || steps.official-apk.outputs.apk_filename }}')
+        self.assertEqual(upload['with']['path'], 'manager-artifact/${{ steps.sign.outputs.apk_filename }}')
         self.assertNotIn('name', upload['with'])
         collection = next(step for step in self.workflow['jobs']['publish-release']['steps']
                           if step['name'] == '收集本次构建产物')
@@ -485,7 +485,7 @@ class WorkflowTests(unittest.TestCase):
                     values = {
                         'always()': 'True', 'cancelled()': 'False',
                         'needs.prepare-matrix.result': repr('success'),
-                        'needs.build-sukisu-lkm.result': repr('success' if variant in ('SukiSU', 'BakaSU') else 'skipped'),
+                        'needs.build-sukisu-lkm.result': repr('success'),
                         'needs.build-sukisu-manager.result': repr(producer),
                         'github.event_name': repr('workflow_dispatch'),
                         'inputs.operation': repr('编译内核'), 'inputs.kernelsu_variant': repr(variant),
@@ -1095,7 +1095,7 @@ class WorkflowTests(unittest.TestCase):
     def test_kpm_uses_verified_explicit_payload_and_all_images_check_entry_before_upload(self):
         names = [step.get('name') for step in self.steps]
         prepare = self.find('编译前核实官方 KPM 工具及真实载荷')
-        patch = self.find('应用 KPM 补丁 (SukiSU/BakaSU)')
+        patch = self.find('应用 KPM 补丁 (全部管理器)')
         entry = self.find('核对最终 ARM64 启动入口')
         self.assertLess(names.index(prepare['name']), names.index('编译内核'))
         self.assertIn('tools/apply_kpm_patch.py" prepare', prepare['run'])

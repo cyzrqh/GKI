@@ -102,8 +102,8 @@ class OplusWorkflowTests(unittest.TestCase):
         for name in ('build-sukisu-manager', 'build-sukisu-lkm'):
             expected = workflow.adapt(copy.deepcopy(self.base['jobs'][name]))
             if name == 'build-sukisu-lkm':
-                from additional_manager_jobs import LOCAL_IF
-                expected['if'] = workflow.DISPATCH + ' && ' + LOCAL_IF
+                from additional_manager_jobs import ALL_IF
+                expected['if'] = workflow.DISPATCH + ' && ' + ALL_IF
             self.assertEqual(self.document['jobs'][name], expected)
         manager = self.document['jobs']['build-sukisu-manager']
         self.assertIn('build-sukisu-lkm', manager['needs'])
@@ -232,8 +232,7 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertEqual(worker['steps'][locate('apply_kpm_patch.py prepare')]['if'], workflow.KPM_IF)
         self.assertIn('--ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"',
                       worker['steps'][locate('apply_kpm_patch.py prepare')]['run'])
-        self.assertIn("inputs.kernelsu_variant == 'SukiSU'", workflow.KPM_IF)
-        self.assertIn("inputs.kernelsu_variant == 'BakaSU'", workflow.KPM_IF)
+        self.assertEqual('inputs.use_kpm', workflow.KPM_IF)
         self.assertNotIn('effective_ksu_branch', workflow.KPM_IF)
         upload = next(item for item in worker['steps'] if item.get('uses') == 'actions/upload-artifact@v7')
         self.assertIs(upload['with']['archive'], False)

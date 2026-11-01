@@ -12,7 +12,7 @@ from oplus_cctv import load_profiles, target_choices, AK3_REPOSITORY, AK3_REF
 
 OUTPUT = Path('.github/workflows/oplus-full-feature-matrix.yml')
 DISPATCH = "github.event_name == 'workflow_dispatch'"
-KPM_IF = "inputs.use_kpm && (inputs.kernelsu_variant == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')"
+KPM_IF = 'inputs.use_kpm'
 INPUTS = {
     'kernelsu_variant': {'description': 'KernelSU 变体', 'required': True, 'type': 'choice',
                         'options': ['SukiSU', 'BakaSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU',
@@ -23,7 +23,7 @@ INPUTS = {
                      'type': 'choice', 'options': [], 'default': ALL_TARGETS},
     'enable_susfs': {'description': '启用 SUSFS（android14/6.1、android15/6.6、android16/6.12）',
                      'required': False, 'type': 'boolean', 'default': True},
-    'use_kpm': {'description': '启用 KPM（仅 SukiSU/BakaSU 生效）',
+    'use_kpm': {'description': '启用 KPM（全部管理器；使用配套内核及自编译 APK）',
                 'required': False, 'type': 'boolean', 'default': True},
     'use_lz4kd': {'description': '启用 lz4kd', 'required': False, 'type': 'boolean', 'default': True},
     'use_bbg': {'description': '启用 BBG 基带防护', 'required': False, 'type': 'boolean', 'default': False},
@@ -307,10 +307,9 @@ def create_workflow(root: Path, base: dict | None = None) -> dict:
         base = create_gki(root)
     lkm = adapt(copy.deepcopy(base['jobs']['build-sukisu-lkm']))
     manager = adapt(copy.deepcopy(base['jobs']['build-sukisu-manager']))
-    # Keep the conditional dependency for unchanged local SukiSU/BakaSU builds;
-    # the additional managers verify the upstream signed APK instead of LKMs.
-    from additional_manager_jobs import LOCAL_IF
-    lkm['if'] = DISPATCH + ' && ' + LOCAL_IF
+    # Every modified APK must contain same-source, same-certificate LKMs.
+    from additional_manager_jobs import ALL_IF
+    lkm['if'] = DISPATCH + ' && ' + ALL_IF
     fields = copy.deepcopy(INPUTS)
     fields['kernelsu_branch'] = copy.deepcopy(base['on']['workflow_dispatch']['inputs']['kernelsu_branch'])
     fields['build_target']['options'] = target_choices(load_profiles(root))

@@ -84,6 +84,12 @@ def checkout_snapshot(directory: Path, output: Path, reference: str, *, variant:
                 restore_bakasu_kpm(prepared, reference)
             except ValueError as error:
                 raise SnapshotError('BakaSU KPM restoration stopped: ' + str(error)) from None
+        elif variant in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+            from additional_manager_kpm import port
+            try:
+                port(prepared, reference, variant)
+            except ValueError as error:
+                raise SnapshotError('Additional manager KPM integration stopped: ' + str(error)) from None
         if output.exists() or output.is_symlink():
             raise SnapshotError("SukiSU checkout output appeared while preparing; refusing to overwrite it")
         prepared.rename(output)

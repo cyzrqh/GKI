@@ -27,6 +27,7 @@ source_dir="$(cd "$source_dir" && pwd -P)"
 mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd -P)"
 manager_dir="$source_dir/manager"
+python3 "$build_tools/manager_ui_defaults.py" --source "$source_dir" --variant BakaSU
 for required in userspace/ksud/Cargo.toml userspace/ksud/Cargo.lock userspace/ksuinit/Cargo.toml userspace/ksuinit/Cargo.lock .github/scripts/setup-rust-build.sh manager/gradlew manager/app/build.gradle.kts; do
   [ -f "$source_dir/$required" ] || { echo "Missing BakaSU build source: $required" >&2; exit 1; }
 done

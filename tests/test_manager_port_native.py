@@ -44,6 +44,14 @@ class NativeNextPortTests(unittest.TestCase):
         inventory = json.loads((directory / 'objects.json').read_text(encoding='utf-8'))
         patch = ROOT / 'tools/patches/next-susfs23-stable.patch'
         self.assertEqual(inventory['patch_sha256'], hashlib.sha256(patch.read_bytes()).hexdigest())
+        for path, entry in inventory.get('native_sources', {}).items():
+            raw = (directory / (entry['sha256'] + '.source')).read_bytes()
+            self.assertEqual(entry['sha256'], hashlib.sha256(raw).hexdigest())
+            self.assertEqual(entry['blob_sha1'], hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest())
+            target = self.source / path
+            self.assertTrue(target.resolve().is_relative_to(self.source.resolve()))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(raw)
         for block in patch.read_text(encoding='utf-8').split('diff --git ')[1:]:
             path = re.match(r'a/([^\n ]+) b/', block)[1]
             identity = re.search(r'^index ([0-9a-f]{40})\.\.', block, re.M)[1]
@@ -95,6 +103,41 @@ class NativeNextPortTests(unittest.TestCase):
                                      'void __user *arg'), encoding='utf-8', newline='\n')
         with self.assertRaisesRegex(ValueError, 'toolkit reboot parameters'):
             verify_legacy_next_lifecycle(self.source)
+
+    def test_missing_native_boot_object_fails_before_fanout(self):
+        kbuild = self.source / 'kernel/Kbuild'
+        text = kbuild.read_text(encoding='utf-8')
+        kbuild.write_text(text.replace('kernelsu-objs += extras.o', ''), encoding='utf-8', newline='\n')
+        with self.assertRaisesRegex(ValueError, 'boot callback'):
+            verify_legacy_next_lifecycle(self.source)
+
+    def test_real_native_boot_callback_links_and_runs_with_its_kbuild_object(self):
+        compiler = shutil.which('cc') or shutil.which('gcc') or shutil.which('clang')
+        if not compiler:
+            self.skipTest('Native C compiler required; Ubuntu preflight links the real boot callback')
+        extras = (self.source / 'kernel/extras.c').read_text(encoding='utf-8')
+        boot = (self.source / 'kernel/runtime/boot_event.c').read_text(encoding='utf-8')
+        unit = self.source / 'extras.c'
+        unit.write_text('#include <stdbool.h>\nbool boot_completed, ksu_avc_spoof_enabled=true;\n'
+                        'unsigned native_enables;\nvoid ksu_avc_spoof_enable(void) { native_enables++; }\n'
+                        + function_source(extras, 'ksu_avc_spoof_late_init'), encoding='utf-8', newline='\n')
+        program = self.source / 'boot_event.c'
+        program.write_text('#include <stdbool.h>\n#define pr_info(...) ((void)0)\n'
+                           'bool ksu_boot_completed;\nextern bool boot_completed, ksu_avc_spoof_enabled;\n'
+                           'extern unsigned native_enables;\nunsigned throne, backup;\n'
+                           'void track_throne(bool final) { if(final) throne++; }\n'
+                           'void ksu_selinux_hide_drop_backup_if_unused(void) { backup++; }\n'
+                           'void ksu_avc_spoof_late_init(void);\n'
+                           + function_source(boot, 'on_boot_completed') + '\n'
+                           'int main(void) { on_boot_completed();\n'
+                           'if(!ksu_boot_completed || !boot_completed || native_enables!=1 || throne!=1 || backup!=1) return 1;\n'
+                           'ksu_avc_spoof_enabled=false; on_boot_completed();\n'
+                           'return native_enables!=1 || throne!=2 || backup!=2; }\n', encoding='utf-8', newline='\n')
+        binary = self.source / ('native_boot.exe' if os.name == 'nt' else 'native_boot')
+        result = subprocess.run([compiler, '-std=c11', '-Wall', '-Werror', str(program), str(unit),
+                                 '-o', str(binary)], capture_output=True)
+        self.assertEqual(0, result.returncode, result.stderr.decode(errors='replace'))
+        self.assertEqual(0, subprocess.run([str(binary)], capture_output=True).returncode)
 
     def test_native_reboot_commands_preserve_parameters_root_checks_and_fd_isolation(self):
         compiler = shutil.which('cc') or shutil.which('gcc') or shutil.which('clang')

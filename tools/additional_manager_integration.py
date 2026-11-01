@@ -129,6 +129,14 @@ def verify_legacy_next_lifecycle(source: Path) -> None:
     fd_handler = fd_handler.split('\nint ksu_handle_toolkit_reboot', 1)[0]
     if re.search(r'\b(magic2|cmd|arg4|reply)\b', strip_comments_and_literals(fd_handler)):
         raise ValueError('Next FD installer incorrectly contains the toolkit command dispatcher')
+    kbuild = (source / 'kernel/Kbuild').read_text(encoding='utf-8')
+    extras = source / 'kernel/extras.c'
+    callback = 'ksu_avc_spoof_late_init'
+    _, definitions = inspect_c_source(extras, extras.read_text(encoding='utf-8'), symbols=(callback,))
+    if (not re.search(r'^kernelsu-objs\s*\+=\s*extras\.o\s*$', kbuild, re.M)
+            or not any(item.symbol == callback and not item.is_static for item in definitions)
+            or core.count('ksu_avc_spoof_init();') != 1 or core.count('ksu_avc_spoof_exit();') != 1):
+        raise ValueError('Next native boot callback is missing its Kbuild object or feature lifecycle')
 
 
 def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:

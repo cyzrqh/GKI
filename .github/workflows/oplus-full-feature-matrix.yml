@@ -139,6 +139,8 @@ jobs:
       run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
     - name: 验证 ThinLTO 链接缓存与真实增量链接
       run: PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically
+    - name: 验证全系列缓存接入和编译退出状态
+      run: PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_run_kernel_build
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (true || false) && ((env.KSU_VARIANT == 'SukiSU' || env.KSU_VARIANT
         == 'BakaSU') || (env.KSU_VARIANT == 'KernelSU-Next' || env.KSU_VARIANT == 'KernelSU' || env.KSU_VARIANT == 'KowSU'
@@ -1797,7 +1799,9 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: oplus-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ env.KSU_VARIANT }}-${{ matrix.recipe_ref }}-objects
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ env.KSU_VARIANT }}-${{ matrix.recipe_ref }}-objects-${{
+          env.GKI_PREPARE_KSU_REF }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild',
+          'tools/thinlto_cache.py') }}
         OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
         --key "$OBJECT_CACHE_KEY"
@@ -1862,7 +1866,9 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: oplus-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ env.KSU_VARIANT }}-${{ matrix.recipe_ref }}-objects
+          'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ env.KSU_VARIANT }}-${{ matrix.recipe_ref }}-objects-${{
+          env.GKI_PREPARE_KSU_REF }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild',
+          'tools/thinlto_cache.py') }}
         OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
         --key "$OBJECT_CACHE_KEY"

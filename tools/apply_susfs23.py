@@ -240,12 +240,40 @@ def verify_native_rcu_allowlist(repository: Path) -> None:
         raise ValueError("SukiSU native RCU allowlist lookup and decisions must retain the selected implementation")
 
 
+def verify_native_selinux_inode(repository: Path) -> None:
+    """Do not lose upstream inode initialization or its credential rollback."""
+    selected = git(repository, 'show', 'HEAD:kernel/core/init.c')
+    original = strip_comments_and_literals(selected.stdout)
+    if selected.returncode or 'ksu_selinux_inode_init' not in original:
+        return
+    block = re.search(r'\b(\w+)\s*=\s*ksu_selinux_inode_init\s*\(\s*\)\s*;\s*'
+                      r'if\s*\(\s*\1\s*\)\s*\{[^{}]+\}', original)
+    if block is None:
+        raise ValueError('Selected SukiSU SELinux inode initialization has an unreviewed error lifecycle')
+    actual = strip_comments_and_literals((repository / 'kernel/core/init.c').read_text(encoding='utf-8'))
+    compact = lambda value: re.sub(r'\s+', '', value)
+    if (compact(block[0]) not in compact(actual)
+            or len(re.findall(r'\bksu_selinux_inode_init\s*\(', actual)) != 1
+            or actual.find('ksu_selinux_inode_init') > actual.find('susfs_init();')
+            or not re.search(r'\bint\s+' + re.escape(block[1]) + r'\s*;', actual)):
+        raise ValueError('SukiSU SELinux inode initialization and credential error cleanup must survive the SUSFS port')
+    for path in ('kernel/selinux/inode.c', 'kernel/selinux/selinux.h'):
+        current = strip_comments_and_literals((repository / path).read_text(encoding='utf-8'))
+        if 'ksu_selinux_inode_init' not in current:
+            raise ValueError('SukiSU native SELinux inode provider and declaration must remain present')
+    if git(repository, 'diff', '--quiet', 'HEAD', '--', 'kernel/selinux/inode.c').returncode:
+        raise ValueError('SukiSU native SELinux inode implementation must retain the selected source')
+    if 'selinux/inode.o' not in (repository / 'kernel/Kbuild').read_text(encoding='utf-8'):
+        raise ValueError('SukiSU native SELinux inode provider must remain linked')
+
+
 def verify_integration(repository: Path) -> None:
     source = repository / "kernel"
     verify_patch_memory_sources(repository)
     verify_patch_memory_build((source / "Kbuild").read_text(encoding="utf-8"))
     verify_native_avc(repository)
     verify_native_rcu_allowlist(repository)
+    verify_native_selinux_inode(repository)
     # An upstream logging cleanup must survive the SUSFS hook replacement.
     original_setuid = git(repository, 'show', 'HEAD:kernel/hook/setuid_hook.c')
     if original_setuid.returncode == 0:
@@ -324,6 +352,40 @@ def seed_port_bases(repository: Path, candidates: list[Path]) -> None:
             raise ValueError('Could not restore the reviewed SUSFS Git merge base')
 
 
+def resolve_whitespace_additions(repository: Path, allowed_paths: tuple[str, ...]) -> bool:
+    """Resolve only pure additions against an empty ancestor/whitespace edit.
+
+    Substantive changes on both sides still require human review. All files
+    must be eligible before any conflict is resolved, then the existing full
+    native-integration and reverse-merge proofs remain mandatory.
+    """
+    paths = git(repository, 'diff', '--name-only', '--diff-filter=U').stdout.splitlines()
+    if not paths or len(paths) > len(allowed_paths) or any(path not in allowed_paths for path in paths):
+        return False
+    conflict = re.compile(r'^<<<<<<< [^\n]*\n(.*?)^\|\|\|\|\|\|\| [^\n]*\n(.*?)'
+                          r'^=======\n(.*?)^>>>>>>> [^\n]*\n', re.M | re.S)
+    prepared = []
+    for relative in paths:
+        path = repository / relative
+        if path.is_symlink() or not path.is_file():
+            return False
+        text = path.read_text(encoding='utf-8')
+        matches = list(conflict.finditer(text))
+        if not matches or len(matches) != len(re.findall(r'^<<<<<<< ', text, re.M)):
+            return False
+        for match in matches:
+            ours, base, theirs = match.groups()
+            if base.strip() or ours.strip() and theirs.strip():
+                return False
+        updated = conflict.sub(lambda match: match[1] if match[1].strip() else match[3], text)
+        if re.search(r'^(?:<<<<<<<|\|\|\|\|\|\|\||=======|>>>>>>>)', updated, re.M):
+            return False
+        prepared.append((path, updated))
+    for path, updated in prepared:
+        path.write_text(updated, encoding='utf-8', newline='\n')
+    return git(repository, 'add', '--', *paths).returncode == 0
+
+
 def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | None:
     """Accept only an actual conflict-free, reversible merge in a separate clone."""
     from snapshot_ksu_source import temporary_directory
@@ -332,19 +394,20 @@ def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | Non
         return None
     with temporary_directory(repository.parent, ".gki-susfs-merge-") as temporary:
         checked = temporary / "source"
-        bundle = temporary / "source.bundle"
-        if git(repository, "bundle", "create", str(bundle), "HEAD", "--tags").returncode:
-            return None
-        cloned = git(temporary, "clone", "--quiet", "--no-checkout",
-                     "--config", "core.autocrlf=false", str(bundle), str(checked))
+        # This clone is only a local proof workspace and lives no longer than
+        # its source. Sharing read-only objects avoids repacking all history.
+        cloned = git(temporary, "clone", "--quiet", "--shared", "--no-checkout",
+                     "--config", "core.autocrlf=false", str(repository), str(checked))
         if cloned.returncode:
             return None
         seed_port_bases(checked, candidates)
         for candidate in candidates:
             if git(checked, "reset", "--hard", "--quiet", reference.stdout.strip()).returncode:
                 return None
-            merged = git(checked, "apply", "--3way", str(candidate))
-            if merged.returncode or git(checked, "ls-files", "--unmerged").stdout.strip():
+            merged = git(checked, '-c', 'merge.conflictStyle=diff3', "apply", "--3way", str(candidate))
+            if merged.returncode and not resolve_whitespace_additions(checked, patch_files(candidate)):
+                continue
+            if git(checked, "ls-files", "--unmerged").stdout.strip():
                 continue
             if git(checked, "diff", "--quiet", "HEAD", "--", "uapi").returncode:
                 continue
@@ -357,8 +420,9 @@ def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | Non
                 continue
             # --3way --check can return success while reporting conflicts.
             # Require a real reverse operation and a completely restored source.
-            reversed_port = git(checked, "apply", "--reverse", "--3way", str(candidate))
-            if (reversed_port.returncode or git(checked, "ls-files", "--unmerged").stdout.strip()
+            reversed_port = git(checked, '-c', 'merge.conflictStyle=diff3', "apply", "--reverse", "--3way", str(candidate))
+            reverse_ok = reversed_port.returncode == 0 or resolve_whitespace_additions(checked, patch_files(candidate))
+            if (not reverse_ok or git(checked, "ls-files", "--unmerged").stdout.strip()
                     or git(checked, "diff", "--quiet", "HEAD", "--", "kernel", "uapi").returncode):
                 continue
             prepared = temporary / "verified-merge.patch"

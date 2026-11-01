@@ -29,6 +29,15 @@ class WorkflowTests(unittest.TestCase):
     def find(self, name):
         return next(step for step in self.steps if step.get('name') == name)
 
+    def test_kernel_build_does_not_replay_defconfig_preparation_after_timeout(self):
+        step = self.find('编译内核')
+        self.assertNotIn('uses', step)
+        self.assertNotIn('with', step)
+        self.assertEqual(100, step['timeout-minutes'])
+        self.assertIn('--label "build.sh 内核编译"', step['run'])
+        self.assertIn('--label "Bazel 内核编译"', step['run'])
+        self.assertNotIn('max_attempts', json.dumps(step))
+
     def test_one_dispatch_and_no_remote_workflow_calls(self):
         self.assertEqual(list(self.workflow['on']), ['workflow_dispatch'])
         self.assertEqual(len(self.workflow['on']['workflow_dispatch']['inputs']), 25)
@@ -922,7 +931,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('matrix.os_patch_level', prefixes[1])
         self.assertTrue(restore['with']['key'].startswith(prefixes[0]))
         self.assertTrue(prefixes[0].startswith(prefixes[1]))
-        self.assertIn('--disk_cache="$BAZEL_DISK_CACHE"', compile_step['with']['command'])
+        self.assertIn('--disk_cache="$BAZEL_DISK_CACHE"', compile_step['run'])
         self.assertNotIn('bazel-bin', restore['with']['path'])
         self.assertIn('always() && !cancelled()', trim['if'])
         self.assertIn('always() && !cancelled()', save['if'])
@@ -1019,7 +1028,7 @@ class WorkflowTests(unittest.TestCase):
         compiler = self.find('编译内核')
         self.assertEqual(check['if'], "inputs.kernelsu_variant == 'BakaSU'")
         self.assertLess(self.steps.index(check), self.steps.index(compiler))
-        command = compiler['with']['command']
+        command = compiler['run']
         case = command.split('case "${{ inputs.kernelsu_variant }}" in', 1)[1]
         header = case.split('echo "编译前兜底修复', 1)[0]
         self.assertIn('"Official")', header)

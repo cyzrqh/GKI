@@ -81,6 +81,8 @@ def main(argv=None) -> int:
                 with Path(output).open('a', encoding='utf-8') as stream:
                     stream.write('enabled=' + str(enabled).lower() + '\n')
             print('ThinLTO link-cache binding: ' + ('enabled' if enabled else 'unsupported Kbuild; unchanged'))
+            if not enabled:
+                print('当前官方 Kbuild 没有可绑定的原生链接缓存参数；保留官方链接方式，不强行重新启用已移除的缓存功能。')
             return 0
         count, size, removed = measure(args.directory, LIMIT if args.operation == 'trim' else None)
         message = f'ThinLTO 链接缓存（{args.operation}）：{count} 个对象，{size / (1024 * 1024):.1f} MiB，清理 {removed} 个对象。'

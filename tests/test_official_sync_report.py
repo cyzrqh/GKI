@@ -128,10 +128,10 @@ class OfficialSyncReportTests(unittest.TestCase):
         report = self.report()
         self.assertEqual(10, len(report['source_changes']))
         self.assertEqual({'SukiSU', 'BakaSU', 'SUSFS'}, {item['source'] for item in report['source_changes']})
-        self.assertIn('v4.2.1-r1', report['summary_markdown'])
-        self.assertIn('v4.2.1-r2', report['summary_markdown'])
-        self.assertIn('v4.2.0-rc3', report['summary_markdown'])
-        self.assertIn('v4.2.1-rc1', report['summary_markdown'])
+        self.assertIn('[SukiSU](https://github.com/SukiSU-Ultra/SukiSU-Ultra)', report['summary_markdown'])
+        self.assertIn('[BakaSU](https://github.com/Baka-SU/BakaSU)', report['summary_markdown'])
+        self.assertNotIn('### 官方源码和版本标签', report['summary_markdown'])
+        self.assertIn('v4.2.1-r2', json.dumps(report['source_changes']))
         self.assertIn('手动同步另行验证所选管理器与 SUSFS/KPM 的配套', report['summary_markdown'])
 
     def test_initial_baka_observation_is_not_claimed_to_be_a_new_formal_release(self):
@@ -170,19 +170,19 @@ class OfficialSyncReportTests(unittest.TestCase):
         versions['after'][1]['version_code'] = 41075
         report = self.report(versions=versions)
         body = report['summary_markdown']
-        section = body.split('### 本次变化的管理器版本', 1)[1].split('### 官方源码和版本标签', 1)[0]
-        self.assertIn('| SukiSU | 测试版（最新版） | `41074` | `41075` |', section)
+        section = body.split('### 本次变化的管理器版本', 1)[1].split('### 发生变化的官方上游', 1)[0]
+        self.assertIn('| SukiSU | 测试版 | `41074` → `41075` |', section)
         self.assertNotIn('| SukiSU | 正式版', section)
         self.assertNotIn('| BakaSU |', section)
-        self.assertIn('本次没有编译 APK', section)
+        self.assertIn('本次检查没有编译 APK', body)
         self.assertFalse(report['build_performed'])
 
     def test_only_changed_formal_tier_is_shown_even_when_its_numeric_code_is_equal(self):
         self.after['sources']['sukisu']['release']['tag'] = 'v4.2.1-r2'
         self.refresh()
         report = self.report(versions=version_observations(self.before, self.after))
-        section = report['summary_markdown'].split('### 本次变化的管理器版本', 1)[1].split('### 官方源码和版本标签', 1)[0]
-        self.assertIn('| SukiSU | 正式版 | `41074` | `41074` |', section)
+        section = report['summary_markdown'].split('### 本次变化的管理器版本', 1)[1].split('### 发生变化的官方上游', 1)[0]
+        self.assertIn('| SukiSU | 正式版 | `41074` → `41074` |', section)
         self.assertNotIn('| SukiSU | 测试版', section)
         self.assertNotIn('| BakaSU |', section)
 
@@ -201,7 +201,7 @@ class OfficialSyncReportTests(unittest.TestCase):
         versions['status'] = 'partial'
         versions['after'][1].update(status='unknown', version_code=None)
         report = self.report(versions=versions)
-        self.assertIn('| SukiSU | 测试版（最新版） | `41075` | 未能确认版本号 |', report['summary_markdown'])
+        self.assertIn('| SukiSU | 测试版 | `41075` → 未能确认版本号 |', report['summary_markdown'])
         self.assertNotIn('`41076`', report['summary_markdown'])
 
     def test_unresolved_latest_selection_cannot_claim_changed_or_unchanged_test_version(self):
@@ -217,8 +217,8 @@ class OfficialSyncReportTests(unittest.TestCase):
         self.after['sources']['bakasu']['release'] = {'tag': 'v4.2.0', 'commit': NEW}
         self.refresh()
         report = self.report(versions=version_observations(self.before, self.after))
-        self.assertIn('| BakaSU | 正式版 | 官方尚未提供正式版 | `35252` |', report['summary_markdown'])
-        self.assertNotIn('| BakaSU | 测试版（最新版） |', report['summary_markdown'])
+        self.assertIn('| BakaSU | 正式版 | 官方尚未提供正式版 → `35252` |', report['summary_markdown'])
+        self.assertNotIn('| BakaSU | 测试版 |', report['summary_markdown'])
 
     def test_informational_version_availability_never_changes_notification_identity(self):
         self.after['sources']['sukisu']['development']['head'] = NEW
@@ -267,7 +267,7 @@ class OfficialSyncReportTests(unittest.TestCase):
         versions = version_observations(self.before, self.after)
         body = self.report(versions=versions)['summary_markdown']
         self.assertNotIn('| BakaSU | 正式版 |', body)
-        self.assertIn('| BakaSU | 测试版（最新版） | 此前未记录／本次未观测 | `35253` |', body)
+        self.assertIn('| BakaSU | 测试版 | 此前未记录／本次未观测 → `35253` |', body)
 
     def test_catalog_lists_exact_additions_removals_and_changed_month_selection(self):
         old = {'schema_version': 1, 'entries': [entry(date='2024-04'), entry()]}
@@ -402,7 +402,7 @@ class OfficialSyncReportGitTests(unittest.TestCase):
         self.assertEqual([(self.before['sources'], self.after['sources'], cache)], self.observed)
         data = json.loads(report.read_text(encoding='utf-8'))
         self.assertEqual('observed', data['manager_version_codes']['status'])
-        self.assertIn('| SukiSU | 测试版（最新版） | `41075` | `41075` |', markdown.read_text(encoding='utf-8'))
+        self.assertIn('| SukiSU | 测试版 | `41075` → `41075` |', markdown.read_text(encoding='utf-8'))
         self.assertFalse(data['build_performed'])
 
     def observe(self, old, new, cache, versions):
@@ -427,7 +427,8 @@ class OfficialSyncReportGitTests(unittest.TestCase):
         self.assertEqual(baseline['digest'], document['digest'])
         self.assertEqual(offline['digest'], document['digest'])
         self.assertEqual(1, len(document['source_commit_details']))
-        self.assertIn('提交标题明细未能获取', markdown.read_text(encoding='utf-8'))
+        self.assertEqual('unavailable', document['source_commit_details'][0]['status'])
+        self.assertNotIn('官方提交的具体内容', markdown.read_text(encoding='utf-8'))
         self.assertNotIn('fake-secret', json.dumps(document))
 
     def test_lookup_outage_does_not_block_sync_or_leak_upstream_errors(self):
@@ -444,7 +445,7 @@ class OfficialSyncReportGitTests(unittest.TestCase):
         self.assertTrue(report['has_changes'])
         self.assertEqual(baseline['digest'], report['digest'])
         self.assertEqual('not-observed', report['manager_version_codes']['status'])
-        self.assertIn('| SukiSU | 正式版 | 未能确认版本号 | 未能确认版本号 |', report['summary_markdown'])
+        self.assertIn('| SukiSU | 正式版 | 未能确认版本号 → 未能确认版本号 |', report['summary_markdown'])
         self.assertNotIn('fake-secret', output.getvalue() + report['summary_markdown'])
         self.assertIn('::warning::', output.getvalue())
 

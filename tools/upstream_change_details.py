@@ -112,8 +112,26 @@ def parse_comparison(source: str, before: str, after: str, document: dict) -> di
             raise DetailError('Missing official commit title')
         title = ' '.join(message.strip().splitlines()[0].split())
         rows.append({'commit': sha, 'title': title[:180], 'title_truncated': len(title) > 180})
+    subjects = '\n'.join(row['title'] for row in rows)
+    files = document.get('files', [])
+    if not isinstance(files, list):
+        files = []
+    patches = '\n'.join(item.get('patch', '')[:131072] for item in files[:50]
+                        if isinstance(item, dict) and isinstance(item.get('patch', ''), str))
+    topics = []
+    if re.search(r'^\+\s*\w+\s*=\s*ksu_selinux_inode_init\s*\(', patches, re.M):
+        topics.append('补充 SELinux inode 初始化和失败回收')
+    if re.search(r'vmlinux[.]btf|\bBTF\b', subjects, re.I) and re.search(r'\bABI\b', subjects, re.I):
+        versions = re.findall(r'\b[0-9]+\.[0-9]+\.[0-9]+\b', subjects)
+        topics.append('修复' + (' ' + versions[0] if len(set(versions)) == 1 else '') + ' 内核 ABI/BTF 兼容性')
+    if re.search(r'manager:.*(?:background|blur|card|\bui\b|layout)', subjects, re.I):
+        topics.append('管理器界面显示调整')
+    for pattern, label in ((r'\bKPM\b', 'KPM 接口调整'), (r'\bSUSFS\b', 'SUSFS 兼容性调整'),
+                           (r'\bSELinux\b', 'SELinux 相关调整')):
+        if re.search(pattern, subjects, re.I) and label not in topics:
+            topics.append(label)
     return {'status': 'observed', 'relation': relation, 'total_commits': total,
-            'partial': partial, 'commits': rows}
+            'partial': partial, 'commits': rows, 'topics': topics[:3]}
 
 
 def observe_changes(changes: list[dict], *, fetch=None) -> list[dict]:

@@ -1,0 +1,71 @@
+[
+  {
+    "kernel": "5.10.43",
+    "commit": "0a34c7517efd483986833a3bb884eff3b743fff7",
+    "url": "https://android.googlesource.com/kernel/common/+/0a34c7517efd483986833a3bb884eff3b743fff7/Makefile?format=TEXT",
+    "cache_lines": [
+      "ifdef CONFIG_LTO_CLANG_THIN",
+      "KBUILD_LDFLAGS\t+= --thinlto-cache-dir=$(extmod-prefix).thinlto-cache",
+      "\t       compile_commands.json .thinlto-cache",
+      "\t$(KBUILD_EXTMOD)/compile_commands.json $(KBUILD_EXTMOD)/.thinlto-cache"
+    ],
+    "block": "ifdef CONFIG_LTO_CLANG_THIN\nCC_FLAGS_LTO\t:= -flto=thin -fsplit-lto-unit\nKBUILD_LDFLAGS\t+= --thinlto-cache-dir=$(extmod-prefix).thinlto-cache\nelse\nCC_FLAGS_LTO\t:= -flto\n",
+    "license": "GPL-2.0; kernel/common Kbuild excerpt"
+  },
+  {
+    "kernel": "5.10.236",
+    "commit": "fbb4c9b0aa2909575b240a5404b6a3eaa1d2755d",
+    "url": "https://android.googlesource.com/kernel/common/+/fbb4c9b0aa2909575b240a5404b6a3eaa1d2755d/Makefile?format=TEXT",
+    "cache_lines": [
+      "ifdef CONFIG_LTO_CLANG_THIN",
+      "KBUILD_LDFLAGS\t+= --thinlto-cache-dir=$(extmod-prefix).thinlto-cache",
+      "\t       compile_commands.json .thinlto-cache",
+      "\t$(KBUILD_EXTMOD)/compile_commands.json $(KBUILD_EXTMOD)/.thinlto-cache"
+    ],
+    "block": "ifdef CONFIG_LTO_CLANG_THIN\nCC_FLAGS_LTO\t:= -flto=thin -fsplit-lto-unit\nKBUILD_LDFLAGS\t+= --thinlto-cache-dir=$(extmod-prefix).thinlto-cache\nelse\nCC_FLAGS_LTO\t:= -flto\n",
+    "license": "GPL-2.0; kernel/common Kbuild excerpt"
+  },
+  {
+    "kernel": "5.15.167",
+    "commit": "bfd2ab010d7b36dd753731915553c4f37b98c6f6",
+    "url": "https://android.googlesource.com/kernel/common/+/bfd2ab010d7b36dd753731915553c4f37b98c6f6/Makefile?format=TEXT",
+    "cache_lines": [
+      "ifdef CONFIG_LTO_CLANG_THIN"
+    ],
+    "block": "ifdef CONFIG_LTO_CLANG_THIN\nCC_FLAGS_LTO\t:= -flto=thin -fsplit-lto-unit\nelse\nCC_FLAGS_LTO\t:= -flto\nendif\n",
+    "license": "GPL-2.0; kernel/common Kbuild excerpt"
+  },
+  {
+    "kernel": "6.1.57",
+    "commit": "c82b107443c566a693210e324da8a78434ab986f",
+    "url": "https://android.googlesource.com/kernel/common/+/c82b107443c566a693210e324da8a78434ab986f/Makefile?format=TEXT",
+    "cache_lines": [
+      "ifdef CONFIG_LTO_CLANG_THIN",
+      "KBUILD_LDFLAGS\t+= --thinlto-cache-dir=$(extmod_prefix).thinlto-cache",
+      "\t       compile_commands.json .thinlto-cache rust/test rust/doc \\",
+      "\t$(KBUILD_EXTMOD)/compile_commands.json $(KBUILD_EXTMOD)/.thinlto-cache"
+    ],
+    "block": "ifdef CONFIG_LTO_CLANG_THIN\nCC_FLAGS_LTO\t:= -flto=thin -fsplit-lto-unit\nKBUILD_LDFLAGS\t+= --thinlto-cache-dir=$(extmod_prefix).thinlto-cache\nelse\nCC_FLAGS_LTO\t:= -flto\n",
+    "license": "GPL-2.0; kernel/common Kbuild excerpt"
+  },
+  {
+    "kernel": "6.6.89",
+    "commit": "e2724f52086d40b5a1e0c2bd089e3407ed490ec6",
+    "url": "https://android.googlesource.com/kernel/common/+/e2724f52086d40b5a1e0c2bd089e3407ed490ec6/Makefile?format=TEXT",
+    "cache_lines": [
+      "ifdef CONFIG_LTO_CLANG_THIN"
+    ],
+    "block": "ifdef CONFIG_LTO_CLANG_THIN\nCC_FLAGS_LTO\t:= -flto=thin -fsplit-lto-unit\nelse\nCC_FLAGS_LTO\t:= -flto\nendif\n",
+    "license": "GPL-2.0; kernel/common Kbuild excerpt"
+  },
+  {
+    "kernel": "6.12.23",
+    "commit": "13ff069897df965d9039dca208b2f39dacf81957",
+    "url": "https://android.googlesource.com/kernel/common/+/13ff069897df965d9039dca208b2f39dacf81957/Makefile?format=TEXT",
+    "cache_lines": [
+      "ifdef CONFIG_LTO_CLANG_THIN"
+    ],
+    "block": "ifdef CONFIG_LTO_CLANG_THIN\nCC_FLAGS_LTO\t:= -flto=thin -fsplit-lto-unit\nelse\nCC_FLAGS_LTO\t:= -flto\nendif\n",
+    "license": "GPL-2.0; kernel/common Kbuild excerpt"
+  }
+]

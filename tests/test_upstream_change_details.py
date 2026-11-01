@@ -112,6 +112,15 @@ class CommitDetailsTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             details.NoRedirect().redirect_request(None, None, 302, '', {}, 'https://evil.invalid')
 
+    def test_concise_topics_include_real_added_selinux_init_without_dumping_commits(self):
+        data = comparison(commits=[{'sha': NEW, 'commit': {'message':
+            "kernel: use vmlinux.btf query to workaround 6.6.144's ABI changes"}}],
+            files=[{'filename': 'kernel/core/init.c', 'patch':
+                    '+    ret = ksu_selinux_inode_init();\n+    if (ret) {\n+        put_cred(ksu_cred);\n+    }'}])
+        result = details.parse_comparison('SukiSU', OLD, NEW, data)
+        self.assertIn('补充 SELinux inode 初始化和失败回收', result['topics'])
+        self.assertIn('修复 6.6.144 内核 ABI/BTF 兼容性', result['topics'])
+
 
 class DetailedReportTests(unittest.TestCase):
     def setUp(self):
@@ -131,13 +140,13 @@ class DetailedReportTests(unittest.TestCase):
 
     def test_only_changed_manager_channel_has_codes_and_official_links(self):
         body = self.report()['summary_markdown']
-        section = body.split('### 本次变化的管理器版本')[1].split('### 官方源码和版本标签')[0]
-        self.assertIn('测试版（最新版）', section)
+        section = body.split('### 本次变化的管理器版本')[1].split('### 发生变化的官方上游')[0]
+        self.assertIn('测试版', section)
         self.assertNotIn('| SukiSU | 正式版 |', section)
         self.assertNotIn('| BakaSU |', section)
         self.assertIn('`41075`', section)
         self.assertIn('[SukiSU](https://github.com/SukiSU-Ultra/SukiSU-Ultra)', body)
-        self.assertIn('/compare/' + 'c' * 40 + '...' + NEW, body)
+        self.assertNotIn('### 官方源码和版本标签', body)
 
     def test_kernel_classification_names_exact_origin_and_latest_selection(self):
         report = self.report()
@@ -151,7 +160,7 @@ class DetailedReportTests(unittest.TestCase):
         self.assertIn('https://android.googlesource.com/kernel/common/+/' + OLD, body)
         self.assertIn('欧加真的平台配方目录不在本次检查范围内', body)
 
-    def test_commit_titles_are_escaped_and_do_not_change_notification_digest(self):
+    def test_raw_commit_titles_are_omitted_and_topics_do_not_change_digest(self):
         report = self.report()
         digest = report['digest']
         row = {'source': 'SukiSU', 'before': 'c' * 40, 'after': NEW, 'channels': ['开发分支']}
@@ -160,11 +169,12 @@ class DetailedReportTests(unittest.TestCase):
         report['source_commit_details'] = [{**row, **details.parse_comparison('SukiSU', 'c' * 40, NEW, data)}]
         body = reports.render_report(report)
         self.assertEqual(digest, report['digest'])
-        self.assertIn('&#64;everyone &#124; &lt;img&gt; &#96;title&#96;', body)
+        self.assertNotIn('fix &#64;everyone', body)
         self.assertNotIn('@everyone', body)
-        self.assertIn('/commit/' + NEW, body)
+        self.assertNotIn('官方提交的具体内容', body)
+        self.assertIn('/compare/' + 'c' * 40 + '...' + NEW, body)
         report['source_commit_details'] = [{**row, 'status': 'unavailable', 'commits': []}]
-        self.assertIn('提交标题明细未能获取', reports.render_report(report))
+        self.assertIn('更新内容未能归类', reports.render_report(report))
         self.assertEqual(digest, report['digest'])
 
     def test_unchanged_compatibility_rows_are_omitted(self):
@@ -172,6 +182,18 @@ class DetailedReportTests(unittest.TestCase):
         self.assertNotIn('| SUSFS 版本 |', body)
         self.assertNotIn('| SUSFS android14-6.1 |', body)
         self.assertIn('手动同步另行验证', body)
+
+    def test_highlights_only_describe_actual_selected_changed_channel(self):
+        report = self.report()
+        report['source_commit_details'] = [{
+            'source': 'SukiSU', 'before': 'c' * 40, 'after': NEW, 'channels': ['开发分支'],
+            'status': 'observed', 'topics': ['补充 SELinux inode 初始化和失败回收'], 'commits': []}, {
+            'source': 'SukiSU', 'before': OLD, 'after': NEW, 'channels': ['默认分支'],
+            'status': 'observed', 'topics': ['另一分支的旧变化'], 'commits': []}]
+        body = reports.render_report(report)
+        self.assertIn('SukiSU 测试版：补充 SELinux inode 初始化和失败回收', body)
+        self.assertNotIn('另一分支的旧变化', body)
+        self.assertNotIn('官方提交的具体内容', body)
 
     def test_large_preview_is_utf8_bounded_and_points_to_complete_summary(self):
         body = '## 明细\n\n' + ('| 新增内核 | 内容 |\n' * 10000)

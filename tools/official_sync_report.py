@@ -20,7 +20,7 @@ import sys
 
 from check_official_updates import TARGETS, head_state, validate_snapshot
 from matrix import validate_catalog
-from upstream_change_details import commit_url, compare_url, source_url
+from upstream_change_details import compare_url, source_url
 from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -303,14 +303,6 @@ def code(value: str) -> str:
     return '`' + html.escape(value, quote=False).replace('`', '&#96;').replace('|', '&#124;').replace('@', '&#64;') + '`'
 
 
-def source_label(value: dict | None) -> str:
-    if value is None:
-        return '此前未记录／本次未观测'
-    if value.get('available') is False:
-        return '官方未提供'
-    return code(value['ref']) + ' · ' + code(value['commit'][:12])
-
-
 def target_label(row: dict | None) -> str:
     return '无' if row is None else code(row['android_version'] + '-' + row['kernel'] + '-' + row['date'])
 
@@ -323,38 +315,6 @@ def kernel_source(row: dict) -> str:
             + quote(ref, safe='') + ')')
 
 
-def source_channel(channel: str) -> str:
-    return {'默认分支': '测试版（默认分支）', '开发分支': '测试版（开发分支）',
-            '预发行版': '测试版（官方预发行标签）'}.get(channel, channel)
-
-
-def render_commit_details(report: dict) -> list[str]:
-    rows = report.get('source_commit_details', [])
-    if not rows:
-        return []
-    lines = ['', '#### 官方提交的具体内容', '',
-             '以下为固定提交范围内的上游原文标题；每组最多列出 8 条，完整内容可打开官方对比。']
-    relations = {'ahead': '新增提交', 'behind': '回退到较早提交',
-                 'diverged': '提交历史出现分叉，须查看完整对比',
-                 'identical': '源码提交相同', 'direct': '两次记录之间的直接提交差异'}
-    for item in rows:
-        link = compare_url(item['source'], item['before'], item['after'])
-        channels = '、'.join(source_channel(channel) for channel in item['channels'])
-        lines.extend(['', '**' + item['source'] + ' · ' + channels + '** · [官方对比](' + link + ')', ''])
-        if item['status'] != 'observed':
-            lines.append('提交标题明细未能获取；上游变化仍已记录，可打开官方对比核对。')
-            continue
-        count = item['total_commits']
-        lines.append(relations[item['relation']] + ('；对比范围共 ' + str(count) + ' 条提交。' if count is not None
-                                                else '；上游对比超时，仅取得部分结果。'))
-        for commit in item['commits']:
-            lines.append('- [' + code(commit['commit'][:12]) + '](' + commit_url(item['source'], commit['commit'])
-                         + ') ' + code(commit['title']) + ('（标题已截短）' if commit['title_truncated'] else ''))
-        if count is not None and count > len(item['commits']):
-            lines.append('其余 ' + str(count - len(item['commits'])) + ' 条请查看官方对比。')
-    return lines
-
-
 def report_preview(markdown: str, budget: int = 45000) -> str:
     """Keep PRs/mail comments bounded while the Actions summary stays complete."""
     if len(markdown.encode('utf-8')) <= budget:
@@ -364,6 +324,28 @@ def report_preview(markdown: str, budget: int = 45000) -> str:
     if '\n' in prefix:
         prefix = prefix.rsplit('\n', 1)[0]
     return prefix + footer
+
+
+def render_update_highlights(report: dict) -> list[str]:
+    """Only concise topics for the actual selected version delta; no commit list."""
+    observed = report.get('source_commit_details', [])
+    old = {(row['source'], row['channel']): row for row in report['manager_version_codes']['before']}
+    selected = {}
+    for row in report['manager_version_codes']['after']:
+        previous = old.get((row['source'], row['channel']))
+        if previous and previous.get('commit') and row.get('commit') and previous['commit'] != row['commit']:
+            selected.setdefault((row['source'], previous['commit'], row['commit']), []).append(row['channel'])
+    lines = []
+    for item in observed:
+        key = item['source'], item['before'], item['after']
+        if item['source'] != 'SUSFS' and key not in selected:
+            continue
+        channel = '、'.join(selected[key]) if key in selected else '、'.join(label.removeprefix('gki-') for label in item['channels'])
+        topics = item.get('topics', []) if item['status'] == 'observed' else []
+        text = '；'.join(topics) if topics else '更新内容未能归类，请查看官方对比'
+        lines.append('- ' + item['source'] + ' ' + channel + '：' + text + '。'
+                     ' [官方对比](' + compare_url(*key) + ')')
+    return ['', '### 更新要点', '', *lines] if lines else []
 
 
 def manager_version_label(row: dict | None) -> str:
@@ -404,11 +386,9 @@ def render_manager_versions(observations: dict) -> list[str]:
     lines = []
     if changed:
         lines.extend(['', '### 本次变化的管理器版本', '',
-                      '| 管理器 | 类型 | 同步前版本号 | 本次版本号 |', '| --- | --- | --- | --- |'])
+                      '| 管理器 | 类型 | 版本变化 |', '| --- | --- | --- |'])
         for (name, channel), before, after in changed:
-            label = '测试版（最新版）' if channel == '测试版' else channel
-            lines.append(f'| {name} | {label} | {manager_version_label(before)} | {manager_version_label(after)} |')
-        lines.extend(['', '数字版本号按对应固定官方源码的原生规则读取；本次没有编译 APK，最终以该次实际 APK 元数据为准。'])
+            lines.append(f'| {name} | {channel} | {manager_version_label(before)} → {manager_version_label(after)} |')
     elif not unresolved:
         lines.extend(['', '本次无管理器正式版或测试版的版本变化。'])
     if unresolved:
@@ -423,26 +403,14 @@ def render_report(report: dict) -> str:
         value = report['checks'][key]
         lines.append('| ' + label + ' | ' + ('完成' if value == 'success' else '未完成（' + value + '），不能确认有无更新') + ' |')
     lines.extend(render_manager_versions(report['manager_version_codes']))
+    lines.extend(render_update_highlights(report))
     if report['source_changes']:
-        lines.extend(['', '### 官方源码和版本标签', '', '| 官方上游 | 分支／版本 | 之前 | 本次 | 变化及详情 |', '| --- | --- | --- | --- | --- |'])
-        for item in report['source_changes']:
-            before, after = item['before'], item['after']
-            if item['kind'] == 'first-observation':
-                detail = '首次记录此上游／渠道，不能据此认定刚发布'
-            elif item['kind'] == 'not-observed':
-                detail = '本次未观测，不能据此认定上游删除'
-            elif not after.get('commit'):
-                detail = '官方本次未提供此渠道'
-            elif not before.get('commit'):
-                detail = '此渠道现已提供'
-            elif before['commit'] == after['commit']:
-                detail = '标签／分支变化，源码提交未变'
-            else:
-                detail = '[源码变更对比](' + compare_url(item['source'], before['commit'], after['commit']) + ')'
-            if after and after.get('commit'):
-                detail += ' · [本次提交](' + commit_url(item['source'], after['commit']) + ')'
-            lines.append(f"| [{item['source']}]({source_url(item['source'])}) | {source_channel(item['channel'])} | {source_label(before)} | {source_label(after)} | {detail} |")
-        lines.extend(render_commit_details(report))
+        lines.extend(['', '### 发生变化的官方上游', ''])
+        for name in sorted({item['source'] for item in report['source_changes']}):
+            changes = [item for item in report['source_changes'] if item['source'] == name]
+            note = '（此前未记录，本次首次收录）' if all(item['kind'] == 'first-observation' for item in changes) else ''
+            targets = ('：' + '、'.join(item['channel'].removeprefix('gki-') for item in changes)) if name == 'SUSFS' else ''
+            lines.append('- [' + name + '](' + source_url(name) + ')' + note + targets)
     else:
         lines.extend(['', '官方源码观察记录无变化。' if report['checks']['official'] == 'success'
                       else '官方源码检查未完成；沿用原记录。'])
@@ -493,7 +461,7 @@ def render_report(report: dict) -> str:
             baseline_changes.append('| SUSFS ' + target + ' | ' + code(before['susfs_pins'][target]) + ' | ' + code(after['susfs_pins'][target]) + ' |')
     if baseline_changes:
         lines.extend(['', '| 构建基线的实际变化 | 之前 | 本次 |', '| --- | --- | --- |', *baseline_changes])
-    lines.extend(['', '各管理器的正式版和最新版在下一次构建时解析所选官方源码。上表中的发布标签为官方版本标签；管理器数字版本号以该次实际 APK 元数据为准，本次检查没有编译 APK 或内核。', ''])
+    lines.extend(['', '版本号以该次实际 APK 元数据为准；本次检查没有编译 APK 或内核。', ''])
     return '\n'.join(lines)
 
 

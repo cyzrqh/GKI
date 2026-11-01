@@ -129,7 +129,7 @@ python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \\
 python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \\
   --manifest-root "$KERNEL_ROOT/.repo/manifests"
 for attempt in 1 2 3; do
-  if "$REPO" --trace sync -c -j"$source_checkout_jobs" \\
+  if python3 "$GITHUB_WORKSPACE/tools/run_kernel_build.py" --label "官方源码同步" -- "$REPO" --trace sync -c -j"$source_checkout_jobs" \\
       --jobs-network="$source_network_jobs" --jobs-checkout="$source_checkout_jobs" \\
       --optimized-fetch --no-clone-bundle --no-tags --fail-fast; then
     python3 "$GITHUB_WORKSPACE/tools/validate_kernel_source.py" \\
@@ -710,6 +710,8 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
              'run': "python3 -m unittest discover -s tests -p 'test_manager_port_native.py'"},
             {'name': '验证 ThinLTO 链接缓存与真实增量链接',
              'run': 'PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically'},
+            {'name': '验证全系列缓存接入和编译退出状态',
+             'run': 'PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_run_kernel_build'},
             {'name': '检查管理器构建脚本', 'if': MANAGER_IF,
              'run': 'for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done'},
             {'name': '检查并生成矩阵', 'id': 'matrix', 'shell': 'bash', 'if': BUILD_IF,

@@ -10,3 +10,5 @@ tests/fixtures/oplus-susfs61/*.patch -whitespace
 tests/fixtures/oplus-susfs66/*.patch -whitespace
 tests/fixtures/oplus-susfs66/namespace-header.c -whitespace
 tests/fixtures/oplus-vendor-locking/*.source -whitespace
+# Reviewed Git merge preimages retain their exact official bytes.
+tools/patches/sukisu-susfs23-base/*.source -whitespace

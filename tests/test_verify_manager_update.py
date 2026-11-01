@@ -51,14 +51,15 @@ class ManagerUpdateTests(unittest.TestCase):
             self.assertTrue(all(row['commit'] for row in report['rows'] if row['status'] == 'failure'))
             self.assertTrue(all(row['version_code'] == 41117 for row in report['rows'] if row['status'] == 'failure'))
 
-    def test_unchanged_release_is_checked_but_summary_only_lists_changed_test_version(self):
+    def test_both_channels_are_checked_without_duplicate_version_tables(self):
         before = copy.deepcopy(self.snapshot)
         before['sukisu']['development']['head'] = '8' * 40
         result = verifier.validate_manager_snapshot(self.snapshot, cache=Path('cache'), before_snapshot=before)
         text = verifier.render_report(result)
         self.assertNotIn('| SukiSU | 正式版 |', text)
         self.assertNotIn('| BakaSU |', text)
-        self.assertIn('| SukiSU | 测试版 | 41117 |', text)
+        self.assertNotIn('| SukiSU | 测试版 |', text)
+        self.assertIn('配套验证通过', text)
         self.assertEqual(3, self.checking.call_count)
 
 

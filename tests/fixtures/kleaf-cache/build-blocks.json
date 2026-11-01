@@ -1,0 +1,16 @@
+[
+  {
+    "reference": "main-kernel-build-2023",
+    "source_url": "https://android.googlesource.com/kernel/build/+/refs/heads/main-kernel-build-2023/kleaf/impl/kernel_build.bzl",
+    "source_sha256": "c44ccab399c801041590966706fac83642076b15e1caf17d237940e318cc8eec",
+    "license": "Apache-2.0; Copyright The Android Open Source Project",
+    "block": "# Actual kernel build\n           {interceptor_command_prefix} make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} {make_goals}\n         # Install modules\n"
+  },
+  {
+    "reference": "main-kernel-build-2024",
+    "source_url": "https://android.googlesource.com/kernel/build/+/refs/heads/main-kernel-build-2024/kleaf/impl/kernel_build.bzl",
+    "source_sha256": "ce65469875a09d64f2abdfb70a249b68ce9518fe898b936cd929556b40791f6c",
+    "license": "Apache-2.0; Copyright The Android Open Source Project",
+    "block": "# Actual kernel build\n           if grep -q \"\\\\bdtbs\\\\b\" <<< \"{make_goals}\" ; then\n               # TODO(b/359683179): if we build dtbs with the individual kernel\n               # modules, then not all of the kernel modules are found in the\n               # OUT_DIR. Building dtbs first, fixes this issue.\n               {interceptor_command_prefix} make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} dtbs\n           fi\n           make_subgoals=$(echo \"{make_goals}\" | sed \"s:\\\\<dtbs\\\\>::\" || true)\n           # Allow an empty/unspecified make_goals attribute to trigger just\n           # \"make\" in the kernel directory to build the default target.\n           #\n           # We check against the blank/whitespace character class to account\n           # for the case where the make_goals attribute isn't set, in which case\n           # we default to MAKE_GOALS, and MAKE_GOALS is defined as just\n           # whitespace--for example:\n           #\n           # MAKE_GOALS=\"\n           # \"\n           #\n           # This aligns with the expectation of an empty/unspecified make_goals\n           # attribute building the default target.\n           if [[ -n \"${{make_subgoals}}\" ]] || [[ \"{make_goals}\" =~ ^[[:space:]]*$ ]]; then\n               if grep -q -E -e \"[.]ko\\\\b\" <<< \"${{make_subgoals}}\" ; then\n                   # TODO(b/359681021) Follow up with the upstream maintainer to\n                   # see what needs to be done to drop KBUILD_MODPOST_WARN=1.\n                   {interceptor_command_prefix} make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} KBUILD_MODPOST_WARN=1 ${{make_subgoals}}\n               else\n                   {interceptor_command_prefix} make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} ${{make_subgoals}}\n               fi\n           fi\n         # Install modules\n"
+  }
+]

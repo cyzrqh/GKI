@@ -47,11 +47,11 @@ class KernelCacheTests(unittest.TestCase):
         return next(step for step in self.steps if step.get('name') == name)
 
     def test_cache_detects_build_sh_after_sync_including_historical_61(self):
-        detection = self.find('选择 build.sh 编译缓存')
+        detection = self.find('选择实际编译系统的对象缓存')
         self.assertNotIn('if', detection)
         self.assertIn('if [ -f "$KERNEL_ROOT/build/build.sh" ]; then', detection['run'])
         self.assertIn("echo 'enabled=true'", detection['run'])
-        self.assertIn("echo 'enabled=false'", detection['run'])
+        self.assertIn('tools/kleaf_compile_cache.py', detection['run'])
         self.assertNotIn('inputs.kernel_version', detection['run'])
         self.assertLess(self.steps.index(self.find('初始化并同步内核源码')), self.steps.index(detection))
         measurement = self.find('开始记录实际 ccache 命中')
@@ -100,15 +100,18 @@ class KernelCacheTests(unittest.TestCase):
             with self.subTest(parameters=parameters):
                 self.assertFalse(condition_value(condition, **parameters))
 
-    def test_marker_is_written_only_on_the_actual_build_sh_compilation_path(self):
-        command = self.find('编译内核')['with']['command']
+    def test_marker_is_written_on_the_actual_build_sh_and_enabled_kleaf_compile_paths(self):
+        command = self.find('编译内核')['run']
         marker = "echo 'CCACHE_COMPILE_STARTED=true' >> \"$GITHUB_ENV\""
-        self.assertEqual(command.count(marker), 1)
+        self.assertEqual(command.count(marker), 2)
         build_branch = command.index('if [ -f "build/build.sh" ]; then')
-        invocation = command.index('LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh')
+        invocation = command.index('--label "build.sh 内核编译" -- build/build.sh')
         self.assertLess(build_branch, command.index(marker))
         self.assertLess(command.index(marker), invocation)
         self.assertLess(invocation, command.index('\nelse\n', invocation))
+        self.assertLess(command.index('\nelse\n', invocation), command.rindex(marker))
+        self.assertLess(command.rindex(marker), command.index('tools/bazel build'))
+        self.assertIn('if [ -n "${CCACHE_PROGRAM:-}" ]; then', command)
 
     def test_statistics_start_after_restoration_and_saving_follows_compile(self):
         restore = self.find('恢复 ccache 缓存')

@@ -183,17 +183,8 @@ def validate_manager_snapshot(snapshot: dict, *, cache: Path, report_path: Path 
 
 
 def render_report(result: dict) -> str:
-    lines = ['### 同步前的管理器配套验证', '',
-             '验证固定的官方完整源码及本仓库适配；本次未编译 APK 或内核。', '',
-             '| 管理器 | 版本类型 | 数字版本号 | 源码提交 | 配套结果 |', '|---|---|---|---|---|']
-    for row in result['rows']:
-        if row['status'] == 'unavailable' or not row['changed'] and row['status'] == 'passed':
-            continue
-        status = '通过' if row['status'] == 'passed' else '失败，未同步'
-        lines.append(f"| {row['source']} | {row['channel']} | {row['version_code'] or '未确认'} | "
-                     f"`{(row['commit'] or '')[:12]}` | {status} |")
-        if row['status'] == 'failure':
-            reason = row['reason'].replace('`', '').replace('|', '/').replace('\n', ' ')
-            lines.append('\n' + row['source'] + ' ' + row['channel'] + '：' + reason + '\n')
-    lines += ['', '所有可用正式版和测试版均做配套检查；上表只展示本次变更或失败项。']
+    lines = ['### 同步配套验证', '', '配套验证通过。' if result['passed'] else '**配套验证失败，未同步。**']
+    for row in (row for row in result['rows'] if row['status'] == 'failure'):
+        reason = row['reason'].replace('`', '').replace('|', '/').replace('\n', ' ')
+        lines.append('\n' + row['source'] + ' ' + row['channel'] + '：失败，未同步。' + reason)
     return '\n'.join(lines) + '\n'

@@ -256,6 +256,29 @@ def restore(api, directory: Path, key: str, kind: str, producer: str) -> bool:
     return True
 
 
+def restore_shared(api, directory: Path, key: str, kind: str, producer: str) -> tuple[bool, str | None]:
+    """Read sibling ccache objects; compiler/config guards remain authoritative.
+
+    Only the manager suffix may differ. Save always retains its own namespace,
+    avoiding concurrent manager builds overwriting each other's snapshots.
+    """
+    from manager_variants import MANAGERS
+    key_identity(key, kind)
+    if kind != 'ccache':
+        raise ValueError('Only guarded compilation objects may cross manager namespaces')
+    variants = sorted(MANAGERS, key=len, reverse=True)
+    variant = next((name for name in variants if key.endswith('-' + name)), None)
+    if variant is None:
+        raise ValueError('Shared objects require a known manager suffix')
+    if restore(api, directory, key, kind, producer):
+        return True, variant
+    prefix = key[:-len(variant)]
+    for candidate in MANAGERS:
+        if candidate != variant and restore(api, directory, prefix + candidate, kind, producer):
+            return True, candidate
+    return False, None
+
+
 def find_for_save(api, tag: str) -> dict | None:
     release = api.json('/releases/tags/' + tag, missing=True)
     if release is not None:
@@ -323,19 +346,28 @@ def main(argv=None) -> int:
     parser.add_argument('--directory', type=Path, required=True)
     parser.add_argument('--key', required=True)
     parser.add_argument('--kind', required=True, choices=('ccache', 'bazel', 'thinlto'))
+    parser.add_argument('--share-variants', action='store_true')
     args = parser.parse_args(argv)
+    if args.share_variants and (args.operation != 'restore' or args.kind != 'ccache'):
+        parser.error('--share-variants is only valid for restoring guarded ccache objects')
     started = time.monotonic()
     repository = os.environ.get('CACHE_REPOSITORY', '')
     producer = os.environ.get('GITHUB_REPOSITORY', '')
     token = os.environ.get('CACHE_TOKEN', '')
     state = 'unavailable'
+    source_variant = None
     try:
         validate_repo(repository, producer)
         key_identity(args.key, args.kind)
         api = CacheGitHub(repository, token)
-        result = (restore if args.operation == 'restore' else save)(api, args.directory, args.key, args.kind, producer)
+        if args.share_variants:
+            result, source_variant = restore_shared(api, args.directory, args.key, args.kind, producer)
+        else:
+            result = (restore if args.operation == 'restore' else save)(api, args.directory, args.key, args.kind, producer)
         state = ('restored' if result else 'miss') if args.operation == 'restore' else ('saved' if result else 'superseded')
         print('Persistent compilation cache: ' + state)
+        if source_variant:
+            print('编译对象来源：' + source_variant + '；实际复用仍核对完整配置和编译器。')
     except (OSError, ValueError, TransferError, tarfile.TarError, EOFError):
         # Cache outages must not turn a valid kernel into a failed build. Do
         # not log raw remote content, signed asset URLs, or credential values.
@@ -343,6 +375,8 @@ def main(argv=None) -> int:
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
         with Path(summary).open('a', encoding='utf-8') as output:
             output.write(f'\n独立编译缓存（{args.kind} / {args.operation}）：**{state}**，耗时 {time.monotonic() - started:.1f} 秒。\n')
+            if source_variant:
+                output.write('编译对象来源：' + source_variant + '（同一完整内核及补丁月份；完整配置和编译器另行校验）。\n')
     if destination := os.environ.get('GITHUB_OUTPUT'):
         with Path(destination).open('a', encoding='utf-8') as output:
             output.write('restored=' + str(state == 'restored').lower() + '\nsaved='

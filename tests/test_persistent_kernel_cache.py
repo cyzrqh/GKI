@@ -90,6 +90,33 @@ class PersistentCacheTests(unittest.TestCase):
     def restore(self):
         return cache.restore(self.api, self.destination, KEY, 'ccache', PRODUCER)
 
+    def test_shared_manager_restore_keeps_kernel_key_and_never_changes_saved_namespace(self):
+        class ScopedApi(MemoryApi):
+            def json(self, path, *, method='GET', document=None, missing=False):
+                if (method == 'GET' and path.startswith('/releases/tags/')
+                        and self.release and path.rsplit('/', 1)[-1] != self.release['tag_name']):
+                    self.operations.append((method, path))
+                    return None
+                return super().json(path, method=method, document=document, missing=missing)
+        api = ScopedApi()
+        self.assertTrue(cache.save(api, self.source, KEY, 'ccache', PRODUCER))
+        key = KEY.removesuffix('SukiSU') + 'KowSU'
+        before = len(api.operations)
+        restored, variant = cache.restore_shared(api, self.destination, key, 'ccache', PRODUCER)
+        self.assertTrue(restored)
+        self.assertEqual('SukiSU', variant)
+        self.assertEqual((self.source / 'a/0/sampleR').read_bytes(), (self.destination / 'a/0/sampleR').read_bytes())
+        self.assertTrue(all(method == 'GET' for method, _ in api.operations[before:]))
+        miss = key.replace('5.10-236', '5.10-237')
+        self.assertEqual((False, None), cache.restore_shared(api, self.root / 'other-kernel', miss, 'ccache', PRODUCER))
+        self.assertFalse((self.root / 'other-kernel').exists())
+
+    def test_cross_manager_thinlto_or_unknown_variant_is_never_restored(self):
+        for kind, key in (('thinlto', KEY), ('bazel', KEY), ('ccache', KEY + '-unknown')):
+            with self.subTest(kind=kind), self.assertRaises(ValueError):
+                cache.restore_shared(self.api, self.destination, key, kind, PRODUCER)
+        self.assertEqual([], self.api.operations)
+
     def test_real_archive_roundtrip_keeps_objects_and_ecs_but_never_cache_commands_or_stats(self):
         self.assertTrue(self.save())
         self.assertTrue(self.restore())

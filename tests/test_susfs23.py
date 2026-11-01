@@ -257,6 +257,29 @@ class Susfs23ApplicationTests(unittest.TestCase):
             self.assertFalse(susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True))
             self.assertEqual(verify.call_count, 4)
 
+    def test_upstream_initialization_added_at_removed_blank_line_is_merged_and_reversed(self):
+        original = ('void kernel_init(void) {\n    native_before();\n\n'
+                    + ''.join(f'    unchanged_{index}();\n' for index in range(8))
+                    + '    port_target();\n    native_after();\n}\n')
+        self.core.write_text(original, encoding='utf-8', newline='\n')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'port base with separator')
+        ported = original.replace('native_before();\n\n', 'native_before();\n').replace('port_target();', 'complete_port();')
+        self.core.write_text(ported, encoding='utf-8', newline='\n')
+        self.patch.write_text(self.run_git('diff', '--full-index').stdout, encoding='utf-8', newline='\n')
+        self.run_git('restore', '.')
+        updated = original.replace('\n\n', '\n\n    native_inode_init();\n\n')
+        self.core.write_text(updated, encoding='utf-8', newline='\n')
+        self.run_git('add', '.')
+        self.run_git('commit', '--quiet', '-m', 'new upstream native initialization')
+        with mock.patch.object(susfs, 'verify_integration'):
+            self.assertTrue(susfs.apply_reviewed_port(self.repository, self.patch, allow_variants=True))
+        actual = self.core.read_text(encoding='utf-8')
+        self.assertIn('native_inode_init();', actual)
+        self.assertIn('complete_port();', actual)
+        self.assertNotIn('port_target();', actual)
+        self.assertNotIn('<<<<<<<', actual)
+
     def test_three_way_check_success_cannot_authorize_a_real_conflict(self):
         updated = self.three_way_fixture(conflicting=True)
         check = susfs.git(self.repository, 'apply', '--3way', '--check', str(self.patch))
@@ -435,6 +458,51 @@ class Susfs23ApplicationTests(unittest.TestCase):
         self.build.write_text('# kernelsu-objs += feature/avc_spoof.o\n', encoding='utf-8')
         with self.assertRaisesRegex(ValueError, 'linked in Kbuild'):
             susfs.verify_native_avc(self.repository)
+
+
+class SelinuxInodeLifecycleTests(unittest.TestCase):
+    CORE = '''int kernelsu_init(void) {
+    int ret;
+    ksu_init_symbol_resolver();
+    ret = ksu_selinux_inode_init();
+    if (ret) {
+        put_cred(ksu_cred);
+        ksu_cred = NULL;
+        return ret;
+    }
+    susfs_init();
+    return 0;
+}
+'''
+
+    def setUp(self):
+        import tempfile
+        self.temporary = tempfile.TemporaryDirectory(dir=ROOT.parent / '.gki-upstream-cache')
+        self.addCleanup(self.temporary.cleanup)
+        self.root = Path(self.temporary.name)
+        self.core = self.root / 'kernel/core/init.c'
+        self.core.parent.mkdir(parents=True)
+        self.core.write_text(self.CORE, encoding='utf-8')
+        provider = self.root / 'kernel/selinux'
+        provider.mkdir()
+        (provider / 'inode.c').write_text('int ksu_selinux_inode_init(void) { return real_init(); }', encoding='utf-8')
+        (provider / 'selinux.h').write_text('int ksu_selinux_inode_init(void);', encoding='utf-8')
+        (self.root / 'kernel/Kbuild').write_text('kernelsu-objs += selinux/inode.o\n', encoding='utf-8')
+        result = subprocess.CompletedProcess([], 0, stdout=self.CORE, stderr='')
+        mocking = mock.patch.object(susfs, 'git', return_value=result)
+        mocking.start()
+        self.addCleanup(mocking.stop)
+
+    def test_selected_initialization_and_credential_rollback_are_retained(self):
+        susfs.verify_native_selinux_inode(self.root)
+
+    def test_removed_call_rollback_or_return_variable_is_rejected(self):
+        for before, after in (('ret = ksu_selinux_inode_init();', ''), ('put_cred(ksu_cred);', ''),
+                              ('ksu_cred = NULL;', ''), ('return ret;', 'return 0;'), ('int ret;', '')):
+            with self.subTest(before=before):
+                self.core.write_text(self.CORE.replace(before, after), encoding='utf-8')
+                with self.assertRaisesRegex(ValueError, 'credential error cleanup'):
+                    susfs.verify_native_selinux_inode(self.root)
 
 
 class AvcLifecycleTests(unittest.TestCase):

@@ -158,6 +158,7 @@ def marker(state: str, digest: str) -> str:
 
 
 def comment_body(report: dict, repository: str, number: int, state: str, commit: str | None) -> str:
+    from official_sync_report import report_preview
     owner, _ = validate_repository(repository)
     lines = [marker(state, report['digest']), '', '@' + owner + ' ' + (
         '发现新的官方源码或内核目录更新，等待你手动同步。' if state == 'pending' else '本次官方记录更新已同步到默认分支。'), '',
@@ -166,7 +167,7 @@ def comment_body(report: dict, repository: str, number: int, state: str, commit:
         lines.extend(['手动同步：打开 **Actions → 检查并同步官方更新 → Run workflow**，将 **operation** 选择为 **同步官方更新**；也可以检查本 PR 的差异后手动合并。', ''])
     else:
         lines.extend([f'合并提交：https://github.com/{repository}/commit/{commit}', ''])
-    lines.extend(['本次仅更新源码观察记录及目录，没有自动编译 APK 或内核。', '', report['summary_markdown'].strip(), ''])
+    lines.extend(['本次仅更新源码观察记录及目录，没有自动编译 APK 或内核。', '', report_preview(report['summary_markdown'].strip()), ''])
     body = '\n'.join(lines)
     if len(body.encode('utf-8')) > MAX_COMMENT:
         raise NotificationError('Official update detail exceeds the notification comment budget')

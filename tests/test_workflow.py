@@ -252,6 +252,9 @@ class WorkflowTests(unittest.TestCase):
         update = indexed['update'][1]
         self.assertEqual(update['env']['OFFICIAL_CANDIDATES'], '${{ steps.official.outputs.candidates_json }}')
         self.assertEqual(update['env']['CATALOG_CANDIDATES'], '${{ steps.catalog.outputs.candidates_json }}')
+        self.assertEqual(update['env']['GH_TOKEN'], '${{ github.token }}')
+        self.assertIn('--observe-source-changes', update['run'])
+        self.assertIn('report_preview', update['run'])
         self.assertIn('--candidates-json "$OFFICIAL_CANDIDATES"', update['run'])
         self.assertIn('--apply-candidates-json "$CATALOG_CANDIDATES"', update['run'])
         self.assertNotIn('sync_upstream.py', str(steps))

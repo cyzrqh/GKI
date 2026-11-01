@@ -409,6 +409,27 @@ class OfficialSyncReportGitTests(unittest.TestCase):
         self.observed.append((old, new, cache))
         return versions
 
+    def test_cli_commit_detail_observation_is_opt_in_and_keeps_digest(self):
+        self.after['sources']['sukisu']['development']['head'] = NEW
+        self.refresh()
+        self.write(reports.FILES[0], self.after)
+        baseline = reports.repository_report(self.root, self.base)
+        with patch('upstream_change_details.request_json', side_effect=OSError('fake-secret')) as fetch:
+            offline = reports.repository_report(self.root, self.base)
+            fetch.assert_not_called()
+            report, markdown = self.root / 'details.json', self.root / 'details.md'
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                result = reports.main(['--root', str(self.root), '--base-ref', self.base,
+                                       '--report-json', str(report), '--report-markdown', str(markdown),
+                                       '--observe-source-changes'])
+        self.assertEqual(0, result)
+        document = json.loads(report.read_text(encoding='utf-8'))
+        self.assertEqual(baseline['digest'], document['digest'])
+        self.assertEqual(offline['digest'], document['digest'])
+        self.assertEqual(1, len(document['source_commit_details']))
+        self.assertIn('提交标题明细未能获取', markdown.read_text(encoding='utf-8'))
+        self.assertNotIn('fake-secret', json.dumps(document))
+
     def test_lookup_outage_does_not_block_sync_or_leak_upstream_errors(self):
         self.after['sources']['sukisu']['release']['tag'] = 'v4.2.1-r2'
         self.refresh()

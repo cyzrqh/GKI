@@ -20,6 +20,8 @@ import sys
 
 from check_official_updates import TARGETS, head_state, validate_snapshot
 from matrix import validate_catalog
+from upstream_change_details import commit_url, compare_url, source_url
+from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ('data/upstream-candidates.json', 'data/kernels.json', 'build-compatibility.json')
@@ -283,6 +285,16 @@ def build_report(before_candidate, after_candidate, before_catalog, after_catalo
     # contract, including its constant legacy unobserved-version descriptor.
     semantic['manager_version_codes'] = LEGACY_VERSION_OBSERVATION
     report['digest'] = hashlib.sha256(canonical(semantic)).hexdigest()
+    # Presentation context is deliberately outside the notification digest.
+    previous_versions = {(row['android_version'], row['kernel']) for row in before_catalog['entries']}
+    report['catalog_details'] = {
+        'added_versions': [row for row in catalog['added'] if row['date'] != 'lts'
+                           and (row['android_version'], row['kernel']) not in previous_versions],
+        'added_months': [row for row in catalog['added'] if row['date'] != 'lts'
+                         and (row['android_version'], row['kernel']) in previous_versions],
+        'added_lts': [row for row in catalog['added'] if row['date'] == 'lts'],
+    }
+    report['source_commit_details'] = []
     report['summary_markdown'] = render_report(report)
     return report
 
@@ -301,6 +313,57 @@ def source_label(value: dict | None) -> str:
 
 def target_label(row: dict | None) -> str:
     return '无' if row is None else code(row['android_version'] + '-' + row['kernel'] + '-' + row['date'])
+
+
+def kernel_source(row: dict) -> str:
+    ref = row.get('ref')
+    if not ref:
+        return '未固定源码引用'
+    return ('[' + code(ref) + '](https://android.googlesource.com/kernel/common/+/'
+            + quote(ref, safe='') + ')')
+
+
+def source_channel(channel: str) -> str:
+    return {'默认分支': '测试版（默认分支）', '开发分支': '测试版（开发分支）',
+            '预发行版': '测试版（官方预发行标签）'}.get(channel, channel)
+
+
+def render_commit_details(report: dict) -> list[str]:
+    rows = report.get('source_commit_details', [])
+    if not rows:
+        return []
+    lines = ['', '#### 官方提交的具体内容', '',
+             '以下为固定提交范围内的上游原文标题；每组最多列出 8 条，完整内容可打开官方对比。']
+    relations = {'ahead': '新增提交', 'behind': '回退到较早提交',
+                 'diverged': '提交历史出现分叉，须查看完整对比',
+                 'identical': '源码提交相同', 'direct': '两次记录之间的直接提交差异'}
+    for item in rows:
+        link = compare_url(item['source'], item['before'], item['after'])
+        channels = '、'.join(source_channel(channel) for channel in item['channels'])
+        lines.extend(['', '**' + item['source'] + ' · ' + channels + '** · [官方对比](' + link + ')', ''])
+        if item['status'] != 'observed':
+            lines.append('提交标题明细未能获取；上游变化仍已记录，可打开官方对比核对。')
+            continue
+        count = item['total_commits']
+        lines.append(relations[item['relation']] + ('；对比范围共 ' + str(count) + ' 条提交。' if count is not None
+                                                else '；上游对比超时，仅取得部分结果。'))
+        for commit in item['commits']:
+            lines.append('- [' + code(commit['commit'][:12]) + '](' + commit_url(item['source'], commit['commit'])
+                         + ') ' + code(commit['title']) + ('（标题已截短）' if commit['title_truncated'] else ''))
+        if count is not None and count > len(item['commits']):
+            lines.append('其余 ' + str(count - len(item['commits'])) + ' 条请查看官方对比。')
+    return lines
+
+
+def report_preview(markdown: str, budget: int = 45000) -> str:
+    """Keep PRs/mail comments bounded while the Actions summary stays complete."""
+    if len(markdown.encode('utf-8')) <= budget:
+        return markdown
+    footer = '\n\n明细较多，此处仅展示部分内容；完整逐项变化请查看本次 Actions 运行的 Summary（摘要）。\n'
+    prefix = markdown.encode('utf-8')[:budget - len(footer.encode('utf-8'))].decode('utf-8', errors='ignore')
+    if '\n' in prefix:
+        prefix = prefix.rsplit('\n', 1)[0]
+    return prefix + footer
 
 
 def manager_version_label(row: dict | None) -> str:
@@ -361,31 +424,59 @@ def render_report(report: dict) -> str:
         lines.append('| ' + label + ' | ' + ('完成' if value == 'success' else '未完成（' + value + '），不能确认有无更新') + ' |')
     lines.extend(render_manager_versions(report['manager_version_codes']))
     if report['source_changes']:
-        lines.extend(['', '### 官方源码和版本标签', '', '| 来源 | 分支／版本 | 之前 | 本次 |', '| --- | --- | --- | --- |'])
+        lines.extend(['', '### 官方源码和版本标签', '', '| 官方上游 | 分支／版本 | 之前 | 本次 | 变化及详情 |', '| --- | --- | --- | --- | --- |'])
         for item in report['source_changes']:
-            lines.append(f"| {item['source']} | {item['channel']} | {source_label(item['before'])} | {source_label(item['after'])} |")
+            before, after = item['before'], item['after']
+            if item['kind'] == 'first-observation':
+                detail = '首次记录此上游／渠道，不能据此认定刚发布'
+            elif item['kind'] == 'not-observed':
+                detail = '本次未观测，不能据此认定上游删除'
+            elif not after.get('commit'):
+                detail = '官方本次未提供此渠道'
+            elif not before.get('commit'):
+                detail = '此渠道现已提供'
+            elif before['commit'] == after['commit']:
+                detail = '标签／分支变化，源码提交未变'
+            else:
+                detail = '[源码变更对比](' + compare_url(item['source'], before['commit'], after['commit']) + ')'
+            if after and after.get('commit'):
+                detail += ' · [本次提交](' + commit_url(item['source'], after['commit']) + ')'
+            lines.append(f"| [{item['source']}]({source_url(item['source'])}) | {source_channel(item['channel'])} | {source_label(before)} | {source_label(after)} | {detail} |")
+        lines.extend(render_commit_details(report))
     else:
         lines.extend(['', '官方源码观察记录无变化。' if report['checks']['official'] == 'success'
                       else '官方源码检查未完成；沿用原记录。'])
     catalog = report['catalog']
     lines.extend(['', '### GKI 内核目录', '',
+                  '内核上游：[Android 官方 kernel/common](https://android.googlesource.com/kernel/common/)。',
                   f"目录记录：{catalog['before_count']} → {catalog['after_count']}；每个完整内核只取最新月份后的可构建目标：{catalog['selected_before_count']} → {catalog['selected_after_count']}。",
                   f"新增 {len(catalog['added'])} 条，移除 {len(catalog['removed'])} 条，既有记录变更 {len(catalog['updated'])} 条。"])
-    for key, label in (('added', '新增'), ('removed', '移除')):
-        if catalog[key]:
-            lines.extend(['', label + '：', ''])
-            lines.extend('- ' + target_label(row) for row in catalog[key])
+    details = report['catalog_details']
+    for rows, label in ((details['added_versions'], '新增完整内核版本'),
+                        (details['added_months'], '既有内核新增补丁月份'),
+                        (details['added_lts'], '新增 LTS 记录'), (catalog['removed'], '移除目录记录')):
+        if rows:
+            lines.extend(['', label + '：', '', '| Android / 完整内核 / 补丁月份 | 官方源码 | 目录修订 |', '| --- | --- | --- |'])
+            for row in rows:
+                lines.append('| ' + target_label(row) + ' | ' + kernel_source(row) + ' | ' + code(row.get('revision', 'r1')) + ' |')
     if catalog['updated']:
-        lines.extend(['', '既有目录记录的源码或修订变更：', '', '| 目标 | 之前源码 | 本次源码 | 修订 |', '| --- | --- | --- | --- |'])
+        lines.extend(['', '既有目录记录的源码或修订变更：', '', '| 目标 | 之前源码 | 本次源码 | 修订 | 源码变化 |', '| --- | --- | --- | --- | --- |'])
         for item in catalog['updated']:
             before, after = item['before'], item['after']
-            lines.append('| ' + target_label(after) + ' | ' + code(before.get('ref', '未固定')) + ' | '
-                         + code(after.get('ref', '未固定')) + ' | ' + code(before.get('revision', 'r1')) + ' → '
-                         + code(after.get('revision', 'r1')) + ' |')
+            comparison = ('[官方提交对比](https://android.googlesource.com/kernel/common/+log/'
+                          + quote(before['ref'], safe='') + '..' + quote(after['ref'], safe='') + ')'
+                          if before.get('ref') and after.get('ref') and before['ref'] != after['ref']
+                          else '源码引用未变' if before.get('ref') == after.get('ref') else '未取得完整对比引用')
+            lines.append('| ' + target_label(after) + ' | ' + kernel_source(before) + ' | '
+                         + kernel_source(after) + ' | ' + code(before.get('revision', 'r1')) + ' → '
+                         + code(after.get('revision', 'r1')) + ' | ' + comparison + ' |')
     if catalog['selected_changes']:
         lines.extend(['', '实际构建目标变化（同一完整内核仅保留最新月份）：', '', '| 之前 | 本次 |', '| --- | --- |'])
         for item in catalog['selected_changes']:
             lines.append('| ' + target_label(item['before']) + ' | ' + target_label(item['after']) + ' |')
+    if catalog['updated']:
+        lines.append('\n目录修订号变化本身不代表新增功能；源码差异以相应官方引用为准。')
+    lines.extend(['', '此同步流程检查 Android GKI 官方目录；欧加真的平台配方目录不在本次检查范围内，不能据此判断欧加真是否有更新。'])
     compatibility = report['compatibility']
     lines.extend(['', '### 构建适配与管理器', ''])
     if compatibility['changed']:
@@ -393,11 +484,15 @@ def render_report(report: dict) -> str:
     else:
         lines.append('本次同步官方版本记录和内核目录；手动同步另行验证所选管理器与 SUSFS/KPM 的配套。适配参考基线与本次管理器实际提交分别记录。')
     before, after = compatibility['before'], compatibility['after']
-    lines.extend(['', '| 已验证构建基线 | 之前 | 本次 |', '| --- | --- | --- |',
-                  '| SUSFS 适配参考提交（非本次管理器提交） | ' + code(before['sukisu_source_ref'][:12]) + ' | ' + code(after['sukisu_source_ref'][:12]) + ' |',
-                  '| SUSFS 版本 | ' + code(before['susfs_version']) + ' | ' + code(after['susfs_version']) + ' |'])
+    baseline_changes = []
+    for key, label in (('sukisu_source_ref', 'SUSFS 适配参考提交（非本次管理器提交）'), ('susfs_version', 'SUSFS 版本')):
+        if before[key] != after[key]:
+            baseline_changes.append('| ' + label + ' | ' + code(before[key]) + ' | ' + code(after[key]) + ' |')
     for target in TARGETS:
-        lines.append('| SUSFS ' + target + ' | ' + code(before['susfs_pins'][target][:12]) + ' | ' + code(after['susfs_pins'][target][:12]) + ' |')
+        if before['susfs_pins'][target] != after['susfs_pins'][target]:
+            baseline_changes.append('| SUSFS ' + target + ' | ' + code(before['susfs_pins'][target]) + ' | ' + code(after['susfs_pins'][target]) + ' |')
+    if baseline_changes:
+        lines.extend(['', '| 构建基线的实际变化 | 之前 | 本次 |', '| --- | --- | --- |', *baseline_changes])
     lines.extend(['', '各管理器的正式版和最新版在下一次构建时解析所选官方源码。上表中的发布标签为官方版本标签；管理器数字版本号以该次实际 APK 元数据为准，本次检查没有编译 APK 或内核。', ''])
     return '\n'.join(lines)
 
@@ -434,7 +529,8 @@ def read_worktree_document(root: Path, path: str, *, missing: bool = False):
 
 def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None = None,
                       manager_version_observations: dict | None = None,
-                      observe_manager_versions: bool = False, manager_cache: Path | None = None) -> dict:
+                      observe_manager_versions: bool = False, manager_cache: Path | None = None,
+                      observe_source_changes: bool = False) -> dict:
     root = root.resolve()
     if base_ref != 'HEAD' and not SHA.fullmatch(base_ref):
         raise ReportError('Report baseline must be HEAD or a fixed full commit SHA')
@@ -454,8 +550,13 @@ def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None
             # Source versions are supplementary. A lookup outage must neither
             # fabricate a numeric code nor prevent the verified data sync.
             print('::warning::Native manager version lookup did not complete; numeric versions remain unconfirmed')
-    return build_report(before[0], after[0], before[1], after[1], before[2], after[2], base_ref=resolved, checks=checks,
-                        manager_version_observations=manager_version_observations)
+    report = build_report(before[0], after[0], before[1], after[1], before[2], after[2], base_ref=resolved, checks=checks,
+                          manager_version_observations=manager_version_observations)
+    if observe_source_changes:
+        from upstream_change_details import observe_changes
+        report['source_commit_details'] = observe_changes(report['source_changes'])
+        report['summary_markdown'] = render_report(report)
+    return report
 
 
 def main(argv=None) -> int:
@@ -467,13 +568,15 @@ def main(argv=None) -> int:
     parser.add_argument('--official-result', choices=sorted(CHECK_STATES), default='success')
     parser.add_argument('--catalog-result', choices=sorted(CHECK_STATES), default='success')
     parser.add_argument('--observe-manager-versions', action='store_true')
+    parser.add_argument('--observe-source-changes', action='store_true')
     parser.add_argument('--manager-cache', type=Path)
     args = parser.parse_args(argv)
     if args.observe_manager_versions != (args.manager_cache is not None):
         parser.error('--observe-manager-versions and --manager-cache must be used together')
     try:
         report = repository_report(args.root, args.base_ref, checks={'official': args.official_result, 'catalog': args.catalog_result},
-                                   observe_manager_versions=args.observe_manager_versions, manager_cache=args.manager_cache)
+                                   observe_manager_versions=args.observe_manager_versions, manager_cache=args.manager_cache,
+                                   observe_source_changes=args.observe_source_changes)
         for path, content in ((args.report_json, json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + '\n'),
                               (args.report_markdown, report['summary_markdown'])):
             if path.is_symlink() or path.exists() and not path.is_file():

@@ -157,16 +157,18 @@ class NotificationTests(unittest.TestCase):
                 notices.notify(report(), REPO, 12, state, commit=commit, api=api)
             self.assertEqual([], api.posts)
 
-    def test_invalid_comment_inventory_and_large_detail_never_post(self):
+    def test_invalid_comment_inventory_never_posts_and_large_detail_has_bounded_preview(self):
         for batch in ({}, [None], [{'body': 'x'}], [comment()] * 101):
             api = FakeAPI(pages={1: batch})
             with self.subTest(batch_type=type(batch)), self.assertRaises(ValueError):
                 notices.notify(report(), REPO, 12, 'pending', api=api)
             self.assertEqual([], api.posts)
         api = FakeAPI()
-        with self.assertRaisesRegex(ValueError, 'budget'):
-            notices.notify(report(summary_markdown='中' * 20000), REPO, 12, 'pending', api=api)
-        self.assertEqual([], api.posts)
+        notices.notify(report(summary_markdown='中' * 20000), REPO, 12, 'pending', api=api)
+        self.assertEqual(1, len(api.posts))
+        body = api.posts[0][1]['body']
+        self.assertLess(len(body.encode('utf-8')), notices.MAX_COMMENT)
+        self.assertIn('完整逐项变化', body)
 
     def test_foreign_pr_urls_and_invalid_inputs_never_touch_api(self):
         for reference in ('https://github.com/attacker/gki/pull/12', 'https://evil.example/owner/gki/pull/12',

@@ -109,7 +109,8 @@ PY
              'run': 'python3 tools/upstream_pr_guard.py --heads-marker "$HEADS_MARKER" --base "$DEFAULT_BRANCH" --github-output "$GITHUB_OUTPUT"'},
             {'name': '准备独立官方更新', 'id': 'update',
              'if': "steps.probe.outputs.has_updates == 'true'",
-             'env': {'OFFICIAL_CANDIDATES': '${{ steps.official.outputs.candidates_json }}',
+             'env': {'GH_TOKEN': '${{ github.token }}',
+                     'OFFICIAL_CANDIDATES': '${{ steps.official.outputs.candidates_json }}',
                      'CATALOG_CANDIDATES': '${{ steps.catalog.outputs.candidates_json }}',
                      'HEADS_MARKER': '${{ steps.probe.outputs.heads_marker }}',
                      'OFFICIAL_RESULT': '${{ steps.official.outcome }}',
@@ -125,9 +126,12 @@ python3 tools/official_sync_report.py --root . --base-ref HEAD \\
   --report-json "$RUNNER_TEMP/official-sync-report.json" \\
   --report-markdown "$RUNNER_TEMP/official-sync-report.md" \\
   --observe-manager-versions --manager-cache "$RUNNER_TEMP/gki-manager-version-history" \\
+  --observe-source-changes \\
   --official-result "$OFFICIAL_RESULT" --catalog-result "$CATALOG_RESULT"
 python3 - <<'PY'
-import json,os,pathlib
+import json,os,pathlib,sys
+sys.path.insert(0, 'tools')
+from official_sync_report import report_preview
 path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'official-update.md'
 official_ok = os.environ['OFFICIAL_RESULT'] == 'success'
 catalog_ok = os.environ['CATALOG_RESULT'] == 'success'
@@ -139,7 +143,7 @@ body = ('<!-- gki-upstream-sync:v1 -->\\n' + os.environ['HEADS_MARKER'] + '\\n\\
         '# 官方源更新\\n\\n本 PR 直接跟踪 SukiSU、BakaSU、KernelSU-Next、KernelSU、KowSU、FinaSU、SUSFS 和 Android GKI 官方源。\\n\\n'
         + status + '\\n\\n'
         '本 PR 只准备待同步的数据，不会因检查而自动合并。请在 Actions 的“检查并同步官方更新”中选择“同步官方更新”，完成管理器配套验证后再同步。新 APK 和内核仍需另外触发构建。\\n\\n'
-        + (path.parent / 'official-sync-report.md').read_text(encoding='utf-8'))
+        + report_preview((path.parent / 'official-sync-report.md').read_text(encoding='utf-8')))
 path.write_text(body,encoding='utf-8')
 with open(os.environ['GITHUB_OUTPUT'],'a') as output:
     output.write(f'has_updates=true\\nbody_path={path}\\ntitle=Update official sources and GKI kernel catalog\\n')

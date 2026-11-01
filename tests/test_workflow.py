@@ -1068,7 +1068,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('artifact_mode', sign.get('if', ''))
 
     def test_disposable_clone_histories_are_not_downloaded_for_every_kernel(self):
-        self.assertIn('aarch64-linux-gnu-6.4.1.git gcc --depth 1', self.find('初始化并同步内核源码')['run'])
+        # Official GKI uses the manifest's pinned LLVM/binutils; the extra
+        # legacy GCC checkout had no compiler/path consumer in these jobs.
+        self.assertNotIn('android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1', self.find('初始化并同步内核源码')['run'])
         self.assertIn('AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH" --depth 1', self.find('克隆依赖仓库')['run'])
 
     def test_ak3_preparation_does_not_require_compressed_image(self):

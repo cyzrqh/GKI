@@ -2214,10 +2214,13 @@ jobs:
         GKI_KERNEL_REF: ${{ matrix.kernel_ref }}
       run: |
         set -euo pipefail
-        python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
-          https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc --depth 1
+        source_sync_started=$SECONDS
+        source_checkout_jobs=$(nproc --all)
+        if [ "$source_checkout_jobs" -gt 8 ]; then source_checkout_jobs=8; fi
+        source_network_jobs=$((source_checkout_jobs * 2))
+        echo "官方源码同步：网络并行 $source_network_jobs，检出并行 $source_checkout_jobs"
         formatted_branch="${GKI_ANDROID}-${GKI_KERNEL}-${GKI_PATCH}"
-        "$REPO" init --depth=1 -u https://android.googlesource.com/kernel/manifest \
+        "$REPO" init --depth=1 --no-clone-bundle -u https://android.googlesource.com/kernel/manifest \
           -b "common-${formatted_branch}" --repo-rev=v2.16
         python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \
           --manifest-root "$KERNEL_ROOT/.repo/manifests" \
@@ -2225,9 +2228,16 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \
           --manifest-root "$KERNEL_ROOT/.repo/manifests"
         for attempt in 1 2 3; do
-          if "$REPO" --trace sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
+          if "$REPO" --trace sync -c -j"$source_checkout_jobs" \
+              --jobs-network="$source_network_jobs" --jobs-checkout="$source_checkout_jobs" \
+              --optimized-fetch --no-clone-bundle --no-tags --fail-fast; then
             python3 "$GITHUB_WORKSPACE/tools/validate_kernel_source.py" \
               --kernel-root "$KERNEL_ROOT" --family "$GKI_KERNEL" --sublevel "$GKI_SUBLEVEL"
+            source_sync_seconds=$((SECONDS - source_sync_started))
+            echo "官方源码及工具链同步完成，用时 $source_sync_seconds 秒"
+            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
+              echo "官方源码及工具链同步：**$source_sync_seconds 秒**（网络并行 $source_network_jobs，检出并行 $source_checkout_jobs）。" >> "$GITHUB_STEP_SUMMARY"
+            fi
             exit 0
           fi
           echo "::warning::源码同步失败（${attempt}/3）"

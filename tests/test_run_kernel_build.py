@@ -14,7 +14,7 @@ import run_kernel_build as runner
 
 class BuildProgressTests(unittest.TestCase):
     def test_actual_child_exit_code_is_preserved_and_summary_is_measured(self):
-        with tempfile.TemporaryDirectory(dir=ROOT.parent / '.gki-upstream-cache') as directory:
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tests') as directory:
             summary = Path(directory) / 'summary.md'
             with patch.dict(os.environ, {'GITHUB_STEP_SUMMARY': str(summary)}), contextlib.redirect_stdout(io.StringIO()):
                 code = runner.run([sys.executable, '-c', 'raise SystemExit(23)'], '测试编译', interval=0.05)

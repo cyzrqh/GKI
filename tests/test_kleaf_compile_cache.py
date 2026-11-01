@@ -17,7 +17,7 @@ from test_kernel_compile_cache import bash, posix
 
 class KleafCacheTests(unittest.TestCase):
     def setUp(self):
-        self.temporary = tempfile.TemporaryDirectory(dir=ROOT.parent / '.gki-upstream-cache')
+        self.temporary = tempfile.TemporaryDirectory(dir=ROOT / 'tests')
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.source = self.root / 'kernel'

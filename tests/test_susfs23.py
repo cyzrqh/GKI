@@ -477,7 +477,7 @@ class SelinuxInodeLifecycleTests(unittest.TestCase):
 
     def setUp(self):
         import tempfile
-        self.temporary = tempfile.TemporaryDirectory(dir=ROOT.parent / '.gki-upstream-cache')
+        self.temporary = tempfile.TemporaryDirectory(dir=ROOT / 'tests')
         self.addCleanup(self.temporary.cleanup)
         self.root = Path(self.temporary.name)
         self.core = self.root / 'kernel/core/init.c'

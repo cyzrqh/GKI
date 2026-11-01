@@ -261,11 +261,13 @@ class OplusWorkflowTests(unittest.TestCase):
         worker = self.document['jobs']['build-oplus-kernel']
         install = next(step for step in worker['steps'] if step.get('name') == '安装原生编译工具与系统开发依赖')
         self.assertEqual(install['timeout-minutes'], 15)
-        for setting in ('Acquire::http::Timeout=30', 'Acquire::https::Timeout=30', 'Acquire::Retries=2', 'DPkg::Lock::Timeout=60'):
-            self.assertIn(setting, install['run'])
+        self.assertIn('bash tools/install_oplus_dependencies.sh', install['run'])
+        installation = (ROOT / 'tools/install_oplus_dependencies.sh').read_text('utf-8')
+        for setting in ('Acquire::http::Timeout=30', 'Acquire::https::Timeout=30', 'Acquire::Retries=1', 'DPkg::Lock::Timeout=45'):
+            self.assertIn(setting, installation)
         for package in ('aria2', 'libdw-dev', 'libelf-dev', 'libssl-dev', 'ccache', 'bison', 'flex', 'zstd', 'bc', 'patch', 'unzip'):
-            self.assertIn(package, install['run'])
-        self.assertNotIn('apt purge', install['run'])
+            self.assertIn(package, installation)
+        self.assertNotIn('apt purge', installation)
         self.assertNotIn('rm -rf /', json.dumps(worker))
         self.assertEqual(worker['env']['CCACHE_DIR'], '${{ github.workspace }}/.oplus-ccache')
         restore = next(item for item in worker['steps'] if item.get('id') == 'oplus-ccache')

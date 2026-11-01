@@ -148,6 +148,20 @@ class OplusCompatibilityTests(unittest.TestCase):
         self.assertEqual((self.common / 'rust/Makefile').read_text(), library)
         self.assertEqual((self.common / 'scripts/Makefile.build').read_text(), unknown)
 
+    def test_native_override_module_warning_option_is_kept_for_library_and_driver(self):
+        library = ('cmd_rustc_library = $(if $(link_helper),llvm-link helpers.bc;) \\\n'
+                   + compat.BITCODE_WARNING_COMMAND + '\n')
+        driver = self.rust_driver_fixture().replace(compat.BITCODE_COMMAND, compat.BITCODE_WARNING_COMMAND)
+        self.write('rust/Makefile', library)
+        self.write('scripts/Makefile.build', driver)
+        self.assertTrue(compat.prepare_rust_bitcode(self.common))
+        self.assertFalse(compat.prepare_rust_bitcode(self.common))
+        for path, before in (('rust/Makefile', library), ('scripts/Makefile.build', driver)):
+            after = (self.common / path).read_text()
+            self.assertEqual(before.replace(compat.BITCODE_WARNING_COMMAND, compat.BITCODE_WARNING_FIXED), after)
+            self.assertIn('-Wno-override-module', after)
+        self.assertIn('$(KBUILD_CFLAGS) -Werror -c $<', (self.common / 'scripts/Makefile.build').read_text())
+
     def vendor_fixture(self, config='CONFIG_64BIT=y\n'):
         self.write('Makefile', 'VERSION = 6\nPATCHLEVEL = 1\nSUBLEVEL = 141\n')
         self.write('arch/arm64/configs/gki_defconfig', config)

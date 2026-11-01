@@ -331,6 +331,22 @@ def build_step(recipe: dict, profile: dict, values: dict[str, str]) -> Step:
             ('-fdebug-prefix-map=', '-fmacro-prefix-map=', '-ffile-prefix-map=',
              'export RUSTC=', 'export BINDGEN=', 'export LIBCLANG_PATH=', 'cc-wrapper', 'ld-wrapper')):
         raise RecipeError('Native 6.12 Rust/KMI build requirements changed')
+    setup = 'source "./_setup_env.sh" 2>/dev/null || true'
+    if profile['kernel_version'] == '6.12' and setup in removed:
+        if removed.count(setup) != 1:
+            raise RecipeError('Native optional environment bootstrap is ambiguous')
+        # This Kleaf helper reads optional variables without defaults. Match
+        # the original Actions shell while sourcing it, then restore nounset
+        # for the remaining adapter. Keep exports in the current shell.
+        removed = removed.replace(setup, 'set +u\nsource "./_setup_env.sh" || true\nset -u', 1)
+        chain = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<config>make[^\n]+ gki_defconfig) &&\n'
+                           r'(?P=indent)export CC="\$\(pwd\)/cc-wrapper" && export LD="\$\(pwd\)/ld-wrapper" &&\n'
+                           r'(?P=indent)(?=make[^\n]+ Image)')
+        removed, count = chain.subn(lambda match: match['indent'] + match['config'] + '\n'
+            + match['indent'] + 'export CC="$(pwd)/cc-wrapper"\n'
+            + match['indent'] + 'export LD="$(pwd)/ld-wrapper"\n' + match['indent'], removed)
+        if count != 1:
+            raise RecipeError('Native 6.12 defconfig/Image command sequence changed')
     return Step('使用原生编译方法构建内核', render(removed, recipe, profile, values))
 
 
@@ -394,9 +410,11 @@ def run_steps(steps: list[Step], workspace: Path, extra: dict[str, str] | None =
     environment = {**os.environ, 'GITHUB_WORKSPACE': str(workspace), **(extra or {})}
     for step in steps:
         print('OPlus method: ' + step.name, flush=True)
-        result = subprocess.run(['bash', '-euo', 'pipefail', '-c', step.script], cwd=workspace, env=environment)
+        diagnostic = ("trap 'oplus_failed=$?; printf \"OPlus build command failed at generated line %s (exit %s)\\n\" "
+                      '"$LINENO" "$oplus_failed" >&2; exit "$oplus_failed"\' ERR\n')
+        result = subprocess.run(['bash', '-euo', 'pipefail', '-c', diagnostic + step.script], cwd=workspace, env=environment)
         if result.returncode:
-            raise RecipeError('OPlus method step failed: ' + step.name)
+            raise RecipeError('OPlus method step failed: ' + step.name + f' (exit {result.returncode})')
 
 
 def execute_phase(phase: str, recipe_root: Path, profile: dict, inputs: dict, workspace: Path) -> None:

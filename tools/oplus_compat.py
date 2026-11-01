@@ -18,6 +18,8 @@ RTMUTEX_PATCH_SHA256 = '2dc6572a936f1acba139ccdb6daff6cacf709fcfc36f465f9e2b59f5
 BITCODE_COMMAND = '\t\t$(CC) $(CLANG_FLAGS) $(KBUILD_CFLAGS) -c $(patsubst %.o,%.m.bc,$@) -o $@)'
 BITCODE_FIXED = BITCODE_COMMAND.replace('$(KBUILD_CFLAGS)',
     '$(filter-out -fmacro-prefix-map=% -ffile-prefix-map=%,$(KBUILD_CFLAGS))')
+BITCODE_WARNING_COMMAND = BITCODE_COMMAND.replace(' -c ', ' -Wno-override-module -c ')
+BITCODE_WARNING_FIXED = BITCODE_FIXED.replace(' -c ', ' -Wno-override-module -c ')
 VENDOR_FEATURES = (
     ('drivers/soc/oplus/oplus_resctrl', 'drivers/soc/Kconfig', 'drivers/soc/Makefile',
      'oplus/oplus_resctrl/', 'obj-y', ('OPLUS_RESCTRL',),
@@ -308,10 +310,16 @@ def prepare_rust_bitcode(common: Path) -> bool:
         before = read_source(path)
         if marker not in before:
             continue
-        already = before.count(BITCODE_FIXED) == 1 and BITCODE_COMMAND not in before
-        expected = BITCODE_FIXED if already else BITCODE_COMMAND
-        if before.count(expected) != 1:
+        commands = [(original, fixed) for original, fixed in (
+            (BITCODE_COMMAND, BITCODE_FIXED), (BITCODE_WARNING_COMMAND, BITCODE_WARNING_FIXED))
+            if original in before or fixed in before]
+        if len(commands) != 1:
             raise ValueError('Review the official Rust inline-helper bitcode command before compiling')
+        original, fixed = commands[0]
+        if before.count(original) + before.count(fixed) != 1:
+            raise ValueError('Review the official Rust inline-helper bitcode command before compiling')
+        already = fixed in before
+        expected = fixed if already else original
         if relative == 'scripts/Makefile.build':
             # ashmem_rust.o and other native Rust drivers use this second
             # command, independently of the rust/kernel.o library command.
@@ -327,7 +335,7 @@ def prepare_rust_bitcode(common: Path) -> bool:
             continue
         # These flags concern source preprocessing. Keep the source C command,
         # debug maps, LLVM helper linking, ABI flags and -Werror unchanged.
-        updates[relative] = (before, before.replace(BITCODE_COMMAND, BITCODE_FIXED, 1))
+        updates[relative] = (before, before.replace(original, fixed, 1))
     return apply_checked_updates(common, updates)
 
 

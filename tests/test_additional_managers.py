@@ -5,7 +5,9 @@ import json
 import os
 from pathlib import Path
 import struct
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -157,6 +159,27 @@ class CombinedWorkflowTests(unittest.TestCase):
         for variant in LOCAL_MANAGERS:
             self.assertFalse(effective_susfs(variant, False))
             self.assertTrue(effective_susfs(variant, True))
+
+    def test_skipped_lkm_steps_always_have_parseable_environment_inputs(self):
+        from manager_lkm_jobs import KMIS
+        step = next(s for s in self.single['jobs']['prepare-matrix']['steps'] if s.get('id') == 'lkm-matrix')
+        for variant in MANAGERS:
+            for operation in ('编译内核', '仅编译管理器安装包'):
+                expression = step['if']
+                for key, value in (('github.event_name', 'workflow_dispatch'),
+                                   ('inputs.operation', operation), ('inputs.kernelsu_variant', variant)):
+                    expression = expression.replace(key, repr(value))
+                self.assertTrue(eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}))
+        body = step['run'].split("python3 - <<'PY'\n", 1)[1].split('\nPY', 1)[0]
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / 'outputs'
+            result = subprocess.run([sys.executable, '-c', body], cwd=ROOT,
+                                    env={**os.environ, 'GITHUB_OUTPUT': str(output)}, capture_output=True)
+            self.assertEqual(0, result.returncode, result.stderr.decode(errors='replace'))
+            matrix = json.loads(output.read_text(encoding='utf-8').strip().split('=', 1)[1])
+            self.assertEqual(len(KMIS), len(matrix['include']))
+            for index in range(len(KMIS)):
+                self.assertTrue(matrix['include'][index]['ddk_short'])
 
     def test_all_embedded_python_steps_compile(self):
         for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):

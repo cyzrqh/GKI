@@ -749,7 +749,10 @@ python3 -m unittest discover -s tests -p 'test_bakasu_kpm_port.py'
              'env': {'SUKISU_APK_KEYSTORE': '${{ secrets.SUKISU_APK_KEYSTORE }}',
                      'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}'},
              'run': 'python3 tools/export_manager_certificate.py --output "$RUNNER_TEMP/manager-public-certificate.json"'},
-            {'name': '选择官方镜像修补构建环境', 'id': 'lkm-matrix', 'if': PREPARE_IF + ' && ' + LOCAL_IF,
+            # Runner evaluates skipped steps' env before their if condition.
+            # Keep this tiny JSON available to the local-LKM cache key envs;
+            # additional managers still skip every actual LKM build/download.
+            {'name': '选择官方镜像修补构建环境', 'id': 'lkm-matrix', 'if': MANAGER_IF,
              'run': '''python3 - <<'PY'
 import json,os,pathlib,sys
 sys.path.insert(0,'tools')

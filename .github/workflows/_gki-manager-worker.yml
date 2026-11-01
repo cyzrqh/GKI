@@ -276,8 +276,9 @@ jobs:
       run: python3 tools/export_manager_certificate.py --output "$RUNNER_TEMP/manager-public-certificate.json"
     - name: 选择官方镜像修补构建环境
       id: lkm-matrix
-      if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && (inputs.kernelsu_variant
-        == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU')
+      if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((inputs.kernelsu_variant
+        == 'SukiSU' || inputs.kernelsu_variant == 'BakaSU') || (inputs.kernelsu_variant == 'KernelSU-Next' || inputs.kernelsu_variant
+        == 'KernelSU' || inputs.kernelsu_variant == 'KowSU' || inputs.kernelsu_variant == 'FinaSU'))
       run: |
         python3 - <<'PY'
         import json,os,pathlib,sys

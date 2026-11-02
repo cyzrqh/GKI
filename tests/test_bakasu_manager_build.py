@@ -198,6 +198,14 @@ class BakasuManagerArtifactTests(unittest.TestCase):
                           'manager_version_name': 'v4.2.0-rc3', 'manager_version_code': 35252}, actual)
         self.assertEqual(self.apath.read_bytes(), (self.output / 'manager-unsigned.apk').read_bytes())
 
+    def test_native_apk_in_a_release_output_subdirectory_is_found(self):
+        nested = self.release / 'universal'
+        nested.mkdir()
+        self.apath = self.apath.rename(nested / self.apath.name)
+        self.inspect_apk()
+        metadata = json.loads((self.output / 'manager-build-metadata.json').read_text('utf-8'))
+        self.assertEqual(self.apath.name, metadata['source_apk_filename'])
+
     def test_former_resukisu_official_filename_is_kept_without_rebranding(self):
         self.apath = self.apath.rename(self.release / self.apath.name.replace('BakaSU_', 'ReSukiSU_', 1))
         self.inspect_apk()

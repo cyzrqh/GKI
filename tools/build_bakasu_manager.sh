@@ -154,9 +154,10 @@ release, output = map(Path, sys.argv[1:3])
 source = release.parents[5]
 expected_abis = set(official_abis(source))
 apks = []
-for candidate in sorted(release.glob('*.apk')):
+for candidate in sorted(release.rglob('*.apk')):
     with zipfile.ZipFile(candidate) as archive:
         abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and name.count('/') >= 2}
+    print('Native release output: ' + str(candidate.relative_to(release)) + '; ABIs=' + ','.join(sorted(abis)))
     if abis == expected_abis:
         apks.append(candidate)
 if len(apks) != 1:

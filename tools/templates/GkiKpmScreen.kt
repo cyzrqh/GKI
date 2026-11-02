@@ -198,7 +198,10 @@ fun GkiKpmScreen() {
             })
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = { if (supported && !busy) showImport = true }) {
+            FloatingActionButton(
+                modifier = Modifier.padding(bottom = 88.dp),
+                onClick = { if (supported && !busy) showImport = true },
+            ) {
                 Icon(Icons.Filled.Add, contentDescription = "添加 KPM 模块")
             }
         },

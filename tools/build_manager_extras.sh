@@ -23,6 +23,8 @@ pattern = re.compile(r'\b(' + '|'.join(pointers) + r')\s*=\s*find_kernel_symbol_
 for path in kernel.rglob('*.c'):
     text = path.read_text(encoding='utf-8')
     updated = pattern.sub(lambda match: match[1] + ' = (typeof(' + match[1] + '))find_kernel_symbol_exact(', text)
+    updated = updated.replace('kallsyms_lookup_size_offset(seccomp_filter_release_sym,',
+                              'kallsyms_lookup_size_offset((unsigned long)seccomp_filter_release_sym,')
     if updated != text:
         path.write_text(updated, encoding='utf-8', newline='\n')
 header = kernel / 'compat/kernel_compat.h'

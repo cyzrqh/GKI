@@ -263,6 +263,10 @@ PY
   --expected-kmis "''' + ','.join(KMIS) + '''" --report "$RUNNER_TEMP/manager-lkm-stage.json"
 python3 tools/manager_full_native.py stage --source manager-source --directory manager-lkm \\
   --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
+if [ "$KSU_VARIANT" = FinaSU ]; then
+  python3 tools/fina_native_components.py stage --source manager-source --directory manager-lkm \\
+    --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
+fi
 '''},
             {'name': '配置 BakaSU 配套管理器签名提示',
              'if': "inputs.kernelsu_variant == 'BakaSU'",
@@ -314,6 +318,7 @@ rustup target add aarch64-linux-android --toolchain "$toolchain"
              'with': {'path': MANAGER_CARGO_CACHE,
                       'key': MANAGER_CARGO_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
                       'restore-keys': MANAGER_CARGO_CACHE_PREFIX + '\n'
+                          + "gki-manager-cargo-v3-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-\n"
                           + "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-"}},
             {'name': '编译管理器与同版本 ksud',
              'id': 'manager-build',
@@ -327,6 +332,7 @@ case "$KSU_VARIANT" in
   KernelSU-Next|KernelSU|KowSU|FinaSU) script=tools/build_additional_manager.sh ;;
   *) echo 'Unknown manager variant' >&2; exit 1 ;;
 esac
+python3 tools/manager_gradle_resources.py --source "$GITHUB_WORKSPACE/manager-source"
 bash -n "$script"
 bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
 '''},

@@ -28,13 +28,13 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
-import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -211,7 +211,7 @@ fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
     LaunchedEffect(Unit) { operation { refresh() } }
     Scaffold(
         topBar = {
-            LargeTopAppBar(title = { Text("KPM") }, actions = {
+            TopAppBar(title = { Text("KPM") }, actions = {
                 IconButton(enabled = !busy, onClick = { operation { refresh() } }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }

@@ -1,5 +1,6 @@
 """A canonical repack must never receive the permanent release signing key."""
 import io
+import argparse
 import os
 from pathlib import Path
 import tempfile
@@ -22,6 +23,9 @@ class FinaBuildBoundaryTests(unittest.TestCase):
                 self.assertNotIn('SUKISU_APK_PASSWORD', environment)
                 self.assertNotIn('ORG_GRADLE_PROJECT_KEYSTORE_PASSWORD', environment)
                 self.assertNotEqual('permanent-password', password)
+                parser = argparse.ArgumentParser()
+                parser.add_argument('-P', required=True)
+                self.assertEqual(password, parser.parse_args(['-P', password]).P)
                 key.write_bytes(b'disposable-key-fixture')
                 observed['key'] = key
 
@@ -33,7 +37,7 @@ class FinaBuildBoundaryTests(unittest.TestCase):
                     self.assertions()
                     return self
                 def assertions(self):
-                    self_test.assertEqual(['nomount', 'sui', 'ksuinit', 'ksud', 'apk', 'repack'], self.args[2:])
+                    self_test.assertEqual(['nomount', 'sui', 'apk'], self.args[2:])
                     env = self.options['env']
                     self_test.assertNotIn('SUKISU_APK_KEYSTORE', env)
                     self_test.assertNotIn('SUKISU_APK_PASSWORD', env)
@@ -48,6 +52,9 @@ class FinaBuildBoundaryTests(unittest.TestCase):
             environment = {'RUNNER_TEMP': str(root), 'SUKISU_APK_KEYSTORE': 'permanent-private-key',
                 'SUKISU_APK_PASSWORD': 'permanent-password', 'ORG_GRADLE_PROJECT_KEYSTORE_PASSWORD': 'permanent-password'}
             with patch.dict(os.environ, environment), patch.object(builder, 'prepare'), \
+                    patch.object(builder, 'official_abis', return_value=('arm64-v8a', 'x86_64', 'riscv64')), \
+                    patch.object(builder, 'verify_staged', return_value=False), \
+                    patch.object(builder.subprocess, 'check_output', return_value=b'0123456789abcdef0123456789abcdef01234567\n'), \
                     patch.object(builder, 'generate_build_key', side_effect=generate), \
                     patch.object(builder.subprocess, 'Popen', FailedNativeBuild):
                 with self.assertRaisesRegex(ValueError, 'canonical native build'):

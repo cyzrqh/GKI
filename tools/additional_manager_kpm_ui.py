@@ -22,6 +22,18 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
     namespace = re.search(r'^package (\S+)\.ui$', read(main), re.M)[1]
     java = 'manager/app/src/main/java/' + namespace.replace('.', '/')
     template = (ROOT / 'tools/templates/GkiKpmScreen.kt').read_text(encoding='utf-8')
+    cli = read(java + '/ui/util/KsuCli.kt')
+    if not re.search(r'\bfun\s+getRootShell\s*\(', cli):
+        if not re.search(r'\bfun\s+createRootShell\s*\(', cli):
+            raise ValueError('Review the native manager root-shell API before adding KPM')
+        # Next creates a new native shell, whereas official/Kow cache theirs.
+        # Use Next's real API and always release this short-lived shell.
+        template = replace_one(template, 'ui.util.getRootShell', 'ui.util.createRootShell')
+        template = replace_one(template, '        val shell = getRootShell()\n',
+                               '        val shell = createRootShell()\n        try {\n')
+        end = '        result.out.joinToString("\\n").also { check(it.toByteArray().size <= 16384) }\n'
+        template = replace_one(template, end,
+                               end + '        } finally {\n            shell.close()\n        }\n')
     put(java + '/ui/kpm/GkiKpmScreen.kt', template.replace('__NAMESPACE__', namespace))
     name = 'manager/app/src/main/res/values/strings.xml'
     put(name, replace_one(read(name), '</resources>', '    <string name="gki_kpm_title">KPM</string>\n</resources>'))

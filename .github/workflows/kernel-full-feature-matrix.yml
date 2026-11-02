@@ -7759,7 +7759,7 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.max_parallel }}
+      max-parallel: ${{ fromJSON(format('{0}', inputs.max_parallel)) }}
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.kernel_primary) }}
   publish-release:
     name: 核验与发行 · ${{ matrix.variant }}
@@ -7919,7 +7919,7 @@ jobs:
       actions: read
     strategy:
       fail-fast: false
-      max-parallel: ${{ inputs.max_parallel }}
+      max-parallel: ${{ fromJSON(format('{0}', inputs.max_parallel)) }}
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.kernel_overflow) }}
   build-checksums:
     name: 汇总已成功构建文件的校验清单

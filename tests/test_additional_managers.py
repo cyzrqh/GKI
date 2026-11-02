@@ -156,6 +156,10 @@ class CombinedWorkflowTests(unittest.TestCase):
             download = next(s for s in publisher['steps'] if s.get('uses') == 'actions/download-artifact@v8')
             self.assertIn('matrix.variant', download['with']['pattern'])
             self.assertEqual(1, download['with']['pattern'].count('${{'))
+            if not oplus:
+                for key in (kernel, kernel + '-overflow'):
+                    self.assertEqual("${{ fromJSON(format('{0}', inputs.max_parallel)) }}",
+                                     document['jobs'][key]['strategy']['max-parallel'])
 
     def test_kow_and_fina_capabilities_do_not_change_suki_and_baka(self):
         self.assertTrue(effective_susfs('KowSU', True))

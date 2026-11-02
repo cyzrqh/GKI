@@ -92,7 +92,7 @@ def add_combined(workflow, *, oplus):
     kernel['if'] = kernel_gate
     kernel['strategy']['matrix'] = '${{ fromJSON(needs.prepare-matrix.outputs.kernel_primary) }}'
     if not oplus:
-        kernel['strategy']['max-parallel'] = '${{ inputs.max_parallel }}'
+        kernel['strategy']['max-parallel'] = "${{ fromJSON(format('{0}', inputs.max_parallel)) }}"
     if oplus:
         profile = next(s for s in kernel['steps'] if 'OPLUS_PROFILE' in s.get('env', {}))
         before = "profile = profile_identity(strict_json(os.environ['OPLUS_PROFILE'].encode()))"

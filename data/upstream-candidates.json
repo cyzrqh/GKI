@@ -27,7 +27,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "48501dadfbe627798b8da78a52cf029ec3e84e18",
+      "head": "a6c81fa4a8b7341d0bc5c3e4507531459df871ae",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -139,11 +139,11 @@
       "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/68f62fae75ada3959f816841a3c64299383521ed"
     },
     {
-      "candidate": "48501dadfbe627798b8da78a52cf029ec3e84e18",
+      "candidate": "a6c81fa4a8b7341d0bc5c3e4507531459df871ae",
       "current": "",
       "ref": "dev",
       "source": "KernelSU-Next",
-      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/48501dadfbe627798b8da78a52cf029ec3e84e18"
+      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/a6c81fa4a8b7341d0bc5c3e4507531459df871ae"
     },
     {
       "candidate": "4c706b5938665866ebe16944a481a7b91e3396af",
@@ -217,7 +217,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "48501dadfbe627798b8da78a52cf029ec3e84e18",
+      "head": "a6c81fa4a8b7341d0bc5c3e4507531459df871ae",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"

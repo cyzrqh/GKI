@@ -9,6 +9,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -85,6 +86,11 @@ def source_plan(source: Path, reference: str, variant: str, *, composed: bool = 
         if name in tree:
             raise ValueError('An upstream KPM implementation now exists; review it before porting')
         write(name, templates[name].replace('GKI_BAKASU_KPM_PORT_V1', 'GKI_ADDITIONAL_KPM_V1'))
+    # Debug-only native version logs can disappear from release modules. Bind
+    # the full selected source in standard, retained module metadata instead.
+    name = 'kernel/kpm/kpm.c'
+    write(name, '#include <linux/module.h>\n' + plan[name].decode('utf-8')
+          + '\nMODULE_INFO(gki_source_revision, "' + reference + '");\n')
 
     name = 'kernel/Kbuild'
     write(name, replace_one(read(name), 'kernelsu-objs += policy/feature.o',
@@ -256,10 +262,21 @@ def with_susfs(source: Path, variant: str, apply_susfs) -> None:
     plan = source_plan(source, reference, variant)
     selected = {name: data for name, data in plan.items() if name.startswith(('kernel/', 'uapi/'))}
     verify(source, reference, variant, scopes=('kernel', 'uapi'))
+    def native_link(path: Path) -> bool:
+        # This is an actual upstream Git symlink, not an injected path. Do not
+        # follow it while taking the rollback snapshot or rewrite its target.
+        relative = path.relative_to(source).as_posix()
+        return (relative == 'kernel/include/uapi' and os.readlink(path) == '../../uapi'
+                and git(source, 'show', reference + ':' + relative) == b'../../uapi'
+                and git(source, 'ls-tree', reference, '--', relative).startswith(b'120000 blob ')
+                and path.resolve(strict=True) == (source / 'uapi').resolve(strict=True)
+                and (source / 'uapi').is_dir() and not (source / 'uapi').is_symlink())
     before = {}
     for tree in ('kernel', 'uapi'):
         for path in (source / tree).rglob('*'):
             if path.is_symlink():
+                if native_link(path):
+                    continue
                 raise ValueError('Refusing linked source while composing native ports')
             if path.is_file():
                 if path.stat().st_size > 4 * 1024 * 1024:
@@ -283,6 +300,8 @@ def with_susfs(source: Path, variant: str, apply_susfs) -> None:
     except BaseException:
         for tree in ('kernel', 'uapi'):
             for path in (source / tree).rglob('*'):
+                if path.is_symlink():
+                    continue
                 if path.is_file() and str(path.relative_to(source)).replace('\\', '/') not in before:
                     path.unlink()
         for name, data in before.items():

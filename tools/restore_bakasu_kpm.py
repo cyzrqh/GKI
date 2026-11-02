@@ -477,6 +477,8 @@ def receipt_for(reference: str, tree: str, manifest: dict, before: dict, after: 
 
 def check_applied(source: Path, before: dict, after: dict, scope: tuple[str, ...]) -> None:
     for name, data in after.items():
+        if not any(name == prefix or name.startswith(prefix + '/') for prefix in scope):
+            continue
         if regular(safe_path(source, name), MAX_FILE) != data:
             raise KpmPortError('BakaSU KPM source differs from its exact audited port: ' + name)
     expected = {name for name in after if before[name] != after[name]
@@ -501,10 +503,14 @@ def verify_bakasu_kpm_port(source: Path, reference: str, *, scope=None) -> dict:
     expected = receipt_for(reference, tree, manifest, before, after)
     if json.dumps(receipt, sort_keys=True) != json.dumps(expected, sort_keys=True):
         raise KpmPortError('BakaSU KPM receipt differs from the actual frozen source and port')
-    check_applied(source, before, after, scopes(scope))
+    selected_scope = scopes(scope)
+    check_applied(source, before, after, selected_scope)
+    selected_after = {name: data for name, data in after.items()
+                      if any(name == prefix or name.startswith(prefix + '/') for prefix in selected_scope)}
+    selected_before = {name: before[name] for name in selected_after}
     with temporary_directory(source.parent, '.bakasu-kpm-reverse-') as scratch:
         prepared = scratch / 'reviewed.patch'
-        prepared.write_bytes(materialized_patch(before, after))
+        prepared.write_bytes(materialized_patch(selected_before, selected_after))
         git(source, 'apply', '--reverse', '--check', str(prepared))
     return expected
 

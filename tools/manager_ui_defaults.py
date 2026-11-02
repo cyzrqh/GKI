@@ -18,7 +18,9 @@ def plan_defaults(source: Path, variant: str) -> dict[Path, str]:
     for path in java.rglob('*.kt'):
         if path.is_symlink() or path.stat().st_size > 2 * 1024 * 1024:
             raise ValueError('Unsafe native manager source input')
-        original = path.read_text(encoding='utf-8')
+        # Some official revisions contain damaged UTF-8 in comments. Preserve
+        # those exact bytes while editing only the recognized ASCII settings.
+        original = path.read_text(encoding='utf-8', errors='surrogateescape')
         text = original
         # BakaSU migrated module preferences from the manager preference.
         # Decouple that legacy fallback BEFORE changing manager defaults, so
@@ -60,7 +62,7 @@ def plan_defaults(source: Path, variant: str) -> dict[Path, str]:
 def apply_defaults(source: Path, variant: str) -> list[str]:
     changes = plan_defaults(source, variant)
     for path, text in changes.items():
-        path.write_text(text, encoding='utf-8', newline='\n')
+        path.write_text(text, encoding='utf-8', errors='surrogateescape', newline='\n')
     return [str(path.relative_to(source)).replace('\\', '/') for path in changes]
 
 

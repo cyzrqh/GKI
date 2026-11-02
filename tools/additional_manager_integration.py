@@ -178,7 +178,7 @@ def resolve_policy_sid_addition(source: Path, *, reverse: bool = False) -> bool:
     """
     relative = 'kernel/selinux/rules.c'
     paths = git(source, 'diff', '--name-only', '--diff-filter=U').splitlines()
-    if paths != [relative]:
+    if relative not in paths:
         return False
     path = source / relative
     if path.is_symlink() or not path.is_file():

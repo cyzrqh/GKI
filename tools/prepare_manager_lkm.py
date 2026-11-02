@@ -343,6 +343,9 @@ def inspect_module(path: Path, kmi: str, identity: dict, reference: str) -> dict
             fields.setdefault(key, []).append(value)
     if fields.get(b"name") != [b"kernelsu"] or len(fields.get(b"vermagic", [])) != 1:
         raise LkmError("LKM .modinfo must identify kernelsu and one vermagic")
+    if selected_variant() in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+        if fields.get(b'gki_source_revision') != [reference.encode('ascii')]:
+            raise LkmError('LKM module metadata does not bind the complete selected source revision; rebuild this module')
     try:
         vermagic = fields[b"vermagic"][0].decode("ascii")
     except UnicodeError as error:

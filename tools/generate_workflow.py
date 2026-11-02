@@ -742,6 +742,7 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
 command -v cc >/dev/null
 python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
 python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
+python3 -m unittest discover -s tests -p 'test_manager_feature_config.py'
 '''},
             {'name': '验证共享源码还原及原生符号接口',
              'if': BUILD_IF,

@@ -4,7 +4,7 @@ from __future__ import annotations
 import copy
 
 from additional_manager_jobs import ALL_IF, LOCAL_IF, ADDITIONAL_IF
-from manager_variants import MANAGER_SELECTIONS
+from manager_variants import MANAGER_SELECTIONS, MANAGERS
 
 RECEIPT = '${{ needs.build-sukisu-manager.outputs.manager_metadata }}'
 EFFECTIVE_SUSFS = 'inputs.enable_susfs'
@@ -46,6 +46,13 @@ def extend_gki(workflow: dict) -> dict:
                            '  *) echo "Unsupported paired manager" >&2; exit 1 ;;\nesac\n')
         if step.get('name') == '配对管理器包名与签名':
             step['if'] = LOCAL_IF
+        if step.get('name') == '配置内核选项':
+            variable = '${{ inputs.kernelsu_variant }}'
+            old_guard = '[ "' + variable + '" == "SukiSU" ] || [ "' + variable + '" == "BakaSU" ]'
+            if step['run'].count(old_guard) != 4:
+                raise ValueError('Review the native KPM/SUSFS feature configuration guards')
+            full_guard = ' || '.join('[ "' + variable + '" == "' + value + '" ]' for value in MANAGERS)
+            step['run'] = step['run'].replace(old_guard, full_guard)
         if step.get('name') in ('注入 SukiSU/BakaSU KPM Kconfig',
                                  '编译前核实官方 KPM 工具及真实载荷',
                                  '应用 KPM 补丁 (SukiSU/BakaSU)'):

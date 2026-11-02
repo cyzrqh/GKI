@@ -232,6 +232,7 @@ jobs:
         command -v cc >/dev/null
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
         python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
+        python3 -m unittest discover -s tests -p 'test_manager_feature_config.py'
     - name: 验证共享源码还原及原生符号接口
       if: github.event_name == 'workflow_dispatch' && inputs.operation == '编译内核'
       run: |
@@ -4551,7 +4552,7 @@ jobs:
         fi
 
         kpm_config_supported="false"
-        if [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; then
+        if [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU-Next" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU" ] || [ "${{ env.KSU_VARIANT }}" == "KowSU" ] || [ "${{ env.KSU_VARIANT }}" == "FinaSU" ]; then
           if [ "$kpm_kconfig_ready" = "true" ] && [ -f "$kpm_kconfig_path" ]; then
             kpm_config_supported="true"
           else
@@ -4564,7 +4565,7 @@ jobs:
           fi
         fi
 
-        if [ "${{ inputs.use_kpm }}" == "true" ] && ! feature_disabled kpm && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; }; then
+        if [ "${{ inputs.use_kpm }}" == "true" ] && ! feature_disabled kpm && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU-Next" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU" ] || [ "${{ env.KSU_VARIANT }}" == "KowSU" ] || [ "${{ env.KSU_VARIANT }}" == "FinaSU" ]; }; then
           if [ "$kpm_config_supported" = "true" ]; then
             echo "CONFIG_KPM=y" >> "$DEFCONFIG"
             case "$kpm_kconfig_status" in
@@ -4582,14 +4583,14 @@ jobs:
             echo "::error::请求启用 KPM，但当前 ${{ env.KSU_VARIANT }} 源码树仍未提供 config KPM。"
             exit 1
           fi
-        elif [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; then
+        elif [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU-Next" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU" ] || [ "${{ env.KSU_VARIANT }}" == "KowSU" ] || [ "${{ env.KSU_VARIANT }}" == "FinaSU" ]; then
           if [ "$kpm_config_supported" = "true" ]; then
             echo "# CONFIG_KPM is not set" >> "$DEFCONFIG"
             echo "检测到 KPM Kconfig，已显式关闭 CONFIG_KPM。"
           fi
         fi
 
-        if [ "${{ inputs.enable_susfs }}" != "true" ] && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ]; }; then
+        if [ "${{ inputs.enable_susfs }}" != "true" ] && { [ "${{ env.KSU_VARIANT }}" == "SukiSU" ] || [ "${{ env.KSU_VARIANT }}" == "BakaSU" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU-Next" ] || [ "${{ env.KSU_VARIANT }}" == "KernelSU" ] || [ "${{ env.KSU_VARIANT }}" == "KowSU" ] || [ "${{ env.KSU_VARIANT }}" == "FinaSU" ]; }; then
           cat >> "$DEFCONFIG" << 'EOF'
         # CONFIG_KSU_SUSFS is not set
         # CONFIG_KSU_SUSFS_SUS_PATH is not set

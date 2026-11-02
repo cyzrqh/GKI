@@ -99,6 +99,8 @@ pattern = re.compile(r'\babiFilters\s*\+=\s*listOf\(([^)]*)\)')
 matches = list(pattern.finditer(text))
 splits = list(re.finditer(r'\binclude\(([^)]*)\)', text))
 if (len(matches) != 1 or len(splits) != 1 or text.count('isUniversalApk = true') != 1
+        or len(re.findall(r'(?m)^\s*splits\s*\{', text)) != 1
+        or text.count('isEnable = isReleaseTask') != 1
         or set(re.findall(r'"([A-Za-z0-9_-]+)"', matches[0][1]))
            != set(re.findall(r'"([A-Za-z0-9_-]+)"', splits[0][1]))):
     raise SystemExit('Review the original BakaSU full-ABI split configuration.')

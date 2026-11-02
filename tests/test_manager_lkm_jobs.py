@@ -27,9 +27,12 @@ def github_exact_file_hash(root: Path, paths: list[str]) -> str:
     No wildcard/ancestor traversal is involved in these two production inputs.
     """
     combined, matches = hashlib.sha256(), 0
+    seen = set()
     for relative in dict.fromkeys(paths):
-        path = root / relative
-        if path.is_file():
+        for path in sorted(root.glob(relative)):
+            if not path.is_file() or path in seen:
+                continue
+            seen.add(path)
             combined.update(hashlib.sha256(path.read_bytes()).digest())
             matches += 1
     return combined.hexdigest() if matches else ''
@@ -46,6 +49,9 @@ def render_key(template, *, root=ROOT, **changes):
     values.update(changes)
     def replace(match):
         expression = match[1].strip()
+        native = re.fullmatch(r"format\('-native-\{0\}', hashFiles\((.*?)\)\)", expression)
+        if native:
+            return '-native-' + github_exact_file_hash(Path(root), re.findall(r"'([^']+)'", native[1]))
         port = re.fullmatch(r"inputs\.kernelsu_variant == 'BakaSU' && "
                             r"format\('-kpm-\{0\}', hashFiles\((.*?)\)\) \|\| ''", expression)
         if port:
@@ -107,6 +113,9 @@ class ManagerLkmJobTests(unittest.TestCase):
     def setUp(self):
         self.directory = ROOT / 'tests' / ('.lkm-jobs-' + uuid.uuid4().hex)
         (self.directory / 'config').mkdir(parents=True)
+        (self.directory / 'tools').mkdir()
+        for name in ('build_manager_extras.sh', 'build_manager_extras_container.sh', 'manager_full_native.py'):
+            shutil.copyfile(ROOT / 'tools' / name, self.directory / 'tools' / name)
         self.addCleanup(shutil.rmtree, self.directory)
         self.lock = {'schema_version': 1, 'images': [
             {'kmi': kmi, 'tag': f'ghcr.io/ylarod/ddk-min:{kmi}-20260828',
@@ -173,7 +182,7 @@ class ManagerLkmJobTests(unittest.TestCase):
     def test_cache_key_matches_fixed_consumer_and_changes_with_every_native_identity(self):
         template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
         baseline = render_key(template)
-        self.assertTrue(baseline.startswith('gki-sukisu-lkm-v2-'))
+        self.assertTrue(baseline.startswith('gki-sukisu-lkm-v3-full-'))
         fixed = jobs.lkm_cache_key("'android12-5.10'", "'" + 'c' * 16 + "'")
         self.assertEqual(baseline, render_key(fixed))
         self.assertLess(len(baseline), 512)
@@ -191,12 +200,12 @@ class ManagerLkmJobTests(unittest.TestCase):
             with self.assertRaises(ValueError):
                 jobs.lkm_cache_key(bad, 'matrix.ddk_short')
 
-    def test_sukisu_keys_remain_byte_for_byte_identical_to_the_existing_v2_identity(self):
+    def test_full_sukisu_cache_requires_native_builder_identity_without_a_baka_port(self):
         template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
-        expected = ('gki-sukisu-lkm-v2-Linux-X64-' + 'a' * 40 + '-com.sukisu.ultra-730-'
+        expected = ('gki-sukisu-lkm-v3-full-Linux-X64-' + 'a' * 40 + '-com.sukisu.ultra-730-'
                     + 'b' * 64 + '-android12-5.10-' + 'c' * 16)
-        with patch(__name__ + '.github_exact_file_hash', side_effect=AssertionError('Suki must not hash a Baka port')):
-            self.assertEqual(expected, render_key(template))
+        native = github_exact_file_hash(ROOT, ['tools/build_manager_extras*.sh', 'tools/manager_full_native.py'])
+        self.assertEqual(expected + '-native-' + native, render_key(template))
 
     def test_bakasu_port_bytes_invalidate_its_old_cache_without_changing_source_or_cert(self):
         patch_file = self.directory / 'tools/patches/bakasu-kpm.patch'
@@ -208,12 +217,13 @@ class ManagerLkmJobTests(unittest.TestCase):
                     'needs.prepare-matrix.outputs.manager_package': 'com.resukisu.resukisu'}
         template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
         fixed = jobs.lkm_cache_key("'android12-5.10'", "'" + 'c' * 16 + "'")
-        old = ('gki-sukisu-lkm-v2-Linux-X64-' + 'a' * 40 + '-com.resukisu.resukisu-730-'
+        old = ('gki-sukisu-lkm-v3-full-Linux-X64-' + 'a' * 40 + '-com.resukisu.resukisu-730-'
                + 'b' * 64 + '-android12-5.10-' + 'c' * 16)
         digest = hashlib.sha256(hashlib.sha256(patch_file.read_bytes()).digest()
                                 + hashlib.sha256(port_lock.read_bytes()).digest()).hexdigest()
         baseline = render_key(template, root=self.directory, **identity)
-        self.assertEqual(old + '-kpm-' + digest, baseline)
+        native = github_exact_file_hash(ROOT, ['tools/build_manager_extras*.sh', 'tools/manager_full_native.py'])
+        self.assertEqual(old + '-native-' + native + '-kpm-' + digest, baseline)
         self.assertEqual(baseline, render_key(fixed, root=self.directory, **identity))
         self.assertNotEqual(old, baseline)
         for path in (patch_file, port_lock):

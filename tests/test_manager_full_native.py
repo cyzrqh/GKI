@@ -14,6 +14,10 @@ from prepare_manager_lkm import locked_ddk
 
 
 class FullNativeTests(unittest.TestCase):
+    def test_container_drivers_use_linux_line_endings(self):
+        for path in (ROOT / 'tools').glob('build_manager_*.sh'):
+            self.assertNotIn(b'\r', path.read_bytes(), str(path))
+
     def setUp(self):
         self.fixture = fixtures.ManagerLkmTests()
         self.fixture.setUp()

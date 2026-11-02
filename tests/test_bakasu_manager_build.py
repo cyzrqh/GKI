@@ -75,30 +75,25 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
         return subprocess.run([sys.executable, '-c', self.transform, str(self.gradle)],
                               capture_output=True, text=True, check=False)
 
-    def test_one_unsigned_arm64_split_keeps_original_version_and_filename_definition(self):
+    def test_unsigned_universal_apk_keeps_original_version_and_all_splits(self):
         result = self.transform_source(self.source)
         self.assertEqual(0, result.returncode, result.stderr)
         output = self.gradle.read_text(encoding='utf-8')
-        self.assertIn('abiFilters.clear()', output)
-        self.assertNotIn('abiFilters +=', output)
-        self.assertIn('include("arm64-v8a")', output)
-        self.assertIn('isUniversalApk = false', output)
-        self.assertNotIn('x86_64', output)
+        self.assertIn('if (!isReleaseTask) { abiFilters +=', output)
+        self.assertIn('include("arm64-v8a", "x86_64", "armeabi-v7a", "riscv64")', output)
+        self.assertIn('isUniversalApk = true', output)
         self.assertNotIn('lsplugin.apksign', output)
         self.assertNotIn('KEYSTORE_FILE', output)
         self.assertEqual(1, output.count('signingConfig = null'))
         self.assertIn('archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode")', output)
 
-    def test_default_ndk_filters_are_empty_while_the_only_apk_split_is_arm64(self):
+    def test_release_uses_original_splits_and_debug_keeps_original_ndk_filters(self):
         result = self.transform_source(self.source)
         self.assertEqual(0, result.returncode, result.stderr)
         output = self.gradle.read_text(encoding='utf-8')
-        self.assertEqual(1, output.count('abiFilters.clear()'))
-        self.assertNotRegex(output, r'abiFilters\s*(?:\+=|=|\.add)')
-        self.assertEqual(1, output.count('include("arm64-v8a")'))
-        self.assertEqual(1, output.count('isUniversalApk = false'))
-        self.assertNotIn('isUniversalApk = true', output)
-        self.assertNotIn('include("x86_64"', output)
+        self.assertEqual(1, output.count('if (!isReleaseTask) { abiFilters +='))
+        original_splits = self.source[self.source.index('    splits {'):]
+        self.assertIn(original_splits, output)
 
     def test_unknown_signing_or_split_layout_is_rejected_without_partial_rewrite(self):
         for source in (self.source.replace('KEY_PASSWORD', 'UNKNOWN_PASSWORD'),
@@ -115,9 +110,7 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
     def test_separate_crates_use_nightly_and_the_same_package_in_daemon_and_apk(self):
         self.assertIn('export KSU_PACKAGE_NAME=com.resukisu.resukisu', SCRIPT)
         self.assertIn('assembleRelease -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"', SCRIPT)
-        self.assertIn('cargo +nightly build --locked --manifest-path userspace/ksuinit/Cargo.toml', SCRIPT)
-        self.assertIn('cargo +nightly clean --manifest-path userspace/ksud/Cargo.toml -p ksud', SCRIPT)
-        self.assertIn('cargo +nightly build --locked --target aarch64-linux-android --release --manifest-path userspace/ksud/Cargo.toml', SCRIPT)
+        self.assertIn('bash "$build_tools/build_manager_native.sh" "$source_dir"', SCRIPT)
         self.assertNotIn('for required in Cargo.toml', SCRIPT)
         self.assertNotIn('curl ', SCRIPT)
         self.assertNotIn('wget ', SCRIPT)
@@ -125,20 +118,14 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
     def test_native_rust_uses_r29_in_a_subshell_and_leaves_gradle_ndk_unchanged(self):
         self.assertIn('native_ndk_dir="$ANDROID_HOME/ndk/29.0.14206865"', SCRIPT)
         self.assertIn('[ -d "$native_ndk_dir" ]', SCRIPT)
-        native_start = SCRIPT.index('(\nexport ANDROID_NDK_HOME="$native_ndk_dir"\n')
-        native_end = SCRIPT.index('\n)\n\ncd "$manager_dir"', native_start)
-        native = SCRIPT[native_start:native_end]
-        self.assertIn('export ANDROID_NDK_ROOT="$native_ndk_dir"', native)
-        helper = 'source .github/scripts/setup-rust-build.sh aarch64-linux-android 26'
-        self.assertEqual(1, SCRIPT.count(helper))
-        self.assertIn(helper, native)
-        self.assertLess(native.index('export ANDROID_NDK_HOME='), native.index(helper))
-        self.assertIn('builtins="$("$CLANG_PATH" --print-resource-dir)', native)
-        self.assertIn('cargo +nightly build --locked --manifest-path userspace/ksuinit/Cargo.toml', native)
+        native = (ROOT / 'tools/build_manager_native.sh').read_text(encoding='utf-8')
+        self.assertIn('    # Keep NDK/compiler variables local', native)
+        self.assertIn('export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"', native)
+        self.assertIn('cargo_cmd=(cargo +nightly)', native)
         self.assertIn('--manifest-path userspace/ksud/Cargo.toml', native)
-        self.assertIn('cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"', native)
+        self.assertIn('jniLibs/$abi/libksud.so', native)
         self.assertNotIn('bash ./gradlew', native)
-        gradle = SCRIPT[native_end:]
+        gradle = SCRIPT[SCRIPT.index('bash "$build_tools/build_manager_native.sh"'):]
         self.assertIn('bash ./gradlew', gradle)
         self.assertNotIn('export ANDROID_NDK_HOME=', gradle)
         self.assertNotIn('export ANDROID_NDK_ROOT=', gradle)
@@ -169,7 +156,7 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
 class BakasuManagerArtifactTests(unittest.TestCase):
     def setUp(self):
         self.directory = ROOT / 'tests' / ('.bakasu-artifact-' + uuid.uuid4().hex)
-        self.release = self.directory / 'release'
+        self.release = self.directory / 'manager/app/build/outputs/apk/release'
         self.output = self.directory / 'output'
         self.release.mkdir(parents=True)
         self.output.mkdir()
@@ -197,6 +184,8 @@ class BakasuManagerArtifactTests(unittest.TestCase):
         result = subprocess.CompletedProcess(['aapt2'], 0, stdout=self.badging if badging is None else badging, stderr='')
         with patch.dict(os.environ, {'ANDROID_HOME': str(self.sdk)}), \
                 patch.object(sys, 'argv', ['-', str(self.release), str(self.output), str(ROOT / 'tools')]), \
+                patch('manager_full_native.official_abis', return_value=('arm64-v8a',)), \
+                patch('manager_full_native.verify_apk'), \
                 patch.object(subprocess, 'run', return_value=result), contextlib.redirect_stdout(io.StringIO()):
             exec(compile(self.inspect, 'build_bakasu_manager.sh:artifact-check', 'exec'), {})
 

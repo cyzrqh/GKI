@@ -105,6 +105,14 @@ if (len(matches) != 1 or len(splits) != 1 or text.count('isUniversalApk = true')
            != set(re.findall(r'"([A-Za-z0-9_-]+)"', splits[0][1]))):
     raise SystemExit('Review the original BakaSU full-ABI split configuration.')
 text = pattern.sub(lambda m: 'if (!isReleaseTask) { ' + m[0] + ' }', text, count=1)
+# Without defaultConfig NDK filters AGP also puts dependency-only x86 JNI
+# libraries in the universal APK. Apply the original ABI selection to native
+# packaging as well, retaining all four source-declared architectures.
+declared = set(re.findall(r'"([A-Za-z0-9_-]+)"', matches[0][1]))
+undeclared = sorted({'armeabi', 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64', 'riscv64', 'mips', 'mips64'} - declared)
+if undeclared:
+    excludes = ', '.join('"**/' + abi + '/**"' for abi in undeclared)
+    text += '\nandroid { packaging { jniLibs { excludes += setOf(' + excludes + ') } } }\n'
 # The upstream signing plugin falls back to the shared debug key when no
 # keystore is present. Remove only its known declaration/configuration so the
 # release remains unsigned until the separate private signing step.

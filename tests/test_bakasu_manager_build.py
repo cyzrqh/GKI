@@ -86,6 +86,9 @@ base { archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode") }
         self.assertNotIn('KEYSTORE_FILE', output)
         self.assertEqual(1, output.count('signingConfig = null'))
         self.assertIn('archivesName.set("BakaSU_${managerVersionName}_$managerVersionCode")', output)
+        self.assertIn('"**/x86/**"', output)
+        for selected in ('arm64-v8a', 'x86_64', 'armeabi-v7a', 'riscv64'):
+            self.assertNotIn('"**/' + selected + '/**"', output)
 
     def test_release_uses_original_splits_and_debug_keeps_original_ndk_filters(self):
         result = self.transform_source(self.source)

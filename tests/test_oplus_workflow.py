@@ -174,7 +174,7 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertFalse(worker['strategy']['fail-fast'])
         self.assertIn("startsWith(matrix.platform, 'mt') && '天玑' || '骁龙'", worker['name'])
         self.assertNotIn('matrix.platform }}', worker['name'])
-        self.assertEqual(worker['strategy']['max-parallel'], 20)
+        self.assertEqual(worker['strategy']['max-parallel'], 40)
 
     def test_native_dependency_and_filemap_behavior_tests_precede_source_preparation(self):
         steps = self.document['jobs']['prepare-matrix']['steps']

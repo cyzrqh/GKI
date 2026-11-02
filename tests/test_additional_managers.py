@@ -134,7 +134,7 @@ class CombinedWorkflowTests(unittest.TestCase):
         for key in ('use_bbg', 'use_ddk', 'use_ntsync', 'use_networking'):
             self.assertFalse(current[key]['default'])
 
-    def test_combo_uses_three_isolated_matrices_and_all_success_release_gate(self):
+    def test_selected_managers_share_one_pipeline_with_isolated_output_names(self):
         for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):
             document, worker = add_combined(single, oplus=oplus)
             calls = [job for job in document['jobs'].values() if 'uses' in job]
@@ -142,21 +142,20 @@ class CombinedWorkflowTests(unittest.TestCase):
             self.assertIsNone(worker)
             self.assertEqual({'workflow_dispatch'}, set(document['on']))
             kernel = 'build-oplus-kernel' if oplus else 'build-kernel'
-            for caller, variant in zip(('combo-sukisu', 'combo-bakasu', 'combo-next'), COMBINED_MANAGERS):
-                for suffix in ('prepare', 'lkm', 'manager', 'kernel'):
-                    name = document['jobs'][caller + '-' + suffix]['name']
-                    self.assertTrue(name.startswith('联合构建 · ' + variant + ' · '))
-                    self.assertNotIn("${{ '" + variant + "' }}", name)
-                self.assertEqual('true', document['jobs'][caller + '-kernel']['env']['GKI_COMBINED_WORKER'])
-                self.assertEqual([caller + '-prepare', caller + '-lkm', caller + '-manager', caller + '-kernel'],
-                                 document['jobs'][caller]['needs'])
-                self.assertIs(document['jobs'][kernel]['steps'], document['jobs'][caller + '-kernel']['steps'])
-            for key, job in document['jobs'].items():
-                if key.startswith('publish-combo-'):
-                    self.assertEqual(3, len(job['needs']))
-                    self.assertEqual(3, job['if'].count(".result == 'success'"))
-                    download = next(s for s in job['steps'] if s.get('uses') == 'actions/download-artifact@v8')
-                    self.assertIn('-' + job['name'].split()[-1] + '-AnyKernel3.zip', download['with']['pattern'])
+            self.assertEqual(7, len(document['jobs']))
+            self.assertFalse(any('combo-' in key for key in document['jobs']))
+            for variant in MANAGERS:
+                self.assertIn(variant + '_ksu_ref', document['jobs']['prepare-matrix']['outputs'])
+                self.assertIn(variant + '_apk_filename', document['jobs']['build-sukisu-manager']['outputs'])
+            self.assertIs(document['jobs'][kernel]['steps'], document['jobs'][kernel + '-overflow']['steps'])
+            publisher = document['jobs']['verify-oplus-assets' if oplus else 'publish-release']
+            self.assertIn(kernel, publisher['needs'])
+            self.assertIn(kernel + '-overflow', publisher['needs'])
+            self.assertIn("needs." + kernel + ".result == 'success'", publisher['if'])
+            self.assertIn("needs." + kernel + "-overflow.result == 'success'", publisher['if'])
+            download = next(s for s in publisher['steps'] if s.get('uses') == 'actions/download-artifact@v8')
+            self.assertIn('matrix.variant', download['with']['pattern'])
+            self.assertEqual(1, download['with']['pattern'].count('${{'))
 
     def test_kow_and_fina_capabilities_do_not_change_suki_and_baka(self):
         self.assertTrue(effective_susfs('KowSU', True))
@@ -202,25 +201,23 @@ class CombinedWorkflowTests(unittest.TestCase):
                                     compile(body, step.get('name', 'workflow'), 'exec')
 
     def test_shared_step_bindings_preserve_every_original_script_and_condition(self):
-        def restore(value, aliases):
-            if isinstance(value, str):
-                for alias, original in sorted(aliases.items(), key=lambda item: len(item[0]), reverse=True):
-                    value = value.replace('env.' + alias, original)
-                return value.replace('env.KSU_VARIANT', 'inputs.kernelsu_variant')
-            if isinstance(value, list):
-                return [restore(item, aliases) for item in value]
-            if isinstance(value, dict):
-                return {key: restore(item, aliases) for key, item in value.items()}
-            return value
+        from combined_manager_workflow import scoped
         for oplus, single in ((False, self.single), (True, oplus_workflow(ROOT, self.single))):
             document, _ = add_combined(single, oplus=oplus)
             for name in ('prepare-matrix', 'build-sukisu-manager', 'build-sukisu-lkm',
                          'build-oplus-kernel' if oplus else 'build-kernel'):
                 job, original = document['jobs'][name], single['jobs'][name]
-                aliases = {key: value[3:-3].strip() for key, value in job['env'].items()
-                           if key not in original.get('env', {})}
-                aliases.pop('GKI_COMBINED_WORKER', None)
-                self.assertEqual(original['steps'], restore(job['steps'], aliases))
+                expected = scoped(copy.deepcopy(original['steps']))
+                actual = job['steps']
+                if name == 'prepare-matrix':
+                    actual = actual[:-1]
+                if name == 'build-oplus-kernel':
+                    profile = next(s for s in expected if 'OPLUS_PROFILE' in s.get('env', {}))
+                    profile['run'] = profile['run'].replace(
+                        "profile = profile_identity(strict_json(os.environ['OPLUS_PROFILE'].encode()))",
+                        "profile_fields = strict_json(os.environ['OPLUS_PROFILE'].encode())\n"
+                        "profile_fields.pop('variant')\nprofile = profile_identity(profile_fields)")
+                self.assertEqual(expected, actual)
 
     def test_yaml_aliases_fit_the_size_limit_and_roundtrip_all_independent_jobs(self):
         import yaml

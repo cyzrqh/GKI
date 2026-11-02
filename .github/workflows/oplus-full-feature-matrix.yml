@@ -235,6 +235,7 @@ jobs:
         command -v cc >/dev/null
         python3 -m unittest discover -s tests -p 'test_oplus_*.py'
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+        python3 -m unittest discover -s tests -p 'test_susfs_headers.py'
     - name: 验证管理器原生生命周期及真实 C 状态行为
       run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
     - name: 验证 ThinLTO 链接缓存与真实增量链接

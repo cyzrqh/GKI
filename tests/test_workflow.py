@@ -690,12 +690,10 @@ class WorkflowTests(unittest.TestCase):
                 self.assertNotIn('SukiSU-Metadata-', uploaded)
                 for path in uploaded.splitlines():
                     self.assertNotIn(Path(path).name, ('kernel.json', 'manager.json'))
-                if step['name'] == '上传补丁冲突文件':
-                    self.assertIn('failure()', step['if'])
-                    self.assertEqual('patch-rejects/', step['with']['path'])
-                else:
-                    self.assertIs(step['with'].get('archive'), False,
-                                  'Only final raw files and explicit reject diagnostics may be uploaded')
+                self.assertNotIn('Rejects', str(step['with'].get('name', '')))
+                self.assertNotIn('patch-rejects', uploaded)
+                self.assertIs(step['with'].get('archive'), False,
+                              'Only final raw build files may be uploaded')
         self.assertNotIn('actions/upload-artifact', str(self.workflow['jobs']['build-sukisu-lkm']))
         manager = self.workflow['jobs']['build-sukisu-manager']
         public = [step for step in manager['steps'] if step.get('uses', '').startswith('actions/upload-artifact@')]

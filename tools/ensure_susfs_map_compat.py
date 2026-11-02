@@ -52,6 +52,58 @@ def checked_file(source: Path, relative: str) -> Path:
     return path
 
 
+def ensure_vma_pad_compat(kernel_root: Path) -> tuple[Path, ...]:
+    """Preserve native padding where available; old VMAs end at vm_end."""
+    root = kernel_root.resolve(strict=True)
+    source = root / 'common' if (root / 'common/fs').is_dir() else root
+    task = checked_file(source, 'fs/proc/task_mmu.c')
+    text = task.read_text(encoding='utf-8')
+    code = strip_comments_and_literals(text)
+    if not re.search(r'\bVMA_PAD_START\s*\(', code):
+        return ()
+    native = []
+    for relative in ('include/linux/mm.h', 'include/linux/mm_types.h',
+                     'include/linux/pgsize_migration.h', 'include/linux/pgsize_migration_inline.h'):
+        if (source / relative).exists():
+            native.append((relative, checked_file(source, relative).read_text(encoding='utf-8')))
+    header_code = {name: strip_comments_and_literals(raw) for name, raw in native}
+    padding_api = re.search(r'\bunsigned\s+long\s+vma_pad_pages\s*\(',
+                            header_code.get('include/linux/pgsize_migration.h', '')) is not None
+    native_macro = any(re.search(r'(?m)^\s*#\s*define\s+VMA_PAD_START\s*\(', without_comments(raw))
+                       for _, raw in native)
+    # Do not reinterpret a new/unknown native padding representation as an old
+    # unpadded VMA. Both known Android APIs are handled without changing MM.
+    if not padding_api and not native_macro and any(re.search(r'\b(?:vm_pad_pages|vma_pad_pages|VM_PAD_MASK)\b', without_comments(raw))
+                                                   for _, raw in native):
+        raise ValueError('Review the changed native Android VMA padding interface')
+    expression = ('((vma)->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT))'
+                  if padding_api else '((vma)->vm_end)')
+    local = re.search(r'(?m)^#define VMA_PAD_START\(vma\) ([^\n]+)$', text)
+    if local:
+        if local[1] != '((vma)->vm_end)' or not padding_api:
+            return ()
+        text = text[:local.start(1)] + expression + text[local.end(1):]
+    elif not native_macro:
+        includes = list(re.finditer(r'(?m)^#include\s+"internal\.h"[ \t]*$', text))
+        if not includes:
+            includes = list(re.finditer(r'(?m)^#include\s+[<"].*[>"][ \t]*$', text))
+        if not includes:
+            raise ValueError('Cannot locate native proc maps includes')
+        offset = includes[-1].end()
+        addition = '\n\n#ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ' + expression + '\n#endif'
+        text = text[:offset] + addition + text[offset:]
+    if padding_api and '#include <linux/pgsize_migration.h>' not in without_comments(text):
+        anchor = re.search(r'(?m)^#include\s+[<"].*[>"][ \t]*$', text)
+        if anchor is None:
+            raise ValueError('Cannot include the native VMA padding declaration')
+        text = text[:anchor.end()] + '\n#include <linux/pgsize_migration.h>' + text[anchor.end():]
+    original = task.read_text(encoding='utf-8')
+    if text != original:
+        task.write_text(text, encoding='utf-8', newline='\n')
+        return (task,)
+    return ()
+
+
 def ensure_map_compat(kernel_root: Path) -> tuple[Path, ...]:
     root = kernel_root.resolve(strict=True)
     source = root / 'common' if (root / 'common/fs').is_dir() else root
@@ -108,12 +160,12 @@ def main(argv=None):
     parser.add_argument('--kernel-root', required=True, type=Path)
     args = parser.parse_args(argv)
     try:
-        changed = ensure_map_compat(args.kernel_root)
+        changed = ensure_vma_pad_compat(args.kernel_root) + ensure_map_compat(args.kernel_root)
     except (OSError, ValueError) as error:
         print('::error::SUSFS page-size mapping compatibility failed: ' + str(error), file=sys.stderr)
         return 1
-    print('Restored Android filemap-fold compatibility: ' + ', '.join(map(str, changed)) if changed
-          else 'Android filemap-fold compatibility already satisfied.')
+    print('Restored Android proc maps compatibility: ' + ', '.join(map(str, changed)) if changed
+          else 'Android proc maps compatibility already satisfied.')
     return 0
 
 

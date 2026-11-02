@@ -17,6 +17,10 @@ from validate_susfs_hooks import strip_comments_and_literals
 
 
 INODE_MACRO = re.compile(r"\b(SUSFS_IS_INODE_[A-Z0-9_]+)\s*\(")
+# These reviewed SUSFS helpers are defined in susfs_def.h, rather than
+# susfs.h. Some exec.c/base.c hunks use only them, without an inode macro.
+DEFINITION_FUNCTIONS = ('susfs_is_current_proc_no_su', 'susfs_is_current_proc_umounted')
+DEFINITION_FUNCTION_CALL = re.compile(r'\b(' + '|'.join(DEFINITION_FUNCTIONS) + r')\s*\(')
 INCLUDE = re.compile(r'^\s*#\s*include\s*[<"]linux/susfs_def\.h[>"]', re.M)
 COMMENT_OR_LITERAL = re.compile(r'/\*.*?\*/|//[^\r\n]*|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'', re.S)
 NAMESPACE_DECLARATIONS = (
@@ -65,13 +69,17 @@ def insert_after_includes(text: str, addition: str, path: Path) -> str:
     return text[:anchor] + '\n' + addition + text[anchor:]
 
 
-def repaired_source(path: Path, text: str, available_macros: set[str]) -> str:
+def repaired_source(path: Path, text: str, available_macros: set[str], available_functions: set[str]) -> str:
     clean = without_comments(text)
     code = strip_comments_and_literals(text)
     used = set(INODE_MACRO.findall(code))
+    used_functions = set(DEFINITION_FUNCTION_CALL.findall(code))
     missing = used - available_macros
     if missing:
         raise ValueError(f"susfs_def.h does not provide macros used by {path}: {', '.join(sorted(missing))}")
+    missing_functions = used_functions - available_functions
+    if missing_functions:
+        raise ValueError(f"susfs_def.h does not provide functions used by {path}: {', '.join(sorted(missing_functions))}")
     declarations = []
     namespace_usage = False
     if path.name == 'namespace.c':
@@ -80,7 +88,7 @@ def repaired_source(path: Path, text: str, available_macros: set[str]) -> str:
                 namespace_usage = True
                 if not re.search(pattern, clean):
                     declarations.append(declaration)
-    if not used and not namespace_usage:
+    if not used and not used_functions and not namespace_usage:
         return text
     blocks = []
     if not INCLUDE.search(clean):
@@ -98,8 +106,12 @@ def ensure_headers(kernel_root: Path) -> tuple[Path, ...]:
     header = source / 'include/linux/susfs_def.h'
     if not header.is_file():
         raise ValueError(f"Official SUSFS definitions are missing: {header}")
+    header_text = header.read_text(encoding='utf-8')
     macros = set(re.findall(r'(?m)^\s*#\s*define\s+(SUSFS_IS_INODE_[A-Z0-9_]+)\b',
-                            without_comments(header.read_text(encoding='utf-8'))))
+                            without_comments(header_text)))
+    header_code = strip_comments_and_literals(header_text)
+    functions = {symbol for symbol in DEFINITION_FUNCTIONS
+                 if re.search(r'\bbool\s+' + re.escape(symbol) + r'\s*\(\s*void\s*\)\s*(?:\{|;)', header_code)}
     changes = []
     for directory in (source / 'fs', source / 'mm'):
         if not directory.is_dir():
@@ -108,10 +120,11 @@ def ensure_headers(kernel_root: Path) -> tuple[Path, ...]:
             if not path.resolve().is_relative_to(source.resolve()):
                 raise ValueError(f"Kernel source path leaves the selected source tree: {path}")
             data = path.read_bytes()
-            if b'SUSFS_IS_INODE_' not in data and path.name != 'namespace.c':
+            if (b'SUSFS_IS_INODE_' not in data and path.name != 'namespace.c'
+                    and not any(symbol.encode('ascii') in data for symbol in DEFINITION_FUNCTIONS)):
                 continue
             original = data.decode('utf-8')
-            updated = repaired_source(path, original, macros)
+            updated = repaired_source(path, original, macros, functions)
             if updated != original:
                 changes.append((path, updated))
     # Preflight every source before writing so missing upstream definitions fail

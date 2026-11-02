@@ -190,5 +190,90 @@ int main(void) {
         self.assertEqual(0, result.returncode, result.stdout + result.stderr)
 
 
+class SusfsVmaPaddingCompatibilityTests(unittest.TestCase):
+    def setUp(self):
+        self.root = ROOT / 'tests' / ('.vma-pad-' + uuid.uuid4().hex)
+        self.common = self.root / 'common'
+        (self.common / 'fs/proc').mkdir(parents=True)
+        (self.common / 'include/linux').mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, self.root)
+        self.task = self.common / 'fs/proc/task_mmu.c'
+        self.task.write_text('#include <linux/mm.h>\n#include "internal.h"\n'
+                             'static unsigned long redirect_end(struct vm_area_struct *vma) { return VMA_PAD_START(vma); }\n')
+        (self.common / 'include/linux/mm.h').write_text('/* Native MM declarations. */\n')
+        (self.common / 'include/linux/mm_types.h').write_text('struct vm_area_struct { unsigned long vm_end; };\n')
+
+    def padding(self, native_macro=False):
+        header = self.common / 'include/linux/pgsize_migration.h'
+        header.write_text('extern unsigned long vma_pad_pages(struct vm_area_struct *vma);\n')
+        if native_macro:
+            (self.common / 'include/linux/pgsize_migration_inline.h').write_text(
+                '#define VMA_PAD_START(vma) (vma->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT))\n')
+
+    def test_old_kernels_retain_the_native_end_without_disabling_redirect_hooks(self):
+        original = self.task.read_text()
+        self.assertEqual((self.task,), compat.ensure_vma_pad_compat(self.root))
+        self.assertIn('#define VMA_PAD_START(vma) ((vma)->vm_end)', self.task.read_text())
+        self.assertTrue(self.task.read_text().endswith(original.split('#include "internal.h"')[1].lstrip('\n')))
+        before = self.task.read_bytes()
+        self.assertEqual((), compat.ensure_vma_pad_compat(self.common))
+        self.assertEqual(before, self.task.read_bytes())
+
+    def test_existing_native_padding_macro_and_includes_remain_identical(self):
+        self.padding(native_macro=True)
+        self.task.write_text('#include <linux/pgsize_migration.h>\n' + self.task.read_text())
+        original = self.task.read_bytes()
+        self.assertEqual((), compat.ensure_vma_pad_compat(self.common))
+        self.assertEqual(original, self.task.read_bytes())
+
+    def test_native_padding_api_is_used_instead_of_a_vm_end_only_fallback(self):
+        self.padding()
+        compat.ensure_vma_pad_compat(self.common)
+        text = self.task.read_text()
+        self.assertIn('#include <linux/pgsize_migration.h>', text)
+        self.assertIn('#define VMA_PAD_START(vma) ((vma)->vm_end - (vma_pad_pages(vma) << PAGE_SHIFT))', text)
+
+    def test_legacy_local_fallback_is_upgraded_when_native_padding_exists(self):
+        self.padding()
+        self.task.write_text('#ifndef VMA_PAD_START\n#define VMA_PAD_START(vma) ((vma)->vm_end)\n#endif\n' + self.task.read_text())
+        compat.ensure_vma_pad_compat(self.common)
+        self.assertIn('vma_pad_pages(vma) << PAGE_SHIFT', self.task.read_text())
+
+    def test_unknown_padding_representation_is_rejected_without_modification(self):
+        header = self.common / 'include/linux/mm_types.h'
+        header.write_text('struct vm_area_struct { unsigned long vm_end, vm_pad_pages; };\n')
+        original = self.task.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'padding interface'):
+            compat.ensure_vma_pad_compat(self.common)
+        self.assertEqual(original, self.task.read_bytes())
+
+    @unittest.skipUnless(COMPILER and os.name != 'nt', 'A native POSIX C compiler is required')
+    def test_actual_generated_macro_compiles_and_keeps_plain_and_padded_boundaries(self):
+        original = self.task.read_text()
+        for padded in (False, True):
+            with self.subTest(padding=padded):
+                self.task.write_text(original)
+                if padded:
+                    self.padding()
+                compat.ensure_vma_pad_compat(self.common)
+                macro = re.search(r'(?m)^#define VMA_PAD_START.*$', self.task.read_text())[0]
+                dependencies = ('#include <assert.h>\n#define PAGE_SHIFT 12\n'
+                                'struct vm_area_struct { unsigned long vm_end, pad; };\n')
+                if padded:
+                    dependencies += 'static unsigned long vma_pad_pages(struct vm_area_struct *v) { return v->pad; }\n'
+                main = ('int main(void) { struct vm_area_struct v = {0x9000, 3}; '
+                        'assert(VMA_PAD_START(&v) == ' + ('0x6000' if padded else '0x9000') + '); return 0; }\n')
+                source, executable = self.root / 'padding.c', self.root / 'padding-test'
+                source.write_text(dependencies + main)
+                before = subprocess.run([COMPILER, '-std=c11', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(executable)],
+                                        capture_output=True, timeout=30)
+                self.assertNotEqual(0, before.returncode)
+                source.write_text(dependencies + macro + '\n' + main)
+                compiled = subprocess.run([COMPILER, '-std=c11', '-Wall', '-Wextra', '-Werror', str(source), '-o', str(executable)],
+                                          capture_output=True, timeout=30)
+                self.assertEqual(0, compiled.returncode, compiled.stdout + compiled.stderr)
+                self.assertEqual(0, subprocess.run([str(executable)], timeout=10).returncode)
+
+
 if __name__ == '__main__':
     unittest.main()

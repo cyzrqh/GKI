@@ -325,6 +325,7 @@ jobs:
         set -euo pipefail
         command -v cc >/dev/null
         python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+        python3 -m unittest discover -s tests -p 'test_susfs_headers.py'
         python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
         python3 -m unittest discover -s tests -p 'test_manager_feature_config.py'
     - name: 验证共享源码还原及原生符号接口
@@ -7706,31 +7707,6 @@ jobs:
         $MKBOOTIMG --header_version 4 --kernel Image.lz4 --output boot-lz4.img
         $AVBTOOL add_hash_footer --partition_name boot --partition_size $((64 * 1024 * 1024)) --image boot-lz4.img --algorithm SHA256_RSA2048 --key $BOOT_SIGN_KEY_PATH
         cp ./boot-lz4.img ../${{ matrix.android_version }}-${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-boot-lz4.img
-    - name: 收集补丁冲突文件
-      if: always()
-      run: |
-        REJECTS_DIR="$GITHUB_WORKSPACE/patch-rejects"
-        mkdir -p "$REJECTS_DIR"
-
-        mapfile -t REJS < <(find "$KERNEL_ROOT" -type f -name '*.rej')
-        REJ_COUNT=${#REJS[@]}
-        echo "发现 $REJ_COUNT 个 .rej 文件"
-        echo "REJ_COUNT=$REJ_COUNT" >> $GITHUB_ENV
-
-        if [ "$REJ_COUNT" -gt 0 ]; then
-          for REJ in "${REJS[@]}"; do
-            REL="${REJ#"$KERNEL_ROOT"/}"
-            DEST="$REJECTS_DIR/$REL"
-            mkdir -p "$(dirname "$DEST")"
-            cp "$REJ" "$DEST"
-
-            ORIG="${REJ%.rej}"
-            if [ -f "$ORIG" ]; then
-              cp "$ORIG" "${DEST%.rej}"
-            fi
-            echo "$REL" >> "$REJECTS_DIR/index.txt"
-          done
-        fi
     - name: 记录内核实际配置
       id: kernel-assets
       env:
@@ -7801,14 +7777,6 @@ jobs:
         archive: false
         if-no-files-found: error
         overwrite: true
-    - name: 上传补丁冲突文件
-      if: failure() && env.REJ_COUNT > 0
-      uses: actions/upload-artifact@v6
-      with:
-        name: ${{ matrix.variant }}_kernel-${{ env.CONFIG }}-Rejects
-        path: patch-rejects/
-        if-no-files-found: ignore
-        compression-level: 9
     if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'
       && inputs.operation == '编译内核'
     needs:

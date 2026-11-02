@@ -669,7 +669,9 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
                     'archive': False, 'if-no-files-found': 'error', 'overwrite': True}}
           for key, label in (('boot', 'boot'), ('boot_gz', 'gzip boot'), ('boot_lz4', 'LZ4 boot'))],
     ]
-    step_named(steps, '上传补丁冲突文件')['if'] = "failure() && env.REJ_COUNT > 0"
+    # Keep failure details in the job log, without publishing diagnostic ZIPs.
+    steps.remove(step_named(steps, '上传补丁冲突文件'))
+    steps.remove(step_named(steps, '收集补丁冲突文件'))
     # These tools sign boot images. APK signing and the manifest-provided
     # kernel compiler are independent, so AK3 builds need none of these steps.
     for name in ('缓存工具链', '下载工具链', '生成签名密钥'):
@@ -758,6 +760,7 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
              'run': '''set -euo pipefail
 command -v cc >/dev/null
 python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+python3 -m unittest discover -s tests -p 'test_susfs_headers.py'
 python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
 python3 -m unittest discover -s tests -p 'test_manager_feature_config.py'
 '''},

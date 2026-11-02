@@ -176,8 +176,9 @@ if 'unsigned' not in apk.stem.lower():
     raise SystemExit('Expected the unsigned release APK; signing material must remain outside the source build.')
 if not apk.name.endswith('-unsigned.apk') or any(ord(char) < 32 or ord(char) > 126 for char in apk.name):
     raise SystemExit('Expected a printable official release-unsigned APK filename.')
-if not apk.name.startswith(('BakaSU_', 'ReSukiSU_')) or not apk.name.endswith('-arm64-v8a-release-unsigned.apk'):
-    raise SystemExit('Expected the original official BakaSU arm64 release APK filename.')
+if (not apk.name.startswith(('BakaSU_', 'ReSukiSU_'))
+        or not apk.name.endswith(('-arm64-v8a-release-unsigned.apk', '-universal-release-unsigned.apk'))):
+    raise SystemExit('Expected the original official BakaSU release APK filename.')
 with zipfile.ZipFile(apk) as archive:
     required = {'AndroidManifest.xml', 'classes.dex', 'lib/arm64-v8a/libksud.so',
                 'lib/arm64-v8a/libkernelsu.so', 'lib/arm64-v8a/libadbroot.so'}

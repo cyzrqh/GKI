@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Sign an ARM64 manager APK containing its authenticated public build identity."""
+"""Sign a complete manager APK containing its authenticated public build identity."""
 from __future__ import annotations
 
 import argparse

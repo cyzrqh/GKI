@@ -316,7 +316,7 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
         raise ValueError('Embedded manager APK filename belongs to a different variant')
     if metadata['ksu_variant'] == 'BakaSU' and not valid_manager_apk_filename(name, 'BakaSU'):
         raise ValueError('Invalid native BakaSU APK filename')
-    native = re.fullmatch(r'(SukiSU|BakaSU|ReSukiSU)_.+_([0-9]+)(?:-arm64-v8a)?-release\.apk', name)
+    native = re.fullmatch(r'(SukiSU|BakaSU|ReSukiSU)_.+_([0-9]+)(?:-(?:arm64-v8a|universal))?-release\.apk', name)
     if native and native[1] not in prefixes:
         raise ValueError('Embedded manager APK filename belongs to a different variant')
     if native and int(native[2]) != int(metadata['ksu_version_code']):

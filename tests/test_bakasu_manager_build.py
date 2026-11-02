@@ -168,7 +168,7 @@ class BakasuManagerArtifactTests(unittest.TestCase):
         aapt = self.sdk / 'build-tools/37.0.0/aapt2'
         aapt.parent.mkdir(parents=True)
         aapt.write_bytes(b'')
-        self.apath = self.release / 'BakaSU_v4.2.0-rc3_35252-arm64-v8a-release-unsigned.apk'
+        self.apath = self.release / 'BakaSU_v4.2.0-rc3_35252-universal-release-unsigned.apk'
         self.names = b'\0'.join((kmi + '_kernelsu.ko').encode('ascii') for kmi in KMIS)
         self.contents = {'AndroidManifest.xml': b'manifest', 'classes.dex': b'dex',
                          'lib/arm64-v8a/libksud.so': elf() + self.names,

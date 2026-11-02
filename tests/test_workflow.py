@@ -224,7 +224,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_updater_uses_default_branch_and_no_persistent_checkout_token(self):
         job = self.updater['jobs']['check-upstream']
-        self.assertEqual(self.updater['on']['schedule'], [{'cron': '13 */3 * * *'}])
+        self.assertEqual(self.updater['on']['schedule'], [{'cron': '0 4 * * *'}])
         operation = self.updater['on']['workflow_dispatch']['inputs']['operation']
         self.assertEqual(operation['options'], ['仅检查并提醒', '同步官方更新'])
         self.assertEqual(operation['default'], '仅检查并提醒')

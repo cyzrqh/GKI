@@ -241,7 +241,8 @@ def updater_workflow():
     return {
         'name': '检查并同步官方更新',
         'run-name': "${{ inputs.operation || '检查上游并提醒' }}",
-        'on': {'schedule': [{'cron': '13 */3 * * *'}], 'workflow_dispatch': {'inputs': {
+        # GitHub cron uses UTC: 04:00 is 12:00 in Asia/Shanghai.
+        'on': {'schedule': [{'cron': '0 4 * * *'}], 'workflow_dispatch': {'inputs': {
             'operation': {'description': '检查只准备更新并提醒；同步才会合并',
                           'required': True, 'type': 'choice',
                           'options': ['仅检查并提醒', '同步官方更新'], 'default': '仅检查并提醒'}}}},

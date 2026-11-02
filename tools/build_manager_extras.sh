@@ -13,19 +13,19 @@ python3 "$tools_dir/checkout_ksu_snapshot.py" --input "$GITHUB_WORKSPACE/ksu-sou
 if [ "$KSU_VARIANT" = BakaSU ]; then
   # The native symbol lookup returns an address (unsigned long). Retain both
   # real x86 callbacks with their declared types, without relaxing -Werror.
-  python3 - "$build_source/kernel/hook/x86_64/syscall_hook.c" <<'PY'
+  python3 - "$build_source/kernel" <<'PY'
 from pathlib import Path
-import sys
-path = Path(sys.argv[1])
-text = path.read_text(encoding='utf-8')
-for name in ('syscall_enter_from_user_mode', 'syscall_exit_to_user_mode'):
-    variable = name + '_fn'
-    old = variable + ' = find_kernel_symbol_exact("' + name + '");'
-    new = variable + ' = (typeof(' + variable + '))find_kernel_symbol_exact("' + name + '");'
-    if text.count(old) == 1:
-        text = text.replace(old, new, 1)
-path.write_text(text, encoding='utf-8', newline='\n')
-header = path.parents[2] / 'compat/kernel_compat.h'
+import re, sys
+kernel = Path(sys.argv[1])
+pointers = ('syscall_enter_from_user_mode_fn', 'syscall_exit_to_user_mode_fn',
+            'kallsyms_on_each_match_symbol_fn', 'raw_spin_lock_irq_sym', 'seccomp_filter_release_sym')
+pattern = re.compile(r'\b(' + '|'.join(pointers) + r')\s*=\s*find_kernel_symbol_exact\(')
+for path in kernel.rglob('*.c'):
+    text = path.read_text(encoding='utf-8')
+    updated = pattern.sub(lambda match: match[1] + ' = (typeof(' + match[1] + '))find_kernel_symbol_exact(', text)
+    if updated != text:
+        path.write_text(updated, encoding='utf-8', newline='\n')
+header = kernel / 'compat/kernel_compat.h'
 text = header.read_text(encoding='utf-8')
 # On newer x86 kernels compat_ptr() is provided by linux/compat.h, rather
 # than asm/compat.h. Include the canonical header in the existing guard.

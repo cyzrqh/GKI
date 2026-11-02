@@ -10,6 +10,23 @@ output="$GITHUB_WORKSPACE/manager-lkm/$KMI/extras"
 test ! -e "$build_source"
 python3 "$tools_dir/checkout_ksu_snapshot.py" --input "$GITHUB_WORKSPACE/ksu-source-bundle" \
   --output "$build_source" --expected-ref "$KSU_REF"
+if [ "$KSU_VARIANT" = BakaSU ]; then
+  # The native symbol lookup returns an address (unsigned long). Retain both
+  # real x86 callbacks with their declared types, without relaxing -Werror.
+  python3 - "$build_source/kernel/hook/x86_64/syscall_hook.c" <<'PY'
+from pathlib import Path
+import sys
+path = Path(sys.argv[1])
+text = path.read_text(encoding='utf-8')
+for name in ('syscall_enter_from_user_mode', 'syscall_exit_to_user_mode'):
+    variable = name + '_fn'
+    old = variable + ' = find_kernel_symbol_exact("' + name + '");'
+    new = variable + ' = (typeof(' + variable + '))find_kernel_symbol_exact("' + name + '");'
+    if text.count(old) == 1:
+        text = text.replace(old, new, 1)
+path.write_text(text, encoding='utf-8', newline='\n')
+PY
+fi
 mkdir -p "$output"
 version=$(python3 "$tools_dir/prepare_manager_lkm.py" version-code --source "$source_dir" --expected-ref "$KSU_REF")
 abis=$(python3 "$tools_dir/manager_full_native.py" abis --source "$source_dir")

@@ -161,8 +161,16 @@ def apk_filename(build_metadata: Path, actual: dict[str, str | int], *, variant:
     for name in (source, output):
         if not valid_manager_apk_filename(name, variant, allow_unsigned=True):
             raise SigningError("The manager build metadata must contain safe native " + variant + " APK basenames.")
-    if (not source.endswith("-release-unsigned.apk") or not output.endswith("-release.apk")
-            or output != source.removesuffix("-unsigned.apk") + ".apk"):
+    if source.endswith('-release-unsigned.apk'):
+        expected = source.removesuffix('-unsigned.apk') + '.apk'
+    elif variant not in ('SukiSU', 'BakaSU') and source.endswith('-release.apk'):
+        # Native Next/official Gradle output keeps -release.apk even after its
+        # signing plugin is disabled. Preserve that native name; the separate
+        # output directory and real signing checks still prove the new APK.
+        expected = source
+    else:
+        raise SigningError('The builder did not return a native release APK filename.')
+    if not output.endswith('-release.apk') or output != expected:
         raise SigningError("The signed APK filename must preserve the native source name, removing only -unsigned.")
     return output
 

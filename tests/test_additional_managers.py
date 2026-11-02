@@ -143,6 +143,10 @@ class CombinedWorkflowTests(unittest.TestCase):
             self.assertEqual({'workflow_dispatch'}, set(document['on']))
             kernel = 'build-oplus-kernel' if oplus else 'build-kernel'
             for caller, variant in zip(('combo-sukisu', 'combo-bakasu', 'combo-next'), COMBINED_MANAGERS):
+                for suffix in ('prepare', 'lkm', 'manager', 'kernel'):
+                    name = document['jobs'][caller + '-' + suffix]['name']
+                    self.assertTrue(name.startswith('联合构建 · ' + variant + ' · '))
+                    self.assertNotIn("${{ '" + variant + "' }}", name)
                 self.assertEqual('true', document['jobs'][caller + '-kernel']['env']['GKI_COMBINED_WORKER'])
                 self.assertEqual([caller + '-prepare', caller + '-lkm', caller + '-manager', caller + '-kernel'],
                                  document['jobs'][caller]['needs'])

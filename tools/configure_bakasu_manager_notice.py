@@ -2,8 +2,8 @@
 """Hide BakaSU's author-signature notice only for the trusted paired build.
 
 The upstream official-author test stays byte-for-byte intact. A separate
-repository-build flag requires the installed package, actual APK signer and
-the running kernel's manager recognition to agree before hiding that notice.
+repository-build flag reads the installed package's actual signer locally,
+including before root is installed. This UI identity never grants privileges.
 """
 from __future__ import annotations
 
@@ -23,6 +23,7 @@ FILES = {
     'model': JAVA + 'domain/model/KernelState.kt',
     'repository': JAVA + 'data/kernel/KernelRepository.kt',
     'home': JAVA + 'ui/screen/main/HomePage.kt',
+    'navigation': JAVA + 'ui/screen/BottomBarDestination.kt',
 }
 OFFICIAL_METHOD = '''    suspend fun isOfficialSignature(packageResourcePath: String): Boolean = withContext(Dispatchers.IO) {
         val shell = getRootShell()
@@ -76,24 +77,39 @@ def read_identity(path: Path) -> dict:
 
 def replacements(identity: dict) -> dict[str, tuple[str, str]]:
     identity = validate_identity(identity)
-    signature = f"size: {identity['manager_cert_size']:#x}, hash: {identity['manager_cert_sha256']}"
     method = f'''
     // {MARKER}
+    private val repositorySigningContext = context.applicationContext
+
+    @Suppress("DEPRECATION")
     suspend fun isRepositorySignature(
         packageName: String,
         packageResourcePath: String,
     ): Boolean = withContext(Dispatchers.IO) {{
-        if (packageName != "{PACKAGE}") return@withContext false
-        val result = getRootShell().newJob()
-            .add("${{getKsuDaemonPath()}} debug get-sign ${{shellQuote(packageResourcePath)}}")
-            .to(ArrayList<String>(), null).exec()
-        if (!result.isSuccess || result.out.size != 1) return@withContext false
-        result.out.single().trim() == "{signature}"
+        val installed = repositorySigningContext
+        if (packageName != "{PACKAGE}" || packageName != installed.packageName ||
+            packageResourcePath != installed.packageResourcePath
+        ) {{
+            return@withContext false
+        }}
+        val manager = installed.packageManager
+        val signatures = if (android.os.Build.VERSION.SDK_INT >= 28) {{
+            manager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNING_CERTIFICATES)
+                .signingInfo?.apkContentsSigners
+        }} else {{
+            manager.getPackageInfo(packageName, android.content.pm.PackageManager.GET_SIGNATURES).signatures
+        }}
+        if (signatures == null || signatures.size != 1) return@withContext false
+        val certificate = signatures.single().toByteArray()
+        if (certificate.size != {identity['manager_cert_size']}) return@withContext false
+        val digest = java.security.MessageDigest.getInstance("SHA-256").digest(certificate)
+            .joinToString("") {{ "%02x".format(it.toInt() and 0xff) }}
+        digest == "{identity['manager_cert_sha256']}"
     }}
 '''
     model = '    val isOfficialSignature: Boolean = true,\n'
     repository = f'''            // {MARKER}
-            isTrustedRepositoryBuild = isManager && runCatching {{
+            isTrustedRepositoryBuild = runCatching {{
                 ksuCliRepository.isRepositorySignature(
                     application.packageName,
                     application.packageResourcePath,
@@ -112,6 +128,10 @@ def replacements(identity: dict) -> dict[str, tuple[str, str]]:
         'model': (model, model + f'    val isTrustedRepositoryBuild: Boolean = false, // {MARKER}\n'),
         'repository': (OFFICIAL_STATUS, OFFICIAL_STATUS + repository),
         'home': (home, new_home),
+        'navigation': (
+            '        Icons.TwoTone.Memory,\n        false,\n',
+            f'        Icons.TwoTone.Memory,\n        true, // {MARKER}\n',
+        ),
     }
 
 
@@ -166,7 +186,7 @@ def configure_notice(source: Path, identity: dict) -> list[str]:
         updated = text.replace(before, after, 1).replace('\n', newline).encode('utf-8')
         if updated != original:
             changes.append((path, original, updated))
-    # All four source layouts and the complete public identity are validated
+    # All source layouts and the complete public identity are validated
     # before any source is touched. Stage siblings and roll back replaced files
     # if a later filesystem replacement fails.
     staged, applied = [], []

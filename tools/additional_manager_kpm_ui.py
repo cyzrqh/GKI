@@ -2,6 +2,7 @@
 from pathlib import Path
 import re
 import subprocess
+import textwrap
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -29,11 +30,15 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
         # Next creates a new native shell, whereas official/Kow cache theirs.
         # Use Next's real API and always release this short-lived shell.
         template = replace_one(template, 'ui.util.getRootShell', 'ui.util.createRootShell')
-        template = replace_one(template, '        val shell = getRootShell()\n',
-                               '        val shell = createRootShell()\n        try {\n')
-        end = '        result.out.joinToString("\\n").also { check(it.toByteArray().size <= 16384) }\n'
-        template = replace_one(template, end,
-                               end + '        } finally {\n            shell.close()\n        }\n')
+        anchor = '        val shell = getRootShell()\n'
+        if template.count(anchor) != 1:
+            raise ValueError('Review the bounded KPM command shell lifetime')
+        start = template.index(anchor) + len(anchor)
+        end = template.index('\n    }\n\n    suspend fun jsonCommand', start)
+        template = (template[:start].replace(anchor, '        val shell = createRootShell()\n')
+                    + '        try {\n' + textwrap.indent(template[start:end], '    ')
+                    + '\n        } finally {\n            shell.close()\n        }'
+                    + template[end:])
     put(java + '/ui/kpm/GkiKpmScreen.kt', template.replace('__NAMESPACE__', namespace))
     name = 'manager/app/src/main/res/values/strings.xml'
     put(name, replace_one(read(name), '</resources>', '    <string name="gki_kpm_title">KPM</string>\n</resources>'))
@@ -69,6 +74,15 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
             entry = '    Kpm(R.string.gki_kpm_title, Icons.Rounded.Security),\n'
         put(name, replace_one(text, '    SuperUser(', entry + '    SuperUser('))
         text = read(main)
+        if variant == 'FinaSU':
+            text = replace_one(text,
+                '    val destinations = remember(navVisibilityRevision) { NavBarVisibilityConfig.visibleDestinations() }',
+                '    val kpmAuthorized = LocalCapabilityState.current.privileged\n'
+                '    val destinations = remember(navVisibilityRevision, kpmAuthorized) {\n'
+                '        NavBarVisibilityConfig.visibleDestinations().filter {\n'
+                '            it != BottomBarDestination.Kpm || kpmAuthorized\n'
+                '        }\n'
+                '    }')
         if 'BottomBarDestination.SuperUser ->' in text:
             text = replace_one(text, '                        BottomBarDestination.SuperUser ->',
                 '                        BottomBarDestination.Kpm -> ' + namespace + '.ui.kpm.GkiKpmScreen()\n'

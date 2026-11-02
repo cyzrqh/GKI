@@ -72,6 +72,13 @@ def add_combined(workflow: dict, *, oplus: bool) -> tuple[dict, None]:
             job = copy.deepcopy(blueprints[name])
             steps = job.pop('steps')
             job = rewrite(job, replacements)
+            # Names are displayed even for skipped jobs, before matrix values
+            # exist. Do not leave constant expression syntax in that UI.
+            label = job.get('name', name)
+            label = label.replace("${{ '" + variant + "' }}", variant)
+            if name == 'prepare-matrix':
+                label = '选择内核版本与补丁月份'
+            job['name'] = '联合构建 · ' + variant + ' · ' + label
             if 'needs' in job:
                 dependencies = [job['needs']] if isinstance(job['needs'], str) else job['needs']
                 job['needs'] = [ids[dependency] for dependency in dependencies]

@@ -2062,7 +2062,7 @@ jobs:
       if: always() && !cancelled() && steps.assets.outcome == 'success'
       run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"
   combo-sukisu-prepare:
-    name: 固定全部原生构建方案、官方管理器与构建依赖
+    name: 联合构建 · SukiSU · 选择内核版本与补丁月份
     runs-on: ubuntu-24.04
     if: (github.event_name == 'workflow_dispatch') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     env:
@@ -2091,7 +2091,7 @@ jobs:
       patches_ref: ${{ steps.oplus-deps.outputs.patches_ref }}
     steps: *id001
   combo-sukisu-lkm:
-    name: ${{ 'SukiSU' }} 原生模块 / ${{ matrix.kmi }}
+    name: 联合构建 · SukiSU · SukiSU 原生模块 / ${{ matrix.kmi }}
     needs:
     - combo-sukisu-prepare
     if: (github.event_name == 'workflow_dispatch' && (('SukiSU' == 'SukiSU' || 'SukiSU' == 'BakaSU') || ('SukiSU' == 'KernelSU-Next'
@@ -2120,7 +2120,7 @@ jobs:
       matrix: ${{ fromJSON(needs.combo-sukisu-prepare.outputs.ddk_matrix) }}
     steps: *id002
   combo-sukisu-manager:
-    name: 编译配套 ${{ 'SukiSU' }} 管理器 APK
+    name: 联合构建 · SukiSU · 编译配套 SukiSU 管理器 APK
     if: (always() && !cancelled() && needs.combo-sukisu-prepare.result == 'success' && (('SukiSU' == 'SukiSU' || 'SukiSU'
       == 'BakaSU') || ('SukiSU' == 'KernelSU-Next' || 'SukiSU' == 'KernelSU' || 'SukiSU' == 'KowSU' || 'SukiSU' == 'FinaSU'))
       && needs.combo-sukisu-lkm.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
@@ -2156,8 +2156,8 @@ jobs:
       manager_metadata: ''
     steps: *id003
   combo-sukisu-kernel:
-    name: ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel
-      }} · ${{ 'SukiSU' }}
+    name: 联合构建 · SukiSU · ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }}
+      · ${{ matrix.kernel }} · SukiSU
     if: (always() && !cancelled() && github.event_name == 'workflow_dispatch' && needs.combo-sukisu-prepare.result == 'success'
       && needs.combo-sukisu-manager.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     needs:
@@ -2236,7 +2236,7 @@ jobs:
     - name: 确认本管理器全部目标完成
       run: 'true'
   combo-bakasu-prepare:
-    name: 固定全部原生构建方案、官方管理器与构建依赖
+    name: 联合构建 · BakaSU · 选择内核版本与补丁月份
     runs-on: ubuntu-24.04
     if: (github.event_name == 'workflow_dispatch') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     env:
@@ -2265,7 +2265,7 @@ jobs:
       patches_ref: ${{ steps.oplus-deps.outputs.patches_ref }}
     steps: *id001
   combo-bakasu-lkm:
-    name: ${{ 'BakaSU' }} 原生模块 / ${{ matrix.kmi }}
+    name: 联合构建 · BakaSU · BakaSU 原生模块 / ${{ matrix.kmi }}
     needs:
     - combo-bakasu-prepare
     if: (github.event_name == 'workflow_dispatch' && (('BakaSU' == 'SukiSU' || 'BakaSU' == 'BakaSU') || ('BakaSU' == 'KernelSU-Next'
@@ -2294,7 +2294,7 @@ jobs:
       matrix: ${{ fromJSON(needs.combo-bakasu-prepare.outputs.ddk_matrix) }}
     steps: *id002
   combo-bakasu-manager:
-    name: 编译配套 ${{ 'BakaSU' }} 管理器 APK
+    name: 联合构建 · BakaSU · 编译配套 BakaSU 管理器 APK
     if: (always() && !cancelled() && needs.combo-bakasu-prepare.result == 'success' && (('BakaSU' == 'SukiSU' || 'BakaSU'
       == 'BakaSU') || ('BakaSU' == 'KernelSU-Next' || 'BakaSU' == 'KernelSU' || 'BakaSU' == 'KowSU' || 'BakaSU' == 'FinaSU'))
       && needs.combo-bakasu-lkm.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
@@ -2330,8 +2330,8 @@ jobs:
       manager_metadata: ''
     steps: *id003
   combo-bakasu-kernel:
-    name: ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel
-      }} · ${{ 'BakaSU' }}
+    name: 联合构建 · BakaSU · ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }}
+      · ${{ matrix.kernel }} · BakaSU
     if: (always() && !cancelled() && github.event_name == 'workflow_dispatch' && needs.combo-bakasu-prepare.result == 'success'
       && needs.combo-bakasu-manager.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     needs:
@@ -2410,7 +2410,7 @@ jobs:
     - name: 确认本管理器全部目标完成
       run: 'true'
   combo-next-prepare:
-    name: 固定全部原生构建方案、官方管理器与构建依赖
+    name: 联合构建 · KernelSU-Next · 选择内核版本与补丁月份
     runs-on: ubuntu-24.04
     if: (github.event_name == 'workflow_dispatch') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     env:
@@ -2439,7 +2439,7 @@ jobs:
       patches_ref: ${{ steps.oplus-deps.outputs.patches_ref }}
     steps: *id001
   combo-next-lkm:
-    name: ${{ 'KernelSU-Next' }} 原生模块 / ${{ matrix.kmi }}
+    name: 联合构建 · KernelSU-Next · KernelSU-Next 原生模块 / ${{ matrix.kmi }}
     needs:
     - combo-next-prepare
     if: (github.event_name == 'workflow_dispatch' && (('KernelSU-Next' == 'SukiSU' || 'KernelSU-Next' == 'BakaSU') || ('KernelSU-Next'
@@ -2468,7 +2468,7 @@ jobs:
       matrix: ${{ fromJSON(needs.combo-next-prepare.outputs.ddk_matrix) }}
     steps: *id002
   combo-next-manager:
-    name: 编译配套 ${{ 'KernelSU-Next' }} 管理器 APK
+    name: 联合构建 · KernelSU-Next · 编译配套 KernelSU-Next 管理器 APK
     if: (always() && !cancelled() && needs.combo-next-prepare.result == 'success' && (('KernelSU-Next' == 'SukiSU' || 'KernelSU-Next'
       == 'BakaSU') || ('KernelSU-Next' == 'KernelSU-Next' || 'KernelSU-Next' == 'KernelSU' || 'KernelSU-Next' == 'KowSU' ||
       'KernelSU-Next' == 'FinaSU')) && needs.combo-next-lkm.result == 'success') && (inputs.kernelsu_variant == 'SukiSU +
@@ -2505,8 +2505,8 @@ jobs:
       manager_metadata: ''
     steps: *id003
   combo-next-kernel:
-    name: ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel
-      }} · ${{ 'KernelSU-Next' }}
+    name: 联合构建 · KernelSU-Next · ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' ||
+      '骁龙' }} · ${{ matrix.kernel }} · KernelSU-Next
     if: (always() && !cancelled() && github.event_name == 'workflow_dispatch' && needs.combo-next-prepare.result == 'success'
       && needs.combo-next-manager.result == 'success') && (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next')
     needs:

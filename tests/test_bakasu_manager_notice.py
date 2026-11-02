@@ -41,6 +41,15 @@ fun HomePage() {
                 }
 }
 ''',
+    'navigation': '''enum class BottomBarDestination(val rootRequired: Boolean) {
+    Kpm(
+        Icons.TwoTone.Memory,
+        Icons.TwoTone.Memory,
+        false,
+    ),
+    SuperUser(true),
+}
+''',
 }
 IDENTITY = {'manager_package': 'com.resukisu.resukisu', 'manager_cert_size': 730,
             'manager_cert_sha256': 'c8e9af2b51e0f76b4e9133726c17a8034a131fec4235f6b779ab8b1e83127c12'}
@@ -91,17 +100,25 @@ class BakaSUManagerNoticeTests(unittest.TestCase):
         for relative in set(before) - set(notice.FILES.values()):
             self.assertEqual(before[relative], after[relative])
 
-    def test_runtime_signer_query_checks_actual_package_success_and_unique_exact_result(self):
+    def test_installed_signer_is_checked_locally_even_without_root(self):
         self.apply()
         cli = self.paths['cli'].read_text(encoding='utf-8')
         method = cli.split('// ' + notice.MARKER, 1)[1].split('fun untouchedDaemonOperation', 1)[0]
-        self.assertIn('if (packageName != "com.resukisu.resukisu") return@withContext false', method)
-        self.assertIn('debug get-sign ${shellQuote(packageResourcePath)}', method)
-        self.assertIn('if (!result.isSuccess || result.out.size != 1) return@withContext false', method)
-        self.assertIn('result.out.single().trim() == "size: 0x2da, hash: ' + IDENTITY['manager_cert_sha256'] + '"', method)
-        self.assertNotIn('firstOrNull', method)
+        self.assertIn('packageName != "com.resukisu.resukisu" || packageName != installed.packageName', method)
+        self.assertIn('packageResourcePath != installed.packageResourcePath', method)
+        self.assertIn('GET_SIGNING_CERTIFICATES', method)
+        self.assertIn('GET_SIGNATURES', method)
+        self.assertIn('.signingInfo?.apkContentsSigners', method)
+        self.assertIn('signatures == null || signatures.size != 1', method)
+        self.assertIn('certificate.size != 730', method)
+        self.assertIn('MessageDigest.getInstance("SHA-256")', method)
+        self.assertIn('digest == "' + IDENTITY['manager_cert_sha256'] + '"', method)
+        self.assertNotIn('getRootShell', method)
+        self.assertNotIn('isManager', method)
+        self.assertNotIn('signingCertificateHistory', method)
         repository = self.paths['repository'].read_text(encoding='utf-8')
-        self.assertIn('isTrustedRepositoryBuild = isManager && runCatching {', repository)
+        self.assertIn('isTrustedRepositoryBuild = runCatching {', repository)
+        self.assertIn('isManager = isManager,', repository)
         self.assertIn('application.packageName,\n                    application.packageResourcePath,', repository)
         self.assertIn('}.getOrDefault(false),', repository)
         model = self.paths['model'].read_text(encoding='utf-8')
@@ -114,7 +131,8 @@ class BakaSUManagerNoticeTests(unittest.TestCase):
         other = {**IDENTITY, 'manager_cert_size': 1024, 'manager_cert_sha256': 'b' * 64}
         self.apply(other)
         cli = self.paths['cli'].read_text(encoding='utf-8')
-        self.assertIn('size: 0x400, hash: ' + 'b' * 64, cli)
+        self.assertIn('certificate.size != 1024', cli)
+        self.assertIn('digest == "' + 'b' * 64 + '"', cli)
         self.assertNotIn(IDENTITY['manager_cert_sha256'], cli)
 
     def test_same_identity_is_idempotent_and_does_not_rewrite_files(self):
@@ -169,7 +187,13 @@ class BakaSUManagerNoticeTests(unittest.TestCase):
 
     def test_both_upstream_native_names_are_supported(self):
         (self.root / 'kernel/Kbuild').write_text('REPO_NAME := ReSukiSU\n', encoding='utf-8')
-        self.assertEqual(4, len(self.apply()))
+        self.assertEqual(5, len(self.apply()))
+
+    def test_kpm_navigation_uses_the_native_root_required_gate(self):
+        self.apply()
+        navigation = self.paths['navigation'].read_text(encoding='utf-8')
+        self.assertIn('Icons.TwoTone.Memory,\n        true,', navigation)
+        self.assertIn('SuperUser(true)', navigation)
 
     def test_crlf_is_preserved(self):
         for key, path in self.paths.items():

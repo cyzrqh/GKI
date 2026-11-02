@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the official BakaSU ARM64 manager and daemon; signing is separate.
+# Build the complete official BakaSU manager and daemon; signing is separate.
 set -euo pipefail
 build_tools="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -85,48 +85,24 @@ cd "$manager_dir"
 bash ./gradlew --no-daemon --stacktrace --build-cache spotlessCheck -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"
 )
 
-# Keep the APK and its included daemon on the same ABI. The source patch is
-# intentionally limited to the official abiFilters list and rejects layout drift.
+# Keep the complete official ABI/split configuration.
 python3 - "$manager_dir/app/build.gradle.kts" <<'PY'
 from pathlib import Path
 import re
 import sys
 path = Path(sys.argv[1])
 text = path.read_text(encoding='utf-8')
+# AGP takes release ABI selection from the original splits block. Its second
+# defaultConfig filter conflicts with splits; keep every split and universal
+# output, and preserve the original filter for debug builds.
 pattern = re.compile(r'\babiFilters\s*\+=\s*listOf\(([^)]*)\)')
 matches = list(pattern.finditer(text))
-if len(matches) != 1:
-    raise SystemExit('Expected one official manager abiFilters list; review the source before building.')
-values = matches[0].group(1)
-abis = re.findall(r'"([A-Za-z0-9_-]+)"', values)
-rest = re.sub(r'"[A-Za-z0-9_-]+"', '', values)
-if not abis or 'arm64-v8a' not in abis or rest.strip(' ,\r\n\t'):
-    raise SystemExit('Unexpected manager ABI configuration; refusing to replace it.')
-# AGP forbids nonempty defaultConfig NDK filters together with ABI splits.
-# Validate the known upstream assignment, then let the single arm64 split
-# select the native ABI and preserve the official APK filename suffix.
-text = pattern.sub('abiFilters.clear()', text, count=1)
-# Official BakaSU creates separate ABI APKs and a universal APK. Keep its
-# native arm64 split naming while producing exactly one installable APK.
-splits = re.compile(r'^([ \t]*)splits[ \t]*\{\s*abi\s*\{([^{}]*)\}\s*\}', re.M)
-matches = list(splits.finditer(text))
-if len(matches) != 1:
-    raise SystemExit('Expected one official BakaSU ABI split block; review source drift.')
-body = matches[0].group(2)
-expected_lines = ('isEnable = isReleaseTask', 'reset()', 'isUniversalApk = true')
-if any(body.count(line) != 1 for line in expected_lines):
-    raise SystemExit('Unexpected BakaSU ABI split settings; refusing a partial rewrite.')
-includes = list(re.finditer(r'\binclude\(([^)]*)\)', body))
-if len(includes) != 1:
-    raise SystemExit('Expected one official BakaSU ABI split include list.')
-split_abis = re.findall(r'"([A-Za-z0-9_-]+)"', includes[0].group(1))
-remaining = re.sub(r'"[A-Za-z0-9_-]+"', '', includes[0].group(1))
-if 'arm64-v8a' not in split_abis or remaining.strip(' ,\r\n\t'):
-    raise SystemExit('Unexpected BakaSU ABI split list.')
-body = re.sub(r'\binclude\([^)]*\)', 'include("arm64-v8a")', body, count=1)
-body = body.replace('isUniversalApk = true', 'isUniversalApk = false', 1)
-match = matches[0]
-text = text[:match.start(2)] + body + text[match.end(2):]
+splits = list(re.finditer(r'\binclude\(([^)]*)\)', text))
+if (len(matches) != 1 or len(splits) != 1 or text.count('isUniversalApk = true') != 1
+        or set(re.findall(r'"([A-Za-z0-9_-]+)"', matches[0][1]))
+           != set(re.findall(r'"([A-Za-z0-9_-]+)"', splits[0][1]))):
+    raise SystemExit('Review the original BakaSU full-ABI split configuration.')
+text = pattern.sub(lambda m: 'if (!isReleaseTask) { ' + m[0] + ' }', text, count=1)
 # The upstream signing plugin falls back to the shared debug key when no
 # keystore is present. Remove only its known declaration/configuration so the
 # release remains unsigned until the separate private signing step.
@@ -149,58 +125,14 @@ if len(list(release.finditer(text))) != 1:
     raise SystemExit('Expected one release build type to keep unsigned.')
 text = release.sub(lambda m: m.group(0) + '\n' + m.group(1) + '    signingConfig = null', text, count=1)
 path.write_text(text, encoding='utf-8')
-print('Manager APK ABI: arm64-v8a')
+print('Official APK architecture configuration preserved')
 print('Release signing: separate workflow step')
 PY
 
-# Official ksuinit/ksud builds use NDK r29; the manager's Gradle project uses
-# its own NDK r30. Isolate all helper exports (CC/CXX/AR, Cargo linker and
-# bindgen sysroot) so the Gradle build keeps its original NDK environment.
-(
-export ANDROID_NDK_HOME="$native_ndk_dir"
-export ANDROID_NDK_ROOT="$native_ndk_dir"
-echo "BakaSU native Rust NDK: $ANDROID_NDK_HOME"
-source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
-if [ -f userspace/ksuinit/Cargo.toml ]; then
-  builtins="$("$CLANG_PATH" --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
-  [ -f "$builtins" ] || { echo 'NDK ARM64 compiler builtins were not found.' >&2; exit 1; }
-  echo 'Building ARM64 ksuinit from the same source.'
-  RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$builtins" \
-    cargo +nightly build --locked --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
-  test -s "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit"
-  mkdir -p userspace/ksud/bin/aarch64
-  cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit" userspace/ksud/bin/aarch64/ksuinit
-fi
-
-echo 'Building ARM64 ksud from the same source.'
-# Upstream enables rust-embed compression and explicitly requires cleaning
-# this crate after its binary assets change. Retain compiled dependencies.
-cargo +nightly clean --manifest-path userspace/ksud/Cargo.toml -p ksud --target aarch64-linux-android --release
-cargo +nightly build --locked --target aarch64-linux-android --release --manifest-path userspace/ksud/Cargo.toml
-ksud="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
-[ -s "$ksud" ] || { echo 'The ARM64 ksud build produced no daemon.' >&2; exit 1; }
-python3 - "$ksud" "$build_tools" <<'PY'
-from pathlib import Path
-import struct
-import sys
-sys.path.insert(0, sys.argv[2])
-from manager_lkm_jobs import KMIS
-data = Path(sys.argv[1]).read_bytes()
-if (len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01'
-        or struct.unpack_from('<H', data, 16)[0] not in (2, 3)
-        or struct.unpack_from('<H', data, 18)[0] != 183):
-    raise SystemExit('The built ksud is not an ARM64 ELF executable.')
-missing = [kmi for kmi in KMIS if (kmi + '_kernelsu.ko').encode('ascii') not in data]
-if missing:
-    raise SystemExit('The built ksud is missing embedded native KMI modules: ' + ', '.join(missing))
-print('Verified eight native KMI assets in the built ARM64 ksud.')
-PY
-mkdir -p "$manager_dir/app/src/main/jniLibs/arm64-v8a"
-cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
-)
+bash "$build_tools/build_manager_native.sh" "$source_dir"
 
 cd "$manager_dir"
-echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
+echo 'Building the complete official-ABI release APK; signing is handled by the caller.'
 bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"
 
 python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools" <<'PY'
@@ -215,11 +147,20 @@ import sys
 import zipfile
 sys.path.insert(0, sys.argv[3])
 from manager_lkm_jobs import KMIS
+from manager_full_native import official_abis, verify_apk
 release, output = map(Path, sys.argv[1:3])
-apks = sorted(release.glob('*.apk'))
+source = release.parents[5]
+expected_abis = set(official_abis(source))
+apks = []
+for candidate in sorted(release.glob('*.apk')):
+    with zipfile.ZipFile(candidate) as archive:
+        abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and name.count('/') >= 2}
+    if abis == expected_abis:
+        apks.append(candidate)
 if len(apks) != 1:
     raise SystemExit(f'Expected exactly one release APK, found {len(apks)}.')
 apk = apks[0]
+verify_apk(source, apk)
 if 'unsigned' not in apk.stem.lower():
     raise SystemExit('Expected the unsigned release APK; signing material must remain outside the source build.')
 if not apk.name.endswith('-unsigned.apk') or any(ord(char) < 32 or ord(char) > 126 for char in apk.name):
@@ -233,8 +174,8 @@ with zipfile.ZipFile(apk) as archive:
     if missing:
         raise SystemExit('Incomplete manager APK: ' + ', '.join(sorted(missing)))
     other_abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and len(name.split('/')) >= 3}
-    if other_abis != {'arm64-v8a'}:
-        raise SystemExit('The manager APK unexpectedly contains another ABI.')
+    if other_abis != expected_abis:
+        raise SystemExit('The manager APK lost an official architecture.')
     if archive.getinfo('lib/arm64-v8a/libksud.so').file_size == 0:
         raise SystemExit('The packaged ksud is empty.')
     packaged_ksud = archive.read('lib/arm64-v8a/libksud.so')
@@ -284,6 +225,6 @@ if os.environ.get('GITHUB_OUTPUT'):
     with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as stream:
         for name, value in metadata.items():
             stream.write(f'{name}={value}\n')
-print(f'Unsigned ARM64 manager APK: {target} ({target.stat().st_size} bytes)')
+print(f'Unsigned complete manager APK: {target} ({target.stat().st_size} bytes)')
 print(json.dumps(metadata, sort_keys=True))
 PY

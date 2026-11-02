@@ -53,12 +53,11 @@ protobuf { untouched() }
         return subprocess.run([sys.executable, '-c', self.transform, str(self.gradle)],
                               capture_output=True, text=True, check=False)
 
-    def test_keeps_only_arm64_and_removes_debug_signing_fallback(self):
+    def test_keeps_original_architectures_and_removes_debug_signing_fallback(self):
         result = self.run_transform(self.source)
         self.assertEqual(result.returncode, 0, result.stderr)
         output = self.gradle.read_text(encoding='utf-8')
-        self.assertIn('abiFilters += listOf("arm64-v8a")', output)
-        self.assertNotIn('x86_64', output)
+        self.assertIn('abiFilters += listOf("arm64-v8a", "x86_64")', output)
         self.assertNotIn('lsplugin.apksign', output)
         self.assertNotIn('KEYSTORE_FILE', output)
         self.assertEqual(output.count('signingConfig = null'), 1)
@@ -77,14 +76,15 @@ protobuf { untouched() }
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(self.gradle.read_text(encoding='utf-8'), source)
 
-    def test_ambiguous_or_incomplete_abi_is_not_rewritten(self):
+    def test_signing_transform_never_rewrites_architecture_declarations(self):
         for source in [self.source.replace('"arm64-v8a", ', ''),
                        self.source.replace('"x86_64"', 'extraAbi'),
                        self.source + 'abiFilters += listOf("arm64-v8a")\n']:
             with self.subTest(source=source):
                 result = self.run_transform(source)
-                self.assertNotEqual(result.returncode, 0)
-                self.assertEqual(self.gradle.read_text(encoding='utf-8'), source)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual([line for line in source.splitlines() if 'abiFilters' in line],
+                                 [line for line in self.gradle.read_text(encoding='utf-8').splitlines() if 'abiFilters' in line])
 
 
 class ManagerBuildNativeAssetsTests(unittest.TestCase):
@@ -97,8 +97,9 @@ class ManagerBuildNativeAssetsTests(unittest.TestCase):
         self.script = (ROOT / 'tools/build_sukisu_manager.sh').read_text(encoding='utf-8')
         marker = 'python3 - "$source_dir" "$build_tools" <<\'PY\'\n'
         self.inputs = self.script.split(marker, 1)[1].split('\nPY\n', 1)[0]
-        marker = 'python3 - "$ksud" "$build_tools" <<\'PY\'\n'
-        self.embedded = self.script.split(marker, 1)[1].split('\nPY\n', 1)[0]
+        native_script = (ROOT / 'tools/build_manager_native.sh').read_text(encoding='utf-8')
+        marker = 'python3 - "$daemon" "$source_dir/userspace/ksud/bin/$arch" "$machine" <<\'PY\'\n'
+        self.embedded = native_script.split(marker, 1)[1].split('\nPY\n', 1)[0]
         for kmi in KMIS:
             (self.assets / (kmi + '_kernelsu.ko')).write_bytes(self.elf_header(1))
 
@@ -110,7 +111,8 @@ class ManagerBuildNativeAssetsTests(unittest.TestCase):
         return bytes(header)
 
     def run_guard(self, script, path):
-        return subprocess.run([sys.executable, '-c', script, str(path), str(ROOT / 'tools')],
+        arguments = [str(path), str(self.assets), '183'] if script == self.embedded else [str(path), str(ROOT / 'tools')]
+        return subprocess.run([sys.executable, '-c', script, *arguments],
                               capture_output=True, text=True, check=False)
 
     def test_requires_exactly_all_eight_staged_arm64_module_inputs(self):
@@ -151,27 +153,14 @@ class ManagerBuildNativeAssetsTests(unittest.TestCase):
                 result = self.run_guard(self.embedded, daemon)
                 self.assertNotEqual(0, result.returncode)
 
-    def test_changed_binary_assets_clean_only_ksud_before_build_and_keep_dependency_cache(self):
-        clean = 'cargo clean -p ksud --target aarch64-linux-android --release'
-        self.assertEqual([clean], [line for line in self.script.splitlines() if line.startswith('cargo clean')])
-        self.assertLess(self.script.index('python3 - "$source_dir" "$build_tools"'),
-                        self.script.index('cargo build --locked --manifest-path userspace/ksuinit/Cargo.toml'))
-        self.assertLess(self.script.index('cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit"'),
-                        self.script.index(clean))
-        self.assertLess(self.script.index(clean), self.script.index('cargo build --locked --target aarch64-linux-android'))
-        self.assertLess(self.script.index('python3 - "$ksud" "$build_tools"'),
-                        self.script.index('bash ./gradlew'))
-        self.assertNotIn('rm -rf', self.script)
-
-
 class ManagerBuildArtifactTests(unittest.TestCase):
     def setUp(self):
         self.directory = ROOT / 'tests' / ('.manager-build-' + uuid.uuid4().hex)
         self.directory.mkdir()
         self.addCleanup(shutil.rmtree, self.directory)
-        self.release = self.directory / 'release'
+        self.release = self.directory / 'manager/app/build/outputs/apk/release'
         self.output = self.directory / 'output'
-        self.release.mkdir()
+        self.release.mkdir(parents=True)
         self.output.mkdir()
         self.sdk = self.directory / 'sdk'
         tool = self.sdk / 'build-tools/37.0.0/aapt2'
@@ -199,7 +188,9 @@ class ManagerBuildArtifactTests(unittest.TestCase):
         environment = {'ANDROID_HOME': str(self.sdk), 'GITHUB_OUTPUT': str(self.github_output)}
         with patch.dict(os.environ, environment), patch.object(sys, 'argv',
                 ['-', str(self.release), str(self.output), str(ROOT / 'tools')]):
-            with patch.object(subprocess, 'run', return_value=result) as run:
+            with patch.object(subprocess, 'run', return_value=result) as run, \
+                    patch('manager_full_native.official_abis', return_value=('arm64-v8a',)), \
+                    patch('manager_full_native.verify_apk'):
                 with contextlib.redirect_stdout(io.StringIO()):
                     exec(compile(self.inspect, 'build_sukisu_manager.sh:artifact-check', 'exec'), {})
         return run

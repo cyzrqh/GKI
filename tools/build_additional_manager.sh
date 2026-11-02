@@ -93,68 +93,10 @@ cargo --version
 
 python3 "$build_tools/prepare_additional_gradle.py" --source "$source_dir" --variant "$KSU_VARIANT"
 
-# Isolate native NDK flags from the manager's own Gradle NDK configuration.
-(
-if [ "$KSU_VARIANT" = KernelSU-Next ]; then
-  export ANDROID_NDK_HOME="$ANDROID_HOME/ndk/29.0.14206865"
-  export ANDROID_NDK_ROOT="$ANDROID_NDK_HOME"
-  test -d "$ANDROID_NDK_HOME"
-fi
-if [ -f .github/scripts/setup-rust-build.sh ]; then
-  source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
-else
-  # Same NDK r29/API 26 compiler as Next's native ksuinit workflow. Its ksud
-  # normally uses cross; bindgen and cc-rs can use the same prepared local NDK.
-  LLVM_PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
-  LLVM_BIN="$LLVM_PATH/bin"
-  CLANG_PATH="$LLVM_BIN/aarch64-linux-android26-clang"
-  test -x "$CLANG_PATH"
-  export CC_aarch64_linux_android="$CLANG_PATH"
-  export CXX_aarch64_linux_android="${CLANG_PATH}++"
-  export AR_aarch64_linux_android="$LLVM_BIN/llvm-ar"
-  export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$CLANG_PATH"
-  export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--sysroot=$LLVM_PATH/sysroot -I$LLVM_PATH/sysroot/usr/include/aarch64-linux-android"
-fi
-if [ -f userspace/ksuinit/Cargo.toml ]; then
-  builtins="$("$CLANG_PATH" --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
-  [ -f "$builtins" ] || { echo 'NDK ARM64 compiler builtins were not found.' >&2; exit 1; }
-  echo 'Building ARM64 ksuinit from the same source.'
-  RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$builtins" \
-    cargo build --locked --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
-  test -s "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit"
-  mkdir -p userspace/ksud/bin/aarch64
-  cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit" userspace/ksud/bin/aarch64/ksuinit
-fi
-
-echo 'Building ARM64 ksud from the same source.'
-# Upstream enables rust-embed compression and explicitly requires cleaning
-# this crate after its binary assets change. Retain compiled dependencies.
-cargo clean --manifest-path userspace/ksud/Cargo.toml -p ksud --target aarch64-linux-android --release
-cargo build --locked --target aarch64-linux-android --release --manifest-path userspace/ksud/Cargo.toml
-ksud="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
-[ -s "$ksud" ] || { echo 'The ARM64 ksud build produced no daemon.' >&2; exit 1; }
-python3 - "$ksud" "$build_tools" <<'PY'
-from pathlib import Path
-import struct
-import sys
-sys.path.insert(0, sys.argv[2])
-from manager_lkm_jobs import KMIS
-data = Path(sys.argv[1]).read_bytes()
-if (len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01'
-        or struct.unpack_from('<H', data, 16)[0] not in (2, 3)
-        or struct.unpack_from('<H', data, 18)[0] != 183):
-    raise SystemExit('The built ksud is not an ARM64 ELF executable.')
-missing = [kmi for kmi in KMIS if (kmi + '_kernelsu.ko').encode('ascii') not in data]
-if missing:
-    raise SystemExit('The built ksud is missing embedded native KMI modules: ' + ', '.join(missing))
-print('Verified eight native KMI assets in the built ARM64 ksud.')
-PY
-mkdir -p "$manager_dir/app/src/main/jniLibs/arm64-v8a"
-cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
-)
+bash "$build_tools/build_manager_native.sh" "$source_dir"
 
 cd "$manager_dir"
-echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
+echo 'Building the complete official-ABI release APK; signing is handled by the caller.'
 bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"
 
 python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools" <<'PY'
@@ -169,11 +111,20 @@ import sys
 import zipfile
 sys.path.insert(0, sys.argv[3])
 from manager_lkm_jobs import KMIS
+from manager_full_native import official_abis, verify_apk
 release, output = map(Path, sys.argv[1:3])
-apks = sorted(release.glob('*.apk'))
+source = release.parents[5]
+expected_abis = set(official_abis(source))
+apks = []
+for candidate in sorted(release.glob('*.apk')):
+    with zipfile.ZipFile(candidate) as archive:
+        abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and name.count('/') >= 2}
+    if abis == expected_abis:
+        apks.append(candidate)
 if len(apks) != 1:
     raise SystemExit(f'Expected exactly one release APK, found {len(apks)}.')
 apk = apks[0]
+verify_apk(source, apk)
 # Next and official managers assign an output filename ending in -release.apk
 # even when Gradle signing is disabled. Do not infer signing state from a name.
 if (not re.fullmatch(r'[A-Za-z0-9_.+@-]+-release(?:-unsigned)?\.apk', apk.name)
@@ -185,8 +136,8 @@ with zipfile.ZipFile(apk) as archive:
     if missing:
         raise SystemExit('Incomplete manager APK: ' + ', '.join(sorted(missing)))
     other_abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and len(name.split('/')) >= 3}
-    if other_abis != {'arm64-v8a'}:
-        raise SystemExit('The manager APK unexpectedly contains another ABI.')
+    if other_abis != expected_abis:
+        raise SystemExit('The manager APK lost an official architecture.')
     if archive.getinfo('lib/arm64-v8a/libksud.so').file_size == 0:
         raise SystemExit('The packaged ksud is empty.')
     packaged_ksud = archive.read('lib/arm64-v8a/libksud.so')
@@ -237,6 +188,6 @@ if os.environ.get('GITHUB_OUTPUT'):
     with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as stream:
         for name, value in metadata.items():
             stream.write(f'{name}={value}\n')
-print(f'Unsigned ARM64 manager APK: {target} ({target.stat().st_size} bytes)')
+print(f'Unsigned complete manager APK: {target} ({target.stat().st_size} bytes)')
 print(json.dumps(metadata, sort_keys=True))
 PY

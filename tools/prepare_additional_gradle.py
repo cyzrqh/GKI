@@ -1,4 +1,4 @@
-"""Keep native package IDs while building one unsigned ARM64 APK."""
+"""Keep the full official ABI configuration and native package IDs."""
 import argparse
 from pathlib import Path
 import re
@@ -23,13 +23,7 @@ def prepare(source: Path, variant: str):
     if count != 1:
         raise ValueError('Expected one native release build type')
     package = manager_profile(variant)['package']
-    # Existing defaultConfig may be inherited from the root Gradle project.
-    # finalizeDsl runs before AGP locks its model, including when defaults are
-    # inherited from the root project. aapt2 verifies the resulting package.
-    text += ('\nandroid { defaultConfig { applicationId = "' + package + '" } }\n'
-             'androidComponents { finalizeDsl { extension ->\n'
-             '    extension.defaultConfig.ndk.abiFilters.apply { clear(); add("arm64-v8a") }\n'
-             '} }\n')
+    text += '\nandroid { defaultConfig { applicationId = "' + package + '" } }\n'
     app.write_text(text, encoding='utf-8')
 
 

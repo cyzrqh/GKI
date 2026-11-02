@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build an ARM64 GKI manager from the checked-out SukiSU source; signing is separate.
+# Build the complete official SukiSU manager; signing is separate.
 set -euo pipefail
 build_tools="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
@@ -81,24 +81,13 @@ java -version
 rustc --version
 cargo --version
 
-# Keep the APK and its included daemon on the same ABI. The source patch is
-# intentionally limited to the official abiFilters list and rejects layout drift.
+# Keep the complete official ABI/split configuration.
 python3 - "$manager_dir/app/build.gradle.kts" <<'PY'
 from pathlib import Path
 import re
 import sys
 path = Path(sys.argv[1])
 text = path.read_text(encoding='utf-8')
-pattern = re.compile(r'\babiFilters\s*\+=\s*listOf\(([^)]*)\)')
-matches = list(pattern.finditer(text))
-if len(matches) != 1:
-    raise SystemExit('Expected one official manager abiFilters list; review the source before building.')
-values = matches[0].group(1)
-abis = re.findall(r'"([A-Za-z0-9_-]+)"', values)
-rest = re.sub(r'"[A-Za-z0-9_-]+"', '', values)
-if not abis or 'arm64-v8a' not in abis or rest.strip(' ,\r\n\t'):
-    raise SystemExit('Unexpected manager ABI configuration; refusing to replace it.')
-text = pattern.sub('abiFilters += listOf("arm64-v8a")', text, count=1)
 # The upstream signing plugin falls back to the shared debug key when no
 # keystore is present. Remove only its known declaration/configuration so the
 # release remains unsigned until the separate private signing step.
@@ -121,51 +110,14 @@ if len(list(release.finditer(text))) != 1:
     raise SystemExit('Expected one release build type to keep unsigned.')
 text = release.sub(lambda m: m.group(0) + '\n' + m.group(1) + '    signingConfig = null', text, count=1)
 path.write_text(text, encoding='utf-8')
-print('Manager APK ABI: arm64-v8a')
+print('Official APK architecture configuration preserved')
 print('Release signing: separate workflow step')
 PY
 
-# The upstream helper configures the Android linker, archiver and bindgen sysroot.
-source .github/scripts/setup-rust-build.sh aarch64-linux-android 26
-if [ -f userspace/ksuinit/Cargo.toml ]; then
-  builtins="$("$CLANG_PATH" --print-resource-dir)/lib/linux/libclang_rt.builtins-aarch64-android.a"
-  [ -f "$builtins" ] || { echo 'NDK ARM64 compiler builtins were not found.' >&2; exit 1; }
-  echo 'Building ARM64 ksuinit from the same source.'
-  RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-Wl,-z,max-page-size=16384 -C link-arg=-Wno-unused-command-line-argument -C link-arg=$builtins" \
-    cargo build --locked --manifest-path userspace/ksuinit/Cargo.toml --target aarch64-linux-android --release
-  test -s "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit"
-  mkdir -p userspace/ksud/bin/aarch64
-  cp "$CARGO_TARGET_DIR/aarch64-linux-android/release/ksuinit" userspace/ksud/bin/aarch64/ksuinit
-fi
-
-echo 'Building ARM64 ksud from the same source.'
-# Upstream enables rust-embed compression and explicitly requires cleaning
-# this crate after its binary assets change. Retain compiled dependencies.
-cargo clean -p ksud --target aarch64-linux-android --release
-cargo build --locked --target aarch64-linux-android --release --manifest-path userspace/ksud/Cargo.toml
-ksud="$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"
-[ -s "$ksud" ] || { echo 'The ARM64 ksud build produced no daemon.' >&2; exit 1; }
-python3 - "$ksud" "$build_tools" <<'PY'
-from pathlib import Path
-import struct
-import sys
-sys.path.insert(0, sys.argv[2])
-from manager_lkm_jobs import KMIS
-data = Path(sys.argv[1]).read_bytes()
-if (len(data) < 64 or data[:7] != b'\x7fELF\x02\x01\x01'
-        or struct.unpack_from('<H', data, 16)[0] not in (2, 3)
-        or struct.unpack_from('<H', data, 18)[0] != 183):
-    raise SystemExit('The built ksud is not an ARM64 ELF executable.')
-missing = [kmi for kmi in KMIS if (kmi + '_kernelsu.ko').encode('ascii') not in data]
-if missing:
-    raise SystemExit('The built ksud is missing embedded native KMI modules: ' + ', '.join(missing))
-print('Verified eight native KMI assets in the built ARM64 ksud.')
-PY
-mkdir -p "$manager_dir/app/src/main/jniLibs/arm64-v8a"
-cp "$ksud" "$manager_dir/app/src/main/jniLibs/arm64-v8a/libksud.so"
+bash "$build_tools/build_manager_native.sh" "$source_dir"
 
 cd "$manager_dir"
-echo 'Building unsigned ARM64 release APK; signing is handled by the caller.'
+echo 'Building the complete official-ABI release APK; signing is handled by the caller.'
 bash ./gradlew --no-daemon --stacktrace --build-cache assembleRelease -PKSU_PACKAGE_NAME="$KSU_PACKAGE_NAME"
 
 python3 - "$manager_dir/app/build/outputs/apk/release" "$output_dir" "$build_tools" <<'PY'
@@ -180,11 +132,20 @@ import sys
 import zipfile
 sys.path.insert(0, sys.argv[3])
 from manager_lkm_jobs import KMIS
+from manager_full_native import official_abis, verify_apk
 release, output = map(Path, sys.argv[1:3])
-apks = sorted(release.glob('*.apk'))
+source = release.parents[5]
+expected_abis = set(official_abis(source))
+apks = []
+for candidate in sorted(release.glob('*.apk')):
+    with zipfile.ZipFile(candidate) as archive:
+        abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and name.count('/') >= 2}
+    if abis == expected_abis:
+        apks.append(candidate)
 if len(apks) != 1:
     raise SystemExit(f'Expected exactly one release APK, found {len(apks)}.')
 apk = apks[0]
+verify_apk(source, apk)
 if 'unsigned' not in apk.stem.lower():
     raise SystemExit('Expected the unsigned release APK; signing material must remain outside the source build.')
 if not apk.name.endswith('-unsigned.apk') or any(ord(char) < 32 or ord(char) > 126 for char in apk.name):
@@ -195,8 +156,8 @@ with zipfile.ZipFile(apk) as archive:
     if missing:
         raise SystemExit('Incomplete manager APK: ' + ', '.join(sorted(missing)))
     other_abis = {name.split('/')[1] for name in archive.namelist() if name.startswith('lib/') and len(name.split('/')) >= 3}
-    if other_abis != {'arm64-v8a'}:
-        raise SystemExit('The manager APK unexpectedly contains another ABI.')
+    if other_abis != expected_abis:
+        raise SystemExit('The manager APK lost an official architecture.')
     if archive.getinfo('lib/arm64-v8a/libksud.so').file_size == 0:
         raise SystemExit('The packaged ksud is empty.')
     packaged_ksud = archive.read('lib/arm64-v8a/libksud.so')
@@ -246,6 +207,6 @@ if os.environ.get('GITHUB_OUTPUT'):
     with Path(os.environ['GITHUB_OUTPUT']).open('a', encoding='utf-8', newline='\n') as stream:
         for name, value in metadata.items():
             stream.write(f'{name}={value}\n')
-print(f'Unsigned ARM64 manager APK: {target} ({target.stat().st_size} bytes)')
+print(f'Unsigned complete manager APK: {target} ({target.stat().st_size} bytes)')
 print(json.dumps(metadata, sort_keys=True))
 PY

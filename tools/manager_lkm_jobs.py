@@ -120,7 +120,8 @@ def lkm_cache_key(kmi_expr: str, ddk_short_expr: str) -> str:
     fields = ('runner.os', 'runner.arch', 'needs.prepare-matrix.outputs.ksu_ref',
               'needs.prepare-matrix.outputs.manager_package', 'needs.prepare-matrix.outputs.manager_cert_size',
               'needs.prepare-matrix.outputs.manager_cert_sha256', kmi_expr, ddk_short_expr)
-    key = 'gki-sukisu-lkm-v2-' + '-'.join(expression(field) for field in fields)
+    key = 'gki-sukisu-lkm-v3-full-' + '-'.join(expression(field) for field in fields)
+    key += expression("format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))")
     # Same upstream SHA/certificate can now have a different native BakaSU
     # bridge. Bind both producer and consumer to the exact reviewed port;
     # the false branch is empty so every existing SukiSU cache key is intact.
@@ -251,6 +252,9 @@ python3 tools/prepare_manager_lkm.py stage --source manager-source \
   --artifacts "manager-lkm/$KMI" --identity manager-public-certificate.json \
   --expected-ref "$KSU_REF" --expected-kmis "$KMI" \
   --report "$RUNNER_TEMP/manager-lkm-verified.json"
+python3 tools/manager_full_native.py stage --source manager-source \
+  --directory manager-lkm --identity manager-public-certificate.json \
+  --expected-ref "$KSU_REF" --kmi "$KMI"
 '''},
             {'name': '编译并核实同版本原生模块',
              'if': "steps.lkm-cache.outputs.cache-hit != 'true'", 'env': build_env,
@@ -291,6 +295,9 @@ python3 tools/prepare_manager_lkm.py record --source manager-source \
   --identity manager-public-certificate.json --expected-ref "$KSU_REF" \
   --ddk-image "$DDK_IMAGE" --output "manager-lkm/$KMI"
 '''},
+            {'name': '补齐官方 x86 模块和原生 SUSFS 组件',
+             'if': "steps.lkm-cache.outputs.cache-hit != 'true'", 'env': build_env,
+             'run': 'bash tools/build_manager_extras.sh'},
             {'name': '保存已核实的原生模块供管理器使用',
              'if': "steps.lkm-cache.outputs.cache-hit != 'true'",
              'uses': 'actions/cache/save@v5', 'timeout-minutes': 3,

@@ -850,7 +850,8 @@ class WorkflowTests(unittest.TestCase):
         steps = self.workflow['jobs']['build-sukisu-manager']['steps']
         source = (ROOT / 'tools/build_sukisu_manager.sh').read_text(encoding='utf-8')
         self.assertIn('export CARGO_TARGET_DIR="$source_dir/target"', source)
-        self.assertIn('"$CARGO_TARGET_DIR/aarch64-linux-android/release/ksud"', source)
+        native_source = (ROOT / 'tools/build_manager_native.sh').read_text(encoding='utf-8')
+        self.assertIn('"$CARGO_TARGET_DIR/$triple/release/ksud"', native_source)
         sign = next(i for i, step in enumerate(steps) if step.get('id') == 'sign')
         upload = next(i for i, step in enumerate(steps) if step.get('name') == '上传管理器安装包')
         for label in ('Gradle', 'Cargo'):

@@ -252,6 +252,8 @@ PY
              'run': '''python3 tools/prepare_manager_lkm.py stage --source manager-source --artifacts manager-lkm \\
   --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF" \\
   --expected-kmis "''' + ','.join(KMIS) + '''" --report "$RUNNER_TEMP/manager-lkm-stage.json"
+python3 tools/manager_full_native.py stage --source manager-source --directory manager-lkm \\
+  --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
 '''},
             {'name': '配置 BakaSU 配套管理器签名提示',
              'if': "inputs.kernelsu_variant == 'BakaSU'",
@@ -286,7 +288,7 @@ else
   echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/29.0.14206865" >> "$GITHUB_ENV"
 fi
 '''},
-            {'name': '准备 ARM64 Rust 工具链',
+            {'name': '准备管理器原生 Rust 工具链',
              'run': '''set -euo pipefail
 toolchain=stable
 if [ "$KSU_VARIANT" = BakaSU ]; then toolchain=nightly; fi
@@ -571,7 +573,9 @@ fi
     steps.insert(steps.index(compile_step), {
         'name': '检查 SUSFS 与 KernelSU 接口配套',
         'if': "inputs.enable_susfs && inputs.ksu_variant != 'None'",
-        'run': 'python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"',
+        'run': '''python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_priority.py" --kernel-root "$KERNEL_ROOT"
+python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"
+''',
     })
     kpm = step_named(steps, '应用 KPM 补丁 (SukiSU/BakaSU)')
     steps.insert(steps.index(compile_step), {
@@ -737,6 +741,7 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
              'run': '''set -euo pipefail
 command -v cc >/dev/null
 python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
+python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
 '''},
             {'name': '验证共享源码还原及原生符号接口',
              'if': BUILD_IF,

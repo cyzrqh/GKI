@@ -18,6 +18,7 @@ from manager_lkm_jobs import KMIS
 from manager_variants import manager_profile, valid_manager_apk_filename
 from prepare_additional_gradle import prepare
 from sign_sukisu_manager import redact
+from manager_full_native import official_abis, verify_apk
 
 BUILD_ALIAS = 'gki-fina-build-only'
 
@@ -47,7 +48,7 @@ def build(source: Path, output: Path):
     environment = {**{name: value for name, value in os.environ.items()
         if name not in ('SUKISU_APK_KEYSTORE', 'SUKISU_APK_PASSWORD')
         and not name.startswith('ORG_GRADLE_PROJECT_KEY')},
-                   'ABIS': 'arm64-v8a', 'KMIS': ' '.join(KMIS),
+                   'ABIS': ' '.join(official_abis(source)), 'KMIS': ' '.join(KMIS),
                    'CARGO_TARGET_DIR': str(source / 'target'),
                    'OUT_DIR': str(output / 'native-fina'), 'APP_BUILD_TYPE': 'release',
                    'KSUD_BUILD_TYPE': 'release', 'KSU_PACKAGE_NAME': manager_profile('FinaSU')['package']}
@@ -64,29 +65,35 @@ def build(source: Path, output: Path):
         environment['KEYSTORE_PROPS'] = str(properties)
         # Paired, certificate-checked KernelSU LKMs are staged by the existing
         # eight-KMI job. Preserve them; build the remaining native dependencies.
-        arguments = ['bash', 'build.sh', 'nomount', 'sui', 'ksuinit', 'ksud', 'apk', 'repack']
-        with subprocess.Popen(arguments, cwd=source, env=environment, stdout=subprocess.PIPE,
-                              stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace') as process:
-            for line in process.stdout:
-                print(redact(line.rstrip(), (password,)), flush=True)
-            if process.wait():
-                raise ValueError('FinaSU canonical native build/packaging failed')
+        commands = [
+            ['bash', 'build.sh', 'nomount', 'sui', 'apk'],
+            ['bash', str(Path(__file__).with_name('build_manager_native.sh')), str(source)],
+            ['bash', 'build.sh', 'repack'],
+        ]
+        for arguments in commands:
+            with subprocess.Popen(arguments, cwd=source, env=environment, stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace') as process:
+                for line in process.stdout:
+                    print(redact(line.rstrip(), (password,)), flush=True)
+                if process.wait():
+                    raise ValueError('FinaSU canonical native build/packaging failed')
     apks = list((output / 'native-fina').rglob('*.apk'))
     if len(apks) != 1 or apks[0].is_symlink():
-        raise ValueError('Expected exactly one canonically repacked ARM64 FinaSU APK')
+        raise ValueError('Expected exactly one canonically repacked full-ABI FinaSU APK')
     apk = apks[0]
     with zipfile.ZipFile(apk) as archive:
         identity = manifest_identity(archive.read('AndroidManifest.xml'))
         names = archive.namelist()
         abis = {name.split('/')[1] for name in names if name.startswith('lib/') and len(name.split('/')) >= 3}
-        if abis != {'arm64-v8a'} or archive.testzip() is not None:
-            raise ValueError('FinaSU must contain only the verified ARM64 native build')
+        if abis != set(official_abis(source)) or archive.testzip() is not None:
+            raise ValueError('FinaSU APK is missing an official architecture')
         daemon = archive.read('lib/arm64-v8a/libksud.so')
         if (len(daemon) < 64 or daemon[:7] != b'\x7fELF\x02\x01\x01'
                 or struct.unpack_from('<H', daemon, 18)[0] != 183):
             raise ValueError('The canonically repacked FinaSU daemon is not ARM64')
         if any((kmi + '_kernelsu.ko').encode() not in daemon for kmi in KMIS):
             raise ValueError('FinaSU is missing paired native KMI modules')
+    verify_apk(source, apk)
     if identity['package'] != manager_profile('FinaSU')['package']:
         raise ValueError('FinaSU package differs from the official application ID')
     final_name = apk.name.removesuffix('-unsigned.apk') + '.apk' if apk.name.endswith('-unsigned.apk') else apk.name

@@ -315,6 +315,8 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         if profile['kernel_version'] == '6.6':
             from ensure_susfs_map_compat import ensure_map_compat
             ensure_map_compat(root)
+        from ensure_susfs_priority import complete_priority
+        complete_priority(root)
         result = validate_hooks(root, variant=variant)
         if not result.calls or not result.ok:
             raise ValueError('The vendor SUSFS hooks do not match the selected manager implementation')

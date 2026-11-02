@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import random
 from pathlib import Path
 import shutil
 import sys
@@ -31,6 +32,7 @@ class MemoryApi:
         self.operations = []
         self.fail_upload = False
         self.fail_downloads = 0
+        self.next_id = 1000
 
     def json(self, path, *, method='GET', document=None, missing=False):
         self.operations.append((method, path))
@@ -55,7 +57,8 @@ class MemoryApi:
             if self.fail_upload:
                 raise cache.TransferError('Simulated interrupted upload')
             from urllib.parse import parse_qs, urlsplit
-            identity = len(self.blobs) + 1000
+            identity = self.next_id
+            self.next_id += 1
             raw = file.read_bytes()
             self.blobs[identity] = raw
             self.release['assets'].append({'id': identity, 'name': parse_qs(urlsplit(path).query)['name'][0],
@@ -89,6 +92,76 @@ class PersistentCacheTests(unittest.TestCase):
 
     def restore(self):
         return cache.restore(self.api, self.destination, KEY, 'ccache', PRODUCER)
+
+    def test_large_cache_is_split_and_restored_without_discarding_objects(self):
+        data = random.Random(17).randbytes(6144)
+        (self.source / 'a/0/fullR').write_bytes(data)
+        with mock.patch.object(cache, 'MAX_ARCHIVE', 2048), mock.patch.object(cache, 'PART_BYTES', 1024):
+            self.assertTrue(self.save())
+            descriptor = json.loads(self.api.release['body'][len(cache.MARKER):])
+            self.assertEqual(2, descriptor['schema_version'])
+            self.assertGreater(len(descriptor['archive']['parts']), 1)
+            self.assertTrue(all(asset['size'] <= 2048 for asset in self.api.release['assets']))
+            self.assertTrue(self.restore())
+        self.assertEqual(data, (self.destination / 'a/0/fullR').read_bytes())
+        self.assertFalse((self.destination / 'ccache.conf').exists())
+
+    def test_legacy_single_archive_is_restored_and_marked_for_upgrade(self):
+        self.save()
+        document = json.loads(self.api.release['body'][len(cache.MARKER):])
+        document['schema_version'] = 1
+        document['archive'].pop('parts')
+        self.api.release['assets'][0]['name'] = document['archive']['name']
+        self.api.release['body'] = cache.MARKER + json.dumps(document)
+        self.assertTrue(self.restore())
+        self.assertEqual(1, self.api.restored_schema)
+        self.assertTrue(self.save())
+        self.assertEqual(2, json.loads(self.api.release['body'][len(cache.MARKER):])['schema_version'])
+
+    def test_corrupt_part_never_publishes_partial_restored_objects(self):
+        (self.source / 'a/0/fullR').write_bytes(random.Random(18).randbytes(6144))
+        with mock.patch.object(cache, 'MAX_ARCHIVE', 2048), mock.patch.object(cache, 'PART_BYTES', 1024):
+            self.save()
+            identity = self.api.release['assets'][1]['id']
+            raw = self.api.blobs[identity]
+            self.api.blobs[identity] = bytes([raw[0] ^ 1]) + raw[1:]
+            self.destination.mkdir()
+            (self.destination / 'keep').write_bytes(b'previous objects')
+            with self.assertRaisesRegex(ValueError, 'part integrity'):
+                self.restore()
+        self.assertEqual([self.destination / 'keep'], list(self.destination.iterdir()))
+
+    def test_failed_second_part_keeps_previous_published_snapshot_usable(self):
+        self.save()
+        old_body = self.api.release['body']
+        (self.source / 'a/0/fullR').write_bytes(random.Random(19).randbytes(6144))
+        stream = self.api.stream
+        uploads = 0
+        def fail_second(path, file, *, upload=False):
+            nonlocal uploads
+            if upload:
+                uploads += 1
+                if uploads == 2:
+                    raise cache.TransferError('interrupted second part')
+            return stream(path, file, upload=upload)
+        with mock.patch.object(cache, 'MAX_ARCHIVE', 2048), mock.patch.object(cache, 'PART_BYTES', 1024), \
+                mock.patch.object(self.api, 'stream', side_effect=fail_second):
+            with self.assertRaises(cache.TransferError):
+                self.save()
+        self.assertEqual(old_body, self.api.release['body'])
+        self.assertTrue(self.restore())
+        self.assertFalse((self.destination / 'a/0/fullR').exists())
+
+    def test_part_order_and_sizes_are_checked_before_download(self):
+        (self.source / 'a/0/fullR').write_bytes(random.Random(20).randbytes(6144))
+        with mock.patch.object(cache, 'MAX_ARCHIVE', 2048), mock.patch.object(cache, 'PART_BYTES', 1024):
+            self.save()
+            release = copy.deepcopy(self.api.release)
+            document = json.loads(release['body'][len(cache.MARKER):])
+            document['archive']['parts'].reverse()
+            release['body'] = cache.MARKER + json.dumps(document)
+            with self.assertRaisesRegex(ValueError, 'part descriptor'):
+                cache.control(release, KEY, 'ccache', PRODUCER)
 
     def test_shared_manager_restore_keeps_kernel_key_and_never_changes_saved_namespace(self):
         class ScopedApi(MemoryApi):
@@ -281,7 +354,7 @@ class PersistentWorkflowTests(unittest.TestCase):
         oplus = oplus_workflow.create_workflow(ROOT, base)
         for worker in (base['jobs']['build-kernel'], oplus['jobs']['build-oplus-kernel']):
             steps = worker['steps']
-            self.assertEqual('1536M', worker['env']['CCACHE_MAXSIZE'])
+            self.assertEqual('4096M', worker['env']['CCACHE_MAXSIZE'])
             for kind in ('ccache', 'bazel') if worker is base['jobs']['build-kernel'] else ('ccache',):
                 restore = next(step for step in steps if step.get('id') == 'persistent-' + kind + '-restore')
                 save = next(step for step in steps if step.get('id') == 'persistent-' + kind + '-save')
@@ -294,6 +367,7 @@ class PersistentWorkflowTests(unittest.TestCase):
                 local = next(step for step in steps if step.get('uses') == 'actions/cache/restore@v5'
                              and 'steps.persistent-' + kind + '-restore.outputs.restored' in step.get('if', ''))
                 self.assertLess(steps.index(restore), steps.index(local))
+                self.assertIn('outputs.legacy', local['if'])
                 self.assertIn("!= 'true'", local['if'])
                 fallback = next(step for step in steps if step.get('uses') == 'actions/cache/save@v5'
                                 and 'steps.persistent-' + kind + '-save.outputs.saved' in step.get('if', ''))

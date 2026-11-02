@@ -183,9 +183,17 @@ KERNEL_JOB_IF = ("always() && !cancelled() && needs.prepare-matrix.result == 'su
 MANAGER_GRADLE_CACHE = '~/.gradle/caches/modules-2\n~/.gradle/wrapper\n'
 MANAGER_GRADLE_BUILD_CACHE = '~/.gradle/caches/build-cache-1'
 MANAGER_GRADLE_BUILD_CACHE_PREFIX = (
-    'gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-'
+    'gki-manager-gradle-build-v2-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-'
     "${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', "
     "'manager-source/manager/gradle/libs.versions.toml') }}-"
+)
+MANAGER_CARGO_CACHE_PREFIX = (
+    'gki-manager-cargo-v3-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-'
+    '${{ steps.manager-rust-version.outputs.version }}-'
+    "${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', "
+    "'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', "
+    "'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', "
+    "'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-"
 )
 MANAGER_CARGO_CACHE = (
     '~/.cargo/registry/index\n~/.cargo/registry/cache\n~/.cargo/registry/src\n~/.cargo/git/db\n'
@@ -200,7 +208,8 @@ MANAGER_CARGO_CACHE = (
 def manager_job():
     job = {
         'name': '编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK', 'if': MANAGER_IF,
-        'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}'},
+        'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}',
+                'GRADLE_OPTS': '-Dorg.gradle.caching=true'},
         'needs': ['prepare-matrix', 'build-sukisu-lkm'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 60,
         'permissions': {'contents': 'read', 'actions': 'read'},
         'outputs': {'manager_job_id': '${{ steps.manager-producer.outputs.manager_job_id }}',
@@ -275,7 +284,8 @@ python3 tools/configure_bakasu_manager_notice.py --source "$GITHUB_WORKSPACE/man
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_GRADLE_BUILD_CACHE,
                      'key': MANAGER_GRADLE_BUILD_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
-                      'restore-keys': MANAGER_GRADLE_BUILD_CACHE_PREFIX}},
+                      'restore-keys': MANAGER_GRADLE_BUILD_CACHE_PREFIX + '\n' + MANAGER_GRADLE_BUILD_CACHE_PREFIX.replace(
+                          'gki-manager-gradle-build-v2-${{ inputs.kernelsu_variant }}-', 'gki-manager-gradle-build-v1-')}},
             {'name': '准备 Android SDK 与 NDK',
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -302,8 +312,9 @@ rustup target add aarch64-linux-android --toolchain "$toolchain"
              'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 3,
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_CARGO_CACHE,
-                      'key': "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh') }}",
-                      'restore-keys': "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-"}},
+                      'key': MANAGER_CARGO_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
+                      'restore-keys': MANAGER_CARGO_CACHE_PREFIX + '\n'
+                          + "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-"}},
             {'name': '编译管理器与同版本 ksud',
              'id': 'manager-build',
              'env': {'KSU_PACKAGE_NAME': '${{ needs.prepare-matrix.outputs.manager_package }}',
@@ -363,7 +374,7 @@ bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEM
              'with': {'path': MANAGER_GRADLE_CACHE,
                       'key': '${{ steps.manager-gradle-cache.outputs.cache-primary-key }}'}},
             {'name': '保存管理器 Cargo 依赖', 'uses': 'actions/cache/save@v5',
-             'if': "always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'",
+             'if': "always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-cargo-cache.outputs.cache-primary-key != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'",
              'continue-on-error': True, 'timeout-minutes': 3,
              'with': {'path': MANAGER_CARGO_CACHE,
                       'key': '${{ steps.manager-cargo-cache.outputs.cache-primary-key }}'}},

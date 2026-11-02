@@ -697,6 +697,7 @@ jobs:
     if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-lkm.result == 'success'
     env:
       KSU_VARIANT: ${{ matrix.variant }}
+      GRADLE_OPTS: -Dorg.gradle.caching=true
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     needs:
     - prepare-matrix
@@ -1654,10 +1655,11 @@ jobs:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ~/.gradle/caches/build-cache-1
-        key: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
+        key: gki-manager-gradle-build-v2-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
           'manager-source/manager/gradle/libs.versions.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
-          'manager-source/manager/gradle/libs.versions.toml') }}-
+        restore-keys: |-
+          gki-manager-gradle-build-v2-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
+          gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
     - name: 准备 Android SDK 与 NDK
       run: |
         set -euo pipefail
@@ -1702,12 +1704,13 @@ jobs:
           manager-source/target/release/.fingerprint
           !manager-source/target/**/release/deps/ksud-*
           !manager-source/target/**/release/deps/ksuinit-*
-        key: gki-manager-cargo-${{ matrix.variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{
-          steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml',
-          'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh')
-          }}
-        restore-keys: gki-manager-cargo-${{ matrix.variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch
-          }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
+        key: gki-manager-cargo-v3-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version
+          }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml',
+          'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh',
+          'tools/build_fina_manager.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |-
+          gki-manager-cargo-v3-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
+          gki-manager-cargo-${{ matrix.variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
     - name: 编译管理器与同版本 ksud
       id: manager-build
       env:
@@ -1786,7 +1789,7 @@ jobs:
         key: ${{ steps.manager-gradle-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Cargo 依赖
       uses: actions/cache/save@v5
-      if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key
+      if: always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-cargo-cache.outputs.cache-primary-key
         != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'
       continue-on-error: true
       timeout-minutes: 3
@@ -1838,7 +1841,7 @@ jobs:
       AK3_REF: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
       PATCHES_REF: ${{ needs.prepare-matrix.outputs[format('{0}_patches_ref', matrix.variant)] }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
-      CCACHE_MAXSIZE: 1536M
+      CCACHE_MAXSIZE: 4096M
       GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
@@ -1983,7 +1986,8 @@ jobs:
         --key "$OBJECT_CACHE_KEY"
     - name: 恢复本平台与内核的编译对象缓存
       id: oplus-ccache
-      if: steps.persistent-ccache-restore.outputs.restored != 'true'
+      if: steps.persistent-ccache-restore.outputs.restored != 'true' || steps.persistent-ccache-restore.outputs.legacy ==
+        'true'
       uses: actions/cache/restore@v5
       timeout-minutes: 2
       continue-on-error: true
@@ -2289,7 +2293,7 @@ jobs:
       AK3_REF: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
       PATCHES_REF: ${{ needs.prepare-matrix.outputs[format('{0}_patches_ref', matrix.variant)] }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
-      CCACHE_MAXSIZE: 1536M
+      CCACHE_MAXSIZE: 4096M
       GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}

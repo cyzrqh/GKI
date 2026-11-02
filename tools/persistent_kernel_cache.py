@@ -26,6 +26,7 @@ from transfer_ksu_snapshot import GitHub, NoRedirect, PUBLIC_DOWNLOAD_HOSTS, Tra
 
 MARKER = '<!-- gki-persistent-objects:v1 -->\n'
 MAX_ARCHIVE = 1900 * 1024 * 1024
+PART_BYTES = 1024 * 1024 * 1024
 MAX_EXPANDED = 8 * 1024 * 1024 * 1024
 MAX_FILES = 250000
 DIGEST = re.compile(r'[0-9a-f]{64}\Z')
@@ -82,7 +83,7 @@ def excluded(name: str) -> bool:
             or parts[-1].endswith(('.lock', '.tmp')))
 
 
-def pack(directory: Path, output: Path) -> dict:
+def pack(directory: Path, output: Path, *, maximum: int | None = None) -> dict:
     directory = checked_root(directory)
     files, expanded = [], 0
     for item in sorted(directory.rglob('*')):
@@ -113,7 +114,7 @@ def pack(directory: Path, output: Path) -> dict:
                 with item.open('rb') as stream:
                     archive.addfile(info, stream)
     size = output.stat().st_size
-    if size > MAX_ARCHIVE:
+    if size > (MAX_ARCHIVE if maximum is None else maximum):
         raise ValueError('Compilation cache archive exceeds the release-asset budget')
     return {'size': size, 'sha256': digest(output), 'expanded': expanded, 'files': len(files)}
 
@@ -212,21 +213,45 @@ def control(release: dict, key: str, kind: str, producer: str, *, pending=False)
         raise ValueError('Persistent cache release identity differs')
     value = json.loads(release['body'][len(MARKER):])
     if (not isinstance(value, dict) or set(value) != {'schema_version', 'key', 'kind', 'producer', 'archive'}
-            or value['schema_version'] != 1 or type(value['schema_version']) is not int
+            or value['schema_version'] not in (1, 2) or type(value['schema_version']) is not int
             or value['key'] != key or value['kind'] != kind or not isinstance(value['producer'], str)
             or value['producer'].casefold() != producer.casefold()):
         raise ValueError('Persistent cache ownership metadata differs')
     entry = value['archive']
-    if (not isinstance(entry, dict) or set(entry) != {'name', 'size', 'sha256', 'expanded', 'files'}
+    version = value['schema_version']
+    fields = {'name', 'size', 'sha256', 'expanded', 'files'} | ({'parts'} if version == 2 else set())
+    if (not isinstance(entry, dict) or set(entry) != fields
             or not isinstance(entry['sha256'], str) or not DIGEST.fullmatch(entry['sha256'])
             or entry['name'] != 'objects-' + entry['sha256'] + '.tar.gz'
             or any(type(entry[name]) is not int for name in ('size', 'expanded', 'files'))
-            or not 0 < entry['size'] <= MAX_ARCHIVE or not 0 <= entry['expanded'] <= MAX_EXPANDED
+            or not 0 < entry['size'] <= (MAX_ARCHIVE if version == 1 else MAX_EXPANDED)
+            or not 0 <= entry['expanded'] <= MAX_EXPANDED
             or not 0 < entry['files'] <= MAX_FILES):
         raise ValueError('Invalid persistent cache archive descriptor')
     assets = release.get('assets')
     if not isinstance(assets, list) or any(not isinstance(asset, dict) for asset in assets):
         raise ValueError('Persistent cache assets are unavailable')
+    if version == 2:
+        parts = entry['parts']
+        if not isinstance(parts, list) or not 1 <= len(parts) <= 16:
+            raise ValueError('Invalid compilation cache parts')
+        matched_parts = []
+        for index, part in enumerate(parts):
+            if (not isinstance(part, dict) or set(part) != {'name', 'size', 'sha256'}
+                    or part['name'] != entry['name'] + f'.part-{index:04d}'
+                    or type(part['size']) is not int or not 0 < part['size'] <= MAX_ARCHIVE
+                    or not isinstance(part['sha256'], str) or not DIGEST.fullmatch(part['sha256'])):
+                raise ValueError('Invalid compilation cache part descriptor')
+            matches = [asset for asset in assets if asset.get('name') == part['name']]
+            if not matches and pending and release.get('draft') is True:
+                return entry, None
+            if (len(matches) != 1 or type(matches[0].get('id')) is not int or matches[0]['id'] < 1
+                    or matches[0].get('size') != part['size'] or matches[0].get('state') != 'uploaded'):
+                raise ValueError('Persistent cache part is missing or incomplete')
+            matched_parts.append(matches[0])
+        if sum(part['size'] for part in parts) != entry['size']:
+            raise ValueError('Persistent cache part sizes differ from the full archive')
+        return entry, {'parts': matched_parts}
     matched = [asset for asset in assets if asset.get('name') == entry['name']]
     if not matched and pending and release.get('draft') is True:
         return entry, None
@@ -246,13 +271,25 @@ def restore(api, directory: Path, key: str, kind: str, producer: str) -> bool:
         try:
             with temporary_directory(directory.parent, '.gki-object-download-') as staging:
                 archive = staging / 'objects.tar.gz'
-                api.stream('/releases/assets/' + str(asset['id']), archive)
+                if 'parts' in entry:
+                    with archive.open('xb') as output:
+                        for index, (part, remote) in enumerate(zip(entry['parts'], asset['parts'])):
+                            local = staging / f'part-{index:04d}'
+                            api.stream('/releases/assets/' + str(remote['id']), local)
+                            if local.stat().st_size != part['size'] or digest(local) != part['sha256']:
+                                raise ValueError('Persistent cache part integrity check failed')
+                            with local.open('rb') as data:
+                                shutil.copyfileobj(data, output, 1024 * 1024)
+                            local.unlink()
+                else:
+                    api.stream('/releases/assets/' + str(asset['id']), archive)
                 unpack(archive, directory, entry)
             break
         except TransferError:
             if attempt == 2:
                 raise
             time.sleep(attempt + 1)
+    api.restored_schema = 2 if 'parts' in entry else 1
     return True
 
 
@@ -305,9 +342,38 @@ def save(api, directory: Path, key: str, kind: str, producer: str) -> bool:
     tag = key_identity(key, kind)
     with temporary_directory(directory.parent, '.gki-object-upload-') as staging:
         archive = staging / 'objects.tar.gz'
-        entry = pack(directory, archive)
+        entry = pack(directory, archive, maximum=MAX_EXPANDED)
         entry['name'] = 'objects-' + entry['sha256'] + '.tar.gz'
-        descriptor = {'schema_version': 1, 'key': key, 'kind': kind, 'producer': producer, 'archive': entry}
+        uploads = [(entry['name'], archive, entry['size'])]
+        if entry['size'] > MAX_ARCHIVE:
+            parts = []
+            uploads = []
+            with archive.open('rb') as data:
+                index = 0
+                while data.tell() < entry['size']:
+                    path = staging / f'part-{index:04d}'
+                    remaining = min(PART_BYTES, MAX_ARCHIVE)
+                    with path.open('xb') as output:
+                        while remaining > 0:
+                            block = data.read(min(1024 * 1024, remaining))
+                            if not block:
+                                break
+                            output.write(block)
+                            remaining -= len(block)
+                    name = entry['name'] + f'.part-{index:04d}'
+                    part = {'name': name, 'size': path.stat().st_size, 'sha256': digest(path)}
+                    parts.append(part)
+                    uploads.append((name, path, part['size']))
+                    index += 1
+            if not 2 <= len(parts) <= 16:
+                raise ValueError('Persistent cache exceeds its part budget')
+            entry['parts'] = parts
+        else:
+            name = entry['name'] + '.part-0000'
+            entry['parts'] = [{'name': name, 'size': entry['size'], 'sha256': entry['sha256']}]
+            uploads = [(name, archive, entry['size'])]
+        descriptor = {'schema_version': 2, 'key': key, 'kind': kind, 'producer': producer, 'archive': entry}
+        print(f"缓存归档：{entry['size'] / (1024 * 1024):.1f} MiB，{len(entry['parts'])} 个分片。")
         body = MARKER + json.dumps(descriptor, sort_keys=True, separators=(',', ':'))
         release = find_for_save(api, tag)
         old_assets = []
@@ -322,9 +388,15 @@ def save(api, directory: Path, key: str, kind: str, producer: str) -> bool:
             old_assets = list(release['assets'])
         if not isinstance(release, dict) or type(release.get('id')) is not int:
             raise ValueError('Cannot prepare the dedicated cache release')
-        current = next((asset for asset in old_assets if asset.get('name') == entry['name']), None)
-        if current is None:
-            api.stream('/releases/' + str(release['id']) + '/assets?' + urlencode({'name': entry['name']}), archive, upload=True)
+        for name, file, size in uploads:
+            current = next((asset for asset in old_assets if asset.get('name') == name), None)
+            if current is not None and (current.get('size') != size or current.get('state') != 'uploaded'):
+                if type(current.get('id')) is not int:
+                    raise ValueError('Invalid pending cache asset')
+                api.json('/releases/assets/' + str(current['id']), method='DELETE')
+                current = None
+            if current is None:
+                api.stream('/releases/' + str(release['id']) + '/assets?' + urlencode({'name': name}), file, upload=True)
         api.json('/releases/' + str(release['id']), method='PATCH',
                  document={'body': body, 'draft': False, 'prerelease': True, 'make_latest': 'false'})
         verified = api.json('/releases/tags/' + tag)
@@ -333,9 +405,10 @@ def save(api, directory: Path, key: str, kind: str, producer: str) -> bool:
             return False  # Another successful run published a newer snapshot.
         # Only superseded object assets from this exact cache identity may be
         # removed. No builds, kernel Releases or unrelated repository files.
+        retained_names = {name for name, _, _ in uploads}
         for asset in old_assets:
-            if (type(asset.get('id')) is int and asset.get('name') != entry['name']
-                    and re.fullmatch(r'objects-[0-9a-f]{64}\.tar\.gz', str(asset.get('name', '')))):
+            if (type(asset.get('id')) is int and asset.get('name') not in retained_names
+                    and re.fullmatch(r'objects-[0-9a-f]{64}\.tar\.gz(?:\.part-\d{4})?', str(asset.get('name', '')))):
                 api.json('/releases/assets/' + str(asset['id']), method='DELETE')
         return True
 
@@ -356,6 +429,7 @@ def main(argv=None) -> int:
     token = os.environ.get('CACHE_TOKEN', '')
     state = 'unavailable'
     source_variant = None
+    legacy = False
     try:
         validate_repo(repository, producer)
         key_identity(args.key, args.kind)
@@ -365,13 +439,22 @@ def main(argv=None) -> int:
         else:
             result = (restore if args.operation == 'restore' else save)(api, args.directory, args.key, args.kind, producer)
         state = ('restored' if result else 'miss') if args.operation == 'restore' else ('saved' if result else 'superseded')
+        legacy = args.operation == 'restore' and result and getattr(api, 'restored_schema', 0) == 1
         print('Persistent compilation cache: ' + state)
+        if legacy:
+            print('已恢复旧格式缓存；如有较新的 Actions 缓存，将补充恢复并升级为完整分片缓存。')
         if source_variant:
             print('编译对象来源：' + source_variant + '；实际复用仍核对完整配置和编译器。')
-    except (OSError, ValueError, TransferError, tarfile.TarError, EOFError):
+    except (OSError, ValueError, TransferError, tarfile.TarError, EOFError) as error:
         # Cache outages must not turn a valid kernel into a failed build. Do
         # not log raw remote content, signed asset URLs, or credential values.
-        print('::warning::Persistent compilation cache unavailable. Ensure UPSTREAM_SYNC_TOKEN has Contents read/write access to gki-cache; continuing with local/Actions cache.')
+        if isinstance(error, TransferError):
+            reason = '网络传输或访问权限不可用，可检查 UPSTREAM_SYNC_TOKEN 对 gki-cache 的权限'
+        elif isinstance(error, (ValueError, tarfile.TarError, EOFError)):
+            reason = '缓存容量、格式或完整性检查未通过'
+        else:
+            reason = '本地缓存读写未完成'
+        print('::warning::Persistent compilation cache unavailable: ' + reason + '; continuing with local/Actions cache.')
     if summary := os.environ.get('GITHUB_STEP_SUMMARY'):
         with Path(summary).open('a', encoding='utf-8') as output:
             output.write(f'\n独立编译缓存（{args.kind} / {args.operation}）：**{state}**，耗时 {time.monotonic() - started:.1f} 秒。\n')
@@ -380,7 +463,7 @@ def main(argv=None) -> int:
     if destination := os.environ.get('GITHUB_OUTPUT'):
         with Path(destination).open('a', encoding='utf-8') as output:
             output.write('restored=' + str(state == 'restored').lower() + '\nsaved='
-                         + str(state == 'saved').lower() + '\nstate=' + state + '\n')
+                         + str(state == 'saved').lower() + '\nstate=' + state + '\nlegacy=' + str(legacy).lower() + '\n')
     return 0
 
 

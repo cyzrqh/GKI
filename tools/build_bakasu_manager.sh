@@ -73,6 +73,7 @@ print('Manager native KMI inputs: ' + ', '.join(KMIS))
 PY
 
 cd "$source_dir"
+python3 "$build_tools/configure_bakasu_kpm_ui.py" --source "$source_dir"
 echo "BakaSU manager source: $(git rev-parse HEAD)"
 echo "BakaSU source version: $(git describe --tags --always --abbrev=0)"
 java -version

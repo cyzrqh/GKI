@@ -7,40 +7,48 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Extension
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LargeTopAppBar
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import java.io.File
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
@@ -54,16 +62,12 @@ private fun quote(value: String): String {
     return "'" + value.replace("'", "'\\''") + "'"
 }
 
-private fun moduleName(value: String): String {
-    require(value.toByteArray().size in 1..31 && value != "." && value != "..")
-    require(value.none { it.isISOControl() || it == '/' || it == '\\' })
-    return value
-}
+private data class SelectedKpmModule(val file: File, val name: String)
 
 /** All operations execute the paired daemon; unsupported kernels stay unsupported. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun GkiKpmScreen() {
+fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val daemon = remember { File(context.applicationInfo.nativeLibraryDir, "libksud.so").absolutePath }
@@ -73,8 +77,10 @@ fun GkiKpmScreen() {
     var loaded by remember { mutableStateOf(emptyList<String>()) }
     var saved by remember { mutableStateOf(emptyList<String>()) }
     var arguments by remember { mutableStateOf("") }
-    var persistent by remember { mutableStateOf(false) }
-    var showImport by remember { mutableStateOf(false) }
+    var selected by remember { mutableStateOf<SelectedKpmModule?>(null) }
+    var pickingFile by remember { mutableStateOf(false) }
+    var search by remember { mutableStateOf("") }
+    var controlTarget by remember { mutableStateOf<String?>(null) }
     var detail by remember { mutableStateOf<String?>(null) }
 
     suspend fun command(vararg args: String): String = withContext(Dispatchers.IO) {
@@ -104,7 +110,7 @@ fun GkiKpmScreen() {
     fun names(text: String): List<String> {
         val array = JSONArray(text)
         require(array.length() <= 128)
-        return (0 until array.length()).map { moduleName(array.getString(it)) }.distinct()
+        return (0 until array.length()).map { checkedKpmModuleName(array.getString(it)) }.distinct()
     }
 
     suspend fun refresh() {
@@ -147,63 +153,87 @@ fun GkiKpmScreen() {
     }
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        pickingFile = false
         if (uri != null) {
             operation {
-                require(supported && arguments.toByteArray().size <= 1023 && '\u0000' !in arguments)
-                val temporary = withContext(Dispatchers.IO) {
-                    val target = File.createTempFile("gki-kpm-", ".kpm", context.cacheDir)
-                    try {
-                        val input = context.contentResolver.openInputStream(uri) ?: error("无法读取模块")
-                        input.use { stream ->
-                            target.outputStream().use { output ->
-                                val buffer = ByteArray(65536)
-                                var size = 0
-                                while (true) {
-                                    val count = stream.read(buffer)
-                                    if (count < 0) break
-                                    size += count
-                                    require(size <= 32 * 1024 * 1024) { "模块不能超过 32 MiB" }
-                                    output.write(buffer, 0, count)
+                require(supported)
+                var staged: File? = null
+                try {
+                    val module = withContext(Dispatchers.IO) {
+                        val target = File.createTempFile("gki-kpm-", ".kpm", context.cacheDir)
+                        staged = target
+                        try {
+                            val input = context.contentResolver.openInputStream(uri) ?: error("无法读取模块")
+                            input.use { stream ->
+                                target.outputStream().use { output ->
+                                    val buffer = ByteArray(65536)
+                                    var size = 0
+                                    while (true) {
+                                        val count = stream.read(buffer)
+                                        if (count < 0) break
+                                        size += count
+                                        require(size <= 32 * 1024 * 1024) { "模块不能超过 32 MiB" }
+                                        output.write(buffer, 0, count)
+                                    }
                                 }
                             }
+                            SelectedKpmModule(target, selectedKpmModuleName(target.readBytes()))
+                        } catch (error: Exception) {
+                            target.delete()
+                            throw error
                         }
-                        val header = ByteArray(64)
-                        require(target.inputStream().use { it.read(header) } == 64)
-                        require(header.copyOfRange(0, 7).contentEquals(byteArrayOf(127, 69, 76, 70, 2, 1, 1))) { "需要 ARM64 KPM ELF 模块" }
-                        val elf = ByteBuffer.wrap(header).order(ByteOrder.LITTLE_ENDIAN)
-                        require(elf.getShort(16).toInt() == 1 && elf.getShort(18).toInt() == 183) { "需要 ARM64 可重定位模块" }
-                        target
-                    } catch (error: Exception) {
-                        target.delete()
-                        throw error
                     }
-                }
-                try {
-                    command(if (persistent) "install" else "load", temporary.absolutePath, arguments)
-                    refresh()
+                    selected?.file?.delete()
+                    selected = module
+                    staged = null
                 } finally {
-                    withContext(NonCancellable + Dispatchers.IO) { temporary.delete() }
+                    withContext(NonCancellable + Dispatchers.IO) { staged?.delete() }
                 }
             }
         }
     }
 
+    fun installSelected(embed: Boolean) {
+        val module = selected ?: return
+        operation {
+            selected = null
+            try {
+                command(if (embed) "install" else "load", module.file.absolutePath, "")
+                refresh()
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) { module.file.delete() }
+            }
+        }
+    }
+
+    DisposableEffect(Unit) { onDispose { selected?.file?.delete() } }
+
     LaunchedEffect(Unit) { operation { refresh() } }
     Scaffold(
         topBar = {
-            TopAppBar(title = { Text("KPM 管理") }, actions = {
+            LargeTopAppBar(title = { Text("KPM") }, actions = {
                 IconButton(enabled = !busy, onClick = { operation { refresh() } }) {
                     Icon(Icons.Filled.Refresh, contentDescription = "刷新")
                 }
             })
         },
         floatingActionButton = {
-            FloatingActionButton(
-                modifier = Modifier.padding(bottom = 88.dp),
-                onClick = { if (supported && !busy) showImport = true },
-            ) {
-                Icon(Icons.Filled.Add, contentDescription = "添加 KPM 模块")
-            }
+            ExtendedFloatingActionButton(
+                modifier = Modifier.padding(bottom = bottomPadding),
+                onClick = {
+                    if (supported && !busy && !pickingFile) {
+                        pickingFile = true
+                        try {
+                            picker.launch("*/*")
+                        } catch (error: Exception) {
+                            pickingFile = false
+                            detail = error.message ?: "无法打开文件选择器"
+                        }
+                    }
+                },
+                icon = { Icon(Icons.Filled.Add, contentDescription = null) },
+                text = { Text("KPM 安装") },
+            )
         },
     ) { padding ->
         LazyColumn(
@@ -212,23 +242,56 @@ fun GkiKpmScreen() {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             item {
-                Card(modifier = Modifier.fillMaxWidth()) {
-                    Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text(status)
-                        if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
-                        if (supported) Text("点击 + 添加模块；嵌入会保存模块与参数，并在重启后自动加载。")
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(32.dp),
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                ) {
+                    Row(modifier = Modifier.padding(24.dp), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.Extension, contentDescription = null, modifier = Modifier.size(48.dp))
+                        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("内核模块", style = MaterialTheme.typography.titleLarge)
+                            Text(if (supported) "已加载 ${loaded.size} 个模块" else status)
+                        }
+                    }
+                }
+                if (busy) LinearProgressIndicator(modifier = Modifier.fillMaxWidth().padding(top = 8.dp))
+            }
+            item {
+                OutlinedTextField(
+                    value = search,
+                    onValueChange = { search = it },
+                    singleLine = true,
+                    placeholder = { Text("搜索内核模块") },
+                    leadingIcon = { Icon(Icons.Filled.Search, contentDescription = null) },
+                    shape = RoundedCornerShape(32.dp),
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            }
+            val modules = (loaded + saved).distinct().filter { it.contains(search, ignoreCase = true) }
+            if (supported && modules.isEmpty()) {
+                item {
+                    Column(
+                        modifier = Modifier.fillMaxWidth().padding(top = 56.dp),
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(20.dp),
+                    ) {
+                        Icon(Icons.Filled.Extension, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(80.dp))
+                        Text(if (search.isBlank()) "当前没有安装内核模块" else "没有匹配的内核模块")
                     }
                 }
             }
-            if (supported && loaded.isEmpty() && saved.isEmpty()) item { Text("尚未添加 KPM 模块") }
-            items((loaded + saved).distinct(), key = { it }) { name ->
+            items(modules, key = { it }) { name ->
                 Card(modifier = Modifier.fillMaxWidth()) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(name, style = MaterialTheme.typography.titleMedium)
                         Text(listOfNotNull(if (name in loaded) "已加载" else null, if (name in saved) "重启自动加载" else null).joinToString(" · "))
                         if (name in loaded) {
                             TextButton(enabled = !busy, onClick = { operation { detail = command("info", name) } }) { Text("模块信息") }
-                            TextButton(enabled = !busy, onClick = { operation { detail = command("control", name, arguments) } }) { Text("发送控制参数") }
+                            TextButton(enabled = !busy, onClick = {
+                                arguments = ""
+                                controlTarget = name
+                            }) { Text("发送控制参数") }
                             TextButton(enabled = !busy, onClick = {
                                 operation {
                                     command("unload", name)
@@ -249,31 +312,48 @@ fun GkiKpmScreen() {
             }
         }
     }
-    if (showImport) {
+    selected?.let { module ->
         AlertDialog(
-            onDismissRequest = { showImport = false },
-            title = { Text("添加 KPM 模块") },
+            onDismissRequest = {
+                if (!busy) {
+                    selected = null
+                    module.file.delete()
+                }
+            },
+            icon = { Icon(Icons.Filled.Extension, contentDescription = null) },
+            title = { Text("KPM 安装") },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("选择加载或嵌入后，打开 .kpm 文件。加载仅本次启动有效；嵌入会在重启后自动加载。")
-                    OutlinedTextField(value = arguments, onValueChange = { arguments = it }, label = { Text("模块参数（可选）") }, modifier = Modifier.fillMaxWidth())
+                Column(verticalArrangement = Arrangement.spacedBy(20.dp)) {
+                    Text(module.name, style = MaterialTheme.typography.titleMedium)
+                    Text("仅在本次开机期间加载，重启后失效。")
+                    TextButton(enabled = !busy && supported, onClick = { installSelected(false) }, modifier = Modifier.fillMaxWidth()) { Text("加载") }
+                    Text("立即加载并保存，开机时自动加载。请仅安装可信模块。")
+                    Button(enabled = !busy && supported, onClick = { installSelected(true) }, modifier = Modifier.fillMaxWidth()) { Text("嵌入") }
                 }
             },
             confirmButton = {
-                TextButton(onClick = {
-                    showImport = false
-                    persistent = true
-                    picker.launch("*/*")
-                }) { Text("嵌入") }
+                TextButton(enabled = !busy, onClick = {
+                    selected = null
+                    module.file.delete()
+                }) { Text("取消") }
             },
-            dismissButton = {
-                TextButton(onClick = {
-                    showImport = false
-                    persistent = false
-                    picker.launch("*/*")
-                }) { Text("加载") }
-                TextButton(onClick = { showImport = false }) { Text("取消") }
+        )
+    }
+    controlTarget?.let { name ->
+        AlertDialog(
+            onDismissRequest = { controlTarget = null },
+            title = { Text(name) },
+            text = { OutlinedTextField(value = arguments, onValueChange = { arguments = it }, label = { Text("模块参数") }) },
+            confirmButton = {
+                TextButton(enabled = !busy, onClick = {
+                    operation {
+                        require(arguments.toByteArray().size <= 1023 && '\u0000' !in arguments)
+                        detail = command("control", name, arguments)
+                        controlTarget = null
+                    }
+                }) { Text("发送") }
             },
+            dismissButton = { TextButton(onClick = { controlTarget = null }) { Text("取消") } },
         )
     }
     detail?.let { message ->

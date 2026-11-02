@@ -7,6 +7,42 @@ import textwrap
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def render_kpm_templates(namespace: str, shell_api: str) -> dict[str, str]:
+    from additional_manager_kpm import replace_one
+    template = (ROOT / 'tools/templates/GkiKpmScreen.kt').read_text(encoding='utf-8')
+    if shell_api == 'new':
+        template = replace_one(template, 'ui.util.getRootShell', 'ui.util.createRootShell')
+        anchor = '        val shell = getRootShell()\n'
+        if template.count(anchor) != 1:
+            raise ValueError('Review the bounded KPM command shell lifetime')
+        start = template.index(anchor) + len(anchor)
+        end = template.index('\n    }\n\n    suspend fun jsonCommand', start)
+        template = (template[:start].replace(anchor, '        val shell = createRootShell()\n')
+                    + '        try {\n' + textwrap.indent(template[start:end], '    ')
+                    + '\n        } finally {\n            shell.close()\n        }' + template[end:])
+    elif shell_api == 'bakasu':
+        template = replace_one(template, 'ui.util.getRootShell', 'data.shell.KsuCliRepository')
+        template = replace_one(template, '    val context = LocalContext.current\n',
+            '    val context = LocalContext.current\n    val cli = org.koin.compose.koinInject<KsuCliRepository>()\n')
+        template = replace_one(template, '        val shell = getRootShell()\n',
+            '        check(__NAMESPACE__.Natives.isManager && __NAMESPACE__.Natives.isFullFeatured()) { "需要配套管理器授权" }\n'
+            '        val shell = cli.getRootShell()\n')
+    elif shell_api != 'cached':
+        raise ValueError('Unknown native manager shell ownership')
+    documents = {'GkiKpmScreen.kt': template,
+                 'GkiKpmModule.kt': (ROOT / 'tools/templates/GkiKpmModule.kt').read_text(encoding='utf-8')}
+    result = {}
+    for name, text in documents.items():
+        text = text.replace('__NAMESPACE__', namespace)
+        # Placeholder expansion changes lexicographic import order.
+        imports = re.findall(r'^import .*$', text, re.M)
+        if imports:
+            start, end = text.index(imports[0]), text.index(imports[-1]) + len(imports[-1])
+            text = text[:start] + '\n'.join(sorted(imports)) + text[end:]
+        result[name] = text
+    return result
+
+
 def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, bytes]:
     from additional_manager_kpm import replace_one
     files = subprocess.check_output(['git', '-C', str(source), 'ls-tree', '-r', '--name-only', reference],
@@ -22,24 +58,14 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
     main = next(p for p in files if p.endswith('/ui/MainActivity.kt'))
     namespace = re.search(r'^package (\S+)\.ui$', read(main), re.M)[1]
     java = 'manager/app/src/main/java/' + namespace.replace('.', '/')
-    template = (ROOT / 'tools/templates/GkiKpmScreen.kt').read_text(encoding='utf-8')
     cli = read(java + '/ui/util/KsuCli.kt')
+    shell_api = 'cached'
     if not re.search(r'\bfun\s+getRootShell\s*\(', cli):
         if not re.search(r'\bfun\s+createRootShell\s*\(', cli):
             raise ValueError('Review the native manager root-shell API before adding KPM')
-        # Next creates a new native shell, whereas official/Kow cache theirs.
-        # Use Next's real API and always release this short-lived shell.
-        template = replace_one(template, 'ui.util.getRootShell', 'ui.util.createRootShell')
-        anchor = '        val shell = getRootShell()\n'
-        if template.count(anchor) != 1:
-            raise ValueError('Review the bounded KPM command shell lifetime')
-        start = template.index(anchor) + len(anchor)
-        end = template.index('\n    }\n\n    suspend fun jsonCommand', start)
-        template = (template[:start].replace(anchor, '        val shell = createRootShell()\n')
-                    + '        try {\n' + textwrap.indent(template[start:end], '    ')
-                    + '\n        } finally {\n            shell.close()\n        }'
-                    + template[end:])
-    put(java + '/ui/kpm/GkiKpmScreen.kt', template.replace('__NAMESPACE__', namespace))
+        shell_api = 'new'
+    for name, text in render_kpm_templates(namespace, shell_api).items():
+        put(java + '/ui/kpm/' + name, text)
     name = 'manager/app/src/main/res/values/strings.xml'
     put(name, replace_one(read(name), '</resources>', '    <string name="gki_kpm_title">KPM</string>\n</resources>'))
 

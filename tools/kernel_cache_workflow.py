@@ -29,9 +29,9 @@ else
     --output "$RUNNER_TEMP/gki-ccache-ecs/gki-make" --directory "$CCACHE_DIR"
 fi
 '''
-    # ccache objects are already compressed: retain headroom below the
-    # individual release-asset limit instead of failing after a warm build.
-    job['env']['CCACHE_MAXSIZE'] = '1536M'
+    # Keep a complete kernel working set; persistent storage splits archives
+    # below the per-asset limit instead of discarding useful objects.
+    job['env']['CCACHE_MAXSIZE'] = '4096M'
     statistics = next(step for step in steps if step.get('name') == '显示本次 ccache 命中统计')
     statistics['run'] = statistics['run'].replace(
         'report="$RUNNER_TEMP/gki-ccache-statistics.txt"',
@@ -77,7 +77,7 @@ echo 'enabled=true' >> "$GITHUB_OUTPUT"
             raise ValueError('Unexpected persistent cache namespace')
         key += '${{ inputs.kernelsu_variant }}'
         restore_condition, save_condition = restore['if'], save['if']
-        restore['if'] += " && steps.persistent-" + kind + "-restore.outputs.restored != 'true'"
+        restore['if'] += " && (steps.persistent-" + kind + "-restore.outputs.restored != 'true' || steps.persistent-" + kind + "-restore.outputs.legacy == 'true')"
         save['if'] += " && steps.persistent-" + kind + "-save.outputs.saved != 'true'"
         # Restoring unrelated complete kernel versions cannot yield a guarded
         # hit and copies their objects into every subsequent snapshot.
@@ -85,9 +85,9 @@ echo 'enabled=true' >> "$GITHUB_OUTPUT"
         steps.insert(steps.index(restore), persistent_step(kind, 'restore', directory, key, restore_condition,
                                                          share_variants=kind == 'ccache'))
         steps.insert(steps.index(save), persistent_step(kind, 'save', directory, key, save_condition))
-    # Stay below GitHub's 2GiB per release-asset bound, including tar metadata.
+    # Complete Bazel objects use the same bounded multipart transport.
     trim = next(step for step in steps if step.get('id') == 'bazel-cache-trim')
-    trim['env']['BAZEL_CACHE_MAX_BYTES'] = str(1536 * 1024 * 1024)
+    trim['env']['BAZEL_CACHE_MAX_BYTES'] = str(4096 * 1024 * 1024)
     key = next(step for step in steps if step.get('id') == 'persistent-ccache-restore')['env']['OBJECT_CACHE_KEY']
     wire_thinlto(job, key.replace('gki-ccache-ecs-v1-', 'gki-thinlto-v1-'), oplus=False)
 

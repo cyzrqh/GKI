@@ -185,7 +185,7 @@ python3 tools/kernel_compile_cache.py install \\
         persistent_step('ccache', 'restore', '${{ env.CCACHE_DIR }}', prefix + 'objects',
                         "success()"),
         {'name': '恢复本平台与内核的编译对象缓存', 'id': 'oplus-ccache',
-         'if': "steps.persistent-ccache-restore.outputs.restored != 'true'",
+         'if': "steps.persistent-ccache-restore.outputs.restored != 'true' || steps.persistent-ccache-restore.outputs.legacy == 'true'",
          'uses': 'actions/cache/restore@v5', 'timeout-minutes': 2, 'continue-on-error': True,
          'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '1'},
          'with': {'path': '${{ env.CCACHE_DIR }}',
@@ -264,7 +264,7 @@ ccache --show-stats --verbose | tee "$report"
                 'SUSFS_SOURCES': '${{ needs.prepare-matrix.outputs.susfs_sources }}',
                 'AK3_REF': AK3_REF,
                 'PATCHES_REF': '${{ needs.prepare-matrix.outputs.patches_ref }}',
-                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '1536M'},
+                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '4096M'},
         'steps': steps,
     }
     from kernel_cache_workflow import wire_thinlto

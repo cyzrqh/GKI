@@ -25,6 +25,16 @@ for name in ('syscall_enter_from_user_mode', 'syscall_exit_to_user_mode'):
     if text.count(old) == 1:
         text = text.replace(old, new, 1)
 path.write_text(text, encoding='utf-8', newline='\n')
+header = path.parents[2] / 'compat/kernel_compat.h'
+text = header.read_text(encoding='utf-8')
+# On newer x86 kernels compat_ptr() is provided by linux/compat.h, rather
+# than asm/compat.h. Include the canonical header in the existing guard.
+anchor = '#ifdef CONFIG_COMPAT\n#include <asm/compat.h>\n'
+if '#include <linux/compat.h>' not in text:
+    if text.count(anchor) != 1:
+        raise SystemExit('Review the native BakaSU CONFIG_COMPAT includes')
+    text = text.replace(anchor, anchor + '#include <linux/compat.h>\n', 1)
+header.write_text(text, encoding='utf-8', newline='\n')
 PY
 fi
 mkdir -p "$output"

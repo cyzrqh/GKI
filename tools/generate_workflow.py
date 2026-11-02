@@ -106,7 +106,7 @@ def feature_inputs(source):
         'include_lts': {'description': '包含 LTS（默认关闭）', 'required': False, 'type': 'boolean', 'default': False},
         'artifact_mode': {'description': '产物模式', 'required': True, 'type': 'choice',
                           'options': ['仅 AK3', 'AK3 + boot 镜像'], 'default': '仅 AK3'},
-        'max_parallel': {'description': '同时构建数量（1–20）', 'required': True, 'type': 'number', 'default': 20},
+        'max_parallel': {'description': '同时构建数量（1–40，Pro 账号共享上限）', 'required': True, 'type': 'number', 'default': 40},
     }
     result = {**selection, **fields}
     if len(result) > 25:
@@ -722,8 +722,8 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
 python3 - <<'PY'
 import os
 value = float(os.environ['MAX_PARALLEL'])
-if not value.is_integer() or not 1 <= value <= 20:
-    raise SystemExit('同时构建数量必须是 1–20 的整数')
+if not value.is_integer() or not 1 <= value <= 40:
+    raise SystemExit('同时构建数量必须是 1–40 的整数')
 with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
     output.write(f'max_parallel={int(value)}\\n')
 with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:

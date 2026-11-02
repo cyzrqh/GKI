@@ -478,7 +478,7 @@ class WorkflowTests(unittest.TestCase):
         manager = self.workflow['jobs']['build-sukisu-manager']
         self.assertIn('build-sukisu-manager', kernels['needs'])
         self.assertNotIn('build-kernel', manager['needs'])
-        self.assertEqual(20, self.workflow['on']['workflow_dispatch']['inputs']['max_parallel']['default'])
+        self.assertEqual(40, self.workflow['on']['workflow_dispatch']['inputs']['max_parallel']['default'])
         for variant in MANAGERS:
             for producer in ('success', 'failure', 'cancelled', 'skipped'):
                 with self.subTest(variant=variant, producer=producer):
@@ -1181,7 +1181,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_parallel_limit_uses_normalized_integer_job_output(self):
         parallel = self.workflow['on']['workflow_dispatch']['inputs']['max_parallel']
-        self.assertEqual(parallel['default'], 20)
+        self.assertEqual(parallel['default'], 40)
         job = self.workflow['jobs']['build-kernel']
         self.assertEqual(job['strategy']['max-parallel'], '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}')
         prepare = self.workflow['jobs']['prepare-matrix']

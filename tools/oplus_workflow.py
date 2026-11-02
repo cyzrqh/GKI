@@ -255,7 +255,7 @@ ccache --show-stats --verbose | tee "$report"
         'needs': ['prepare-matrix', 'build-sukisu-manager'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 120,
         'permissions': {'contents': 'read', 'actions': 'read'},
         'defaults': {'run': {'shell': 'bash'}},
-        'strategy': {'fail-fast': False, 'max-parallel': 20,
+        'strategy': {'fail-fast': False, 'max-parallel': 40,
                      'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'},
         'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}',
                 'KSU_REF': '${{ needs.prepare-matrix.outputs.ksu_ref }}',

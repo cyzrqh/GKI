@@ -166,7 +166,7 @@ def protected_host_sources(variant: str | None = None) -> tuple[str, ...]:
     common = ('userspace/ksud/src/boot_patch.rs', 'userspace/ksud/src/assets.rs',
               'userspace/ksud/src/cli_non_android.rs', 'userspace/ksud/build.rs',
               'userspace/ksud/Cargo.toml')
-    if selected_variant(variant) == 'BakaSU':
+    if selected_variant(variant) in ('BakaSU', 'KernelSU-Next'):
         return (*common, 'userspace/ksud/Cargo.lock', 'userspace/ksuinit/Cargo.toml',
                 'userspace/ksuinit/Cargo.lock', 'userspace/ksuinit/build.rs')
     return (*common, 'Cargo.toml', 'Cargo.lock')
@@ -191,6 +191,14 @@ def validate_native_sources(source: Path, reference: str) -> None:
             raise VerificationError('BakaSU host verification source differs from its audited KPM port: '
                                     + str(error)) from None
         git(source, 'diff', '--quiet', 'HEAD', '--', *native_init, *protected)
+    elif selected_variant() in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+        from additional_manager_kpm import verify
+        port = verify(source, reference, selected_variant(), scopes=('userspace/ksud/src',))
+        actual = set(git(source, 'diff', '--name-only', 'HEAD', '--', 'userspace/ksud/src').splitlines())
+        actual.update(git(source, 'ls-files', '--others', '--exclude-standard', '--', 'userspace/ksud/src').splitlines())
+        if actual != set(port['files']):
+            raise VerificationError('Native host Rust changes differ from the exact additional-manager KPM port')
+        git(source, 'diff', '--quiet', 'HEAD', '--', *protected)
     else:
         git(source, 'diff', '--quiet', 'HEAD', '--', 'userspace/ksud/src', *protected)
 
@@ -275,6 +283,11 @@ def prepare_host_copy(source: Path, destination: Path, reference: str,
         except ValueError as error:
             raise VerificationError('BakaSU host copy could not restore its audited KPM port: '
                                     + str(error)) from None
+    elif selected_variant() in ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+        git(destination, 'remote', 'set-url', 'origin',
+            'https://github.com/' + manager_profile(selected_variant())['repository'] + '.git')
+        from additional_manager_kpm import port
+        port(destination, reference, selected_variant())
     validate_native_sources(destination, reference)
     if selected_source(destination, reference) != selected_source(source, reference):
         raise VerificationError("Host copy did not preserve the selected official source identity")

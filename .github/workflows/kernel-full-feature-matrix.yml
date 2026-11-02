@@ -39,10 +39,10 @@ run-name: ${{ inputs.operation == '仅编译管理器安装包' && format('仅�
         - AK3 + boot 镜像
         default: 仅 AK3
       max_parallel:
-        description: 同时构建数量（1–20）
+        description: 同时构建数量（1–40，Pro 账号共享上限）
         required: true
         type: number
-        default: 20
+        default: 40
       kernelsu_variant:
         description: KernelSU 变体
         required: true
@@ -216,8 +216,8 @@ jobs:
         python3 - <<'PY'
         import os
         value = float(os.environ['MAX_PARALLEL'])
-        if not value.is_integer() or not 1 <= value <= 20:
-            raise SystemExit('同时构建数量必须是 1–20 的整数')
+        if not value.is_integer() or not 1 <= value <= 40:
+            raise SystemExit('同时构建数量必须是 1–40 的整数')
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
             output.write(f'max_parallel={int(value)}\n')
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as summary:

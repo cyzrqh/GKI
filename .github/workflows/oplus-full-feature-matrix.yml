@@ -1590,7 +1590,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 40
       matrix: ${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}
     env:
       KSU_VARIANT: ${{ inputs.kernelsu_variant }}
@@ -2120,7 +2120,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 40
       matrix: ${{ fromJSON(needs.combo-sukisu-prepare.outputs.matrix) }}
     env:
       KSU_VARIANT: ${{ 'SukiSU' }}
@@ -2294,7 +2294,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 40
       matrix: ${{ fromJSON(needs.combo-bakasu-prepare.outputs.matrix) }}
     env:
       KSU_VARIANT: ${{ 'BakaSU' }}
@@ -2469,7 +2469,7 @@ jobs:
         shell: bash
     strategy:
       fail-fast: false
-      max-parallel: 20
+      max-parallel: 40
       matrix: ${{ fromJSON(needs.combo-next-prepare.outputs.matrix) }}
     env:
       KSU_VARIANT: ${{ 'KernelSU-Next' }}

@@ -7,6 +7,7 @@ whether any object can be reused; this never exports a kernel or changes a build
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import gzip
 import hashlib
 import http.client
@@ -156,11 +157,17 @@ def unpack(archive_path: Path, directory: Path, expected: dict) -> None:
 
 
 class CacheGitHub(GitHub):
+    parallel_transfers = True
+
     def __init__(self, repository: str, token: str):
         if not token or any(ord(char) < 32 or ord(char) == 127 for char in token):
             raise ValueError('A dedicated cache repository token is required')
         self.repository, self.token = repository, token
         self.opener = build_opener(NoRedirect())
+
+    def transfer_client(self):
+        # Each concurrent HTTP transfer owns its opener and request state.
+        return CacheGitHub(self.repository, self.token)
 
     def stream(self, path: str, file: Path, *, upload=False) -> None:
         if upload:
@@ -261,6 +268,19 @@ def control(release: dict, key: str, kind: str, producer: str, *, pending=False)
     return entry, matched[0]
 
 
+def transfer_many(api, transfers: list[tuple[str, Path, bool]]) -> None:
+    def transfer(item):
+        path, file, upload = item
+        client = api.transfer_client() if hasattr(api, 'transfer_client') else api
+        client.stream(path, file, upload=upload)
+    if len(transfers) > 1 and getattr(api, 'parallel_transfers', False):
+        with ThreadPoolExecutor(max_workers=min(3, len(transfers))) as pool:
+            list(pool.map(transfer, transfers))
+    else:
+        for item in transfers:
+            transfer(item)
+
+
 def restore(api, directory: Path, key: str, kind: str, producer: str) -> bool:
     release = api.json('/releases/tags/' + key_identity(key, kind), missing=True)
     if release is None:
@@ -272,10 +292,11 @@ def restore(api, directory: Path, key: str, kind: str, producer: str) -> bool:
             with temporary_directory(directory.parent, '.gki-object-download-') as staging:
                 archive = staging / 'objects.tar.gz'
                 if 'parts' in entry:
+                    transfer_many(api, [('/releases/assets/' + str(remote['id']), staging / f'part-{index:04d}', False)
+                                        for index, remote in enumerate(asset['parts'])])
                     with archive.open('xb') as output:
                         for index, (part, remote) in enumerate(zip(entry['parts'], asset['parts'])):
                             local = staging / f'part-{index:04d}'
-                            api.stream('/releases/assets/' + str(remote['id']), local)
                             if local.stat().st_size != part['size'] or digest(local) != part['sha256']:
                                 raise ValueError('Persistent cache part integrity check failed')
                             with local.open('rb') as data:
@@ -337,6 +358,30 @@ def find_for_save(api, tag: str) -> dict | None:
     raise ValueError('Persistent cache release listing exceeds its lookup budget')
 
 
+def retain_warm_cache(api, key: str, producer: str, report: Path) -> bool:
+    """Avoid re-uploading gigabytes to retain a handful of cheap new objects."""
+    if report.is_symlink() or not report.is_file() or report.stat().st_size > 131072:
+        return False
+    text = report.read_text(encoding='utf-8')
+    calls = re.search(r'^Cacheable calls:\s+(\d+)\s*/', text, re.M)
+    misses = re.search(r'^\s+Misses:\s+(\d+)\s*/\s*(\d+)', text, re.M)
+    hits = re.search(r'^\s+Hits:\s+(\d+)\s*/\s*(\d+)', text, re.M)
+    if not all((calls, misses, hits)):
+        return False
+    count, missed, hit = int(calls[1]), int(misses[1]), int(hits[1])
+    if (count < 64 or int(misses[2]) != count or int(hits[2]) != count or hit + missed != count
+            or missed > 16 or missed * 100 > count):
+        return False
+    release = api.json('/releases/tags/' + key_identity(key, 'ccache'), missing=True)
+    if release is None:
+        return False  # A sibling manager's snapshot is not our own published cache.
+    entry, _ = control(release, key, 'ccache', producer)
+    if release is None or 'parts' not in entry:
+        return False
+    print(f'仅新增 {missed}/{count} 个可缓存编译结果；沿用已验证的完整缓存，跳过 {entry["size"] / (1024 * 1024):.1f} MiB 重新归档和上传。')
+    return True
+
+
 def save(api, directory: Path, key: str, kind: str, producer: str) -> bool:
     directory = checked_root(directory)
     tag = key_identity(key, kind)
@@ -388,6 +433,7 @@ def save(api, directory: Path, key: str, kind: str, producer: str) -> bool:
             old_assets = list(release['assets'])
         if not isinstance(release, dict) or type(release.get('id')) is not int:
             raise ValueError('Cannot prepare the dedicated cache release')
+        transfers = []
         for name, file, size in uploads:
             current = next((asset for asset in old_assets if asset.get('name') == name), None)
             if current is not None and (current.get('size') != size or current.get('state') != 'uploaded'):
@@ -396,7 +442,8 @@ def save(api, directory: Path, key: str, kind: str, producer: str) -> bool:
                 api.json('/releases/assets/' + str(current['id']), method='DELETE')
                 current = None
             if current is None:
-                api.stream('/releases/' + str(release['id']) + '/assets?' + urlencode({'name': name}), file, upload=True)
+                transfers.append(('/releases/' + str(release['id']) + '/assets?' + urlencode({'name': name}), file, True))
+        transfer_many(api, transfers)
         api.json('/releases/' + str(release['id']), method='PATCH',
                  document={'body': body, 'draft': False, 'prerelease': True, 'make_latest': 'false'})
         verified = api.json('/releases/tags/' + tag)
@@ -434,11 +481,22 @@ def main(argv=None) -> int:
         validate_repo(repository, producer)
         key_identity(args.key, args.kind)
         api = CacheGitHub(repository, token)
-        if args.share_variants:
+        report_root = Path(os.environ.get('RUNNER_TEMP', ''))
+        reports = [path for name in ('gki-ccache-statistics.txt', 'oplus-ccache-statistics.txt')
+                   if (path := report_root / name).is_file()]
+        retained = (args.operation == 'save' and args.kind == 'ccache'
+                    and os.environ.get('CACHE_PERSISTENT_RESTORED') == 'true'
+                    and os.environ.get('CACHE_PERSISTENT_LEGACY') == 'false'
+                    and len(reports) == 1 and retain_warm_cache(api, args.key, producer, reports[0]))
+        if retained:
+            result = True
+        elif args.share_variants:
             result, source_variant = restore_shared(api, args.directory, args.key, args.kind, producer)
         else:
             result = (restore if args.operation == 'restore' else save)(api, args.directory, args.key, args.kind, producer)
         state = ('restored' if result else 'miss') if args.operation == 'restore' else ('saved' if result else 'superseded')
+        if retained:
+            state = 'retained'
         legacy = args.operation == 'restore' and result and getattr(api, 'restored_schema', 0) == 1
         print('Persistent compilation cache: ' + state)
         if legacy:
@@ -463,7 +521,7 @@ def main(argv=None) -> int:
     if destination := os.environ.get('GITHUB_OUTPUT'):
         with Path(destination).open('a', encoding='utf-8') as output:
             output.write('restored=' + str(state == 'restored').lower() + '\nsaved='
-                         + str(state == 'saved').lower() + '\nstate=' + state + '\nlegacy=' + str(legacy).lower() + '\n')
+                         + str(state in ('saved', 'retained')).lower() + '\nstate=' + state + '\nlegacy=' + str(legacy).lower() + '\n')
     return 0
 
 

@@ -10,6 +10,8 @@ from pathlib import Path
 import shutil
 import sys
 import tarfile
+import threading
+import time
 import unittest
 from unittest import mock
 from urllib.error import HTTPError
@@ -162,6 +164,71 @@ class PersistentCacheTests(unittest.TestCase):
             release['body'] = cache.MARKER + json.dumps(document)
             with self.assertRaisesRegex(ValueError, 'part descriptor'):
                 cache.control(release, KEY, 'ccache', PRODUCER)
+
+    def test_warm_snapshot_with_one_miss_is_retained_but_meaningful_changes_and_legacy_are_saved(self):
+        self.save()
+        report = self.root / 'statistics.txt'
+        report.write_text('Cacheable calls: 2963 / 4119 (71.93%)\n  Hits: 2962 / 2963 (99.97%)\n  Misses: 1 / 2963 (0.03%)\n')
+        original = copy.deepcopy(self.api.release)
+        self.assertTrue(cache.retain_warm_cache(self.api, KEY, PRODUCER, report))
+        self.assertEqual(original, self.api.release)
+        report.write_text('Cacheable calls: 2963 / 4119\n  Hits: 2900 / 2963\n  Misses: 63 / 2963\n')
+        self.assertFalse(cache.retain_warm_cache(self.api, KEY, PRODUCER, report))
+        report.write_text('unfamiliar statistics format')
+        self.assertFalse(cache.retain_warm_cache(self.api, KEY, PRODUCER, report))
+        report.write_text('Cacheable calls: 2963 / 4119\n  Hits: 2962 / 2963\n  Misses: 1 / 2963\n')
+        self.assertFalse(cache.retain_warm_cache(MemoryApi(), KEY, PRODUCER, report))
+        document = json.loads(self.api.release['body'][len(cache.MARKER):])
+        document['schema_version'] = 1
+        document['archive'].pop('parts')
+        self.api.release['assets'][0]['name'] = document['archive']['name']
+        self.api.release['body'] = cache.MARKER + json.dumps(document)
+        self.assertFalse(cache.retain_warm_cache(self.api, KEY, PRODUCER, report))
+
+    def test_part_transfers_are_parallel_and_bounded_and_all_finish_before_reassembly(self):
+        class ConcurrentApi(MemoryApi):
+            parallel_transfers = True
+            def __init__(self):
+                super().__init__()
+                self.lock = threading.Lock()
+                self.active = self.maximum = 0
+            def stream(self, path, file, *, upload=False):
+                with self.lock:
+                    self.active += 1
+                    self.maximum = max(self.maximum, self.active)
+                try:
+                    time.sleep(0.01)
+                    with self.lock:
+                        return super().stream(path, file, upload=upload)
+                finally:
+                    with self.lock:
+                        self.active -= 1
+        self.api = ConcurrentApi()
+        (self.source / 'a/0/fullR').write_bytes(random.Random(23).randbytes(6144))
+        with mock.patch.object(cache, 'MAX_ARCHIVE', 2048), mock.patch.object(cache, 'PART_BYTES', 1024):
+            self.assertTrue(self.save())
+            self.assertTrue(self.restore())
+        self.assertGreater(self.api.maximum, 1)
+        self.assertLessEqual(self.api.maximum, 3)
+        self.assertEqual(0, self.api.active)
+        self.assertEqual((self.source / 'a/0/fullR').read_bytes(), (self.destination / 'a/0/fullR').read_bytes())
+
+    def test_retained_cli_marks_existing_snapshot_available_without_repacking_or_actions_fallback(self):
+        self.save()
+        report = self.root / 'gki-ccache-statistics.txt'
+        report.write_text('Cacheable calls: 2963 / 4119\n  Hits: 2962 / 2963\n  Misses: 1 / 2963\n')
+        output = self.root / 'outputs'
+        environment = {'CACHE_REPOSITORY': 'cyzrqh/gki-cache', 'GITHUB_REPOSITORY': PRODUCER,
+                       'CACHE_TOKEN': 'test-only-placeholder', 'RUNNER_TEMP': str(self.root),
+                       'CACHE_PERSISTENT_RESTORED': 'true', 'CACHE_PERSISTENT_LEGACY': 'false',
+                       'GITHUB_OUTPUT': str(output)}
+        original = copy.deepcopy(self.api.release)
+        with mock.patch.dict(os.environ, environment), mock.patch.object(cache, 'CacheGitHub', return_value=self.api), \
+                mock.patch.object(cache, 'pack', side_effect=AssertionError('Warm cache must not be repacked')):
+            self.assertEqual(0, cache.main(['save', '--kind', 'ccache', '--directory', str(self.source), '--key', KEY]))
+        self.assertIn('state=retained\n', output.read_text())
+        self.assertIn('saved=true\n', output.read_text())
+        self.assertEqual(original, self.api.release)
 
     def test_shared_manager_restore_keeps_kernel_key_and_never_changes_saved_namespace(self):
         class ScopedApi(MemoryApi):

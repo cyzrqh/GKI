@@ -2185,6 +2185,8 @@ jobs:
         OBJECT_CACHE_KEY: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
           'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant }}-${{ matrix.recipe_ref }}-objects
         OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
+        CACHE_PERSISTENT_RESTORED: ${{ steps.persistent-ccache-restore.outputs.restored }}
+        CACHE_PERSISTENT_LEGACY: ${{ steps.persistent-ccache-restore.outputs.legacy }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
         --key "$OBJECT_CACHE_KEY"
     - name: 保存已成功编译的平台缓存

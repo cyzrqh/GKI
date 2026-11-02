@@ -7523,6 +7523,8 @@ jobs:
           'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
           }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
         OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
+        CACHE_PERSISTENT_RESTORED: ${{ steps.persistent-ccache-restore.outputs.restored }}
+        CACHE_PERSISTENT_LEGACY: ${{ steps.persistent-ccache-restore.outputs.legacy }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
         --key "$OBJECT_CACHE_KEY"
     - name: 保存本次 ccache 编译结果

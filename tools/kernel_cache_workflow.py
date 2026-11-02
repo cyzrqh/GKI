@@ -9,7 +9,10 @@ def persistent_step(kind, operation, directory, key, condition, *, name=None, sh
         'continue-on-error': True, 'timeout-minutes': 8,
         'env': {'CACHE_REPOSITORY': '${{ github.repository_owner }}/gki-cache',
                 'CACHE_TOKEN': '${{ secrets.UPSTREAM_SYNC_TOKEN }}',
-                'OBJECT_CACHE_KEY': key, 'OBJECT_CACHE_DIRECTORY': directory},
+                'OBJECT_CACHE_KEY': key, 'OBJECT_CACHE_DIRECTORY': directory,
+                **({'CACHE_PERSISTENT_RESTORED': '${{ steps.persistent-ccache-restore.outputs.restored }}',
+                    'CACHE_PERSISTENT_LEGACY': '${{ steps.persistent-ccache-restore.outputs.legacy }}'}
+                   if kind == 'ccache' and operation == 'save' else {})},
         'run': 'python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" ' + operation
                + ' --kind ' + kind + ' --directory "$OBJECT_CACHE_DIRECTORY" --key "$OBJECT_CACHE_KEY"'
                + (' --share-variants' if share_variants and operation == 'restore' and kind == 'ccache' else ''),

@@ -125,9 +125,7 @@ def lkm_cache_key(kmi_expr: str, ddk_short_expr: str) -> str:
     # Same upstream SHA/certificate can now have a different native BakaSU
     # bridge. Bind both producer and consumer to the exact reviewed port;
     # the false branch is empty so every existing SukiSU cache key is intact.
-    return (key + expression("inputs.kernelsu_variant == 'FinaSU' && "
-        "format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py')) || ''")
-        + expression("inputs.kernelsu_variant == 'BakaSU' && "
+    return (key + expression("inputs.kernelsu_variant == 'BakaSU' && "
         "format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || ''")
         + expression("inputs.kernelsu_variant != 'SukiSU' && inputs.kernelsu_variant != 'BakaSU' && "
         "format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py', 'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || ''"))
@@ -300,9 +298,6 @@ python3 tools/prepare_manager_lkm.py record --source manager-source \
             {'name': '补齐官方 x86 模块和原生 SUSFS 组件',
              'if': "steps.lkm-cache.outputs.cache-hit != 'true'", 'env': build_env,
              'run': 'bash tools/build_manager_extras.sh'},
-            {'name': '并行准备并核实 FinaSU NoMount 组件',
-             'if': "inputs.kernelsu_variant == 'FinaSU' && steps.lkm-cache.outputs.cache-hit != 'true'",
-             'env': build_env, 'run': 'bash tools/build_fina_nomount.sh'},
             {'name': '保存已核实的原生模块供管理器使用',
              'if': "steps.lkm-cache.outputs.cache-hit != 'true'",
              'uses': 'actions/cache/save@v5', 'timeout-minutes': 3,

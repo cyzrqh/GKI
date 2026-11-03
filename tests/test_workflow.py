@@ -34,8 +34,8 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('uses', step)
         self.assertNotIn('with', step)
         self.assertEqual(100, step['timeout-minutes'])
-        self.assertIn('--label "build.sh 内核编译"', step['run'])
-        self.assertIn('--label "Bazel 内核编译"', step['run'])
+        self.assertIn('build/build.sh CC="/usr/bin/ccache clang"', step['run'])
+        self.assertIn('tools/bazel build --disk_cache="$BAZEL_DISK_CACHE"', step['run'])
         self.assertNotIn('max_attempts', json.dumps(step))
 
     def test_one_dispatch_and_no_remote_workflow_calls(self):
@@ -875,15 +875,11 @@ class WorkflowTests(unittest.TestCase):
         cargo = next(step for step in steps if step.get('id') == 'manager-cargo-cache')
         self.assertIn('steps.manager-rust-version.outputs.version', cargo['with']['key'])
         self.assertIn('ndk29', cargo['with']['key'])
-        self.assertIn('gki-manager-cargo-v3-', cargo['with']['key'])
+        self.assertIn('gki-manager-cargo-', cargo['with']['key'])
         self.assertIn('inputs.kernelsu_variant', cargo['with']['key'])
-        self.assertIn('github.run_id', cargo['with']['key'])
-        self.assertIn('github.run_attempt', cargo['with']['key'])
         self.assertIn('tools/build_bakasu_manager.sh', cargo['with']['key'])
-        for script in ('build_manager_native.sh', 'build_additional_manager.sh', 'build_fina_manager.py'):
-            self.assertIn('tools/' + script, cargo['with']['key'])
         cargo_save = next(s for s in steps if s.get('name') == '保存管理器 Cargo 依赖')
-        self.assertIn("steps.manager-build.outcome == 'success'", cargo_save['if'])
+        self.assertIn("steps.manager-build.outcome != 'skipped'", cargo_save['if'])
         sdk = next(step for step in steps if step['name'] == '准备 Android SDK 与 NDK')['run']
         self.assertIn("'ndk;29.0.14206865'", sdk)
         self.assertIn("'ndk;30.0.16248370'", sdk)
@@ -905,8 +901,6 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('github.run_attempt', prefix)
         self.assertNotIn('ksu_ref', prefix)
         self.assertIn('jdk21-sdk37-ndk29-', prefix)
-        self.assertIn('inputs.kernelsu_variant', prefix)
-        self.assertEqual('-Dorg.gradle.caching=true', self.workflow['jobs']['build-sukisu-manager']['env']['GRADLE_OPTS'])
         self.assertIn('gradle-wrapper.properties', prefix)
         self.assertIn('libs.versions.toml', prefix)
         self.assertIn("steps.manager-build.outcome == 'success'", save['if'])
@@ -932,18 +926,20 @@ class WorkflowTests(unittest.TestCase):
                      'matrix.os_patch_level', 'github.run_id', 'github.run_attempt'):
             self.assertIn(axis, restore['with']['key'])
         prefixes = restore['with']['restore-keys'].splitlines()
-        self.assertEqual(len(prefixes), 2)
+        self.assertEqual(len(prefixes), 3)
         self.assertIn('matrix.os_patch_level', prefixes[0])
         self.assertIn('matrix.sub_level', prefixes[0])
         self.assertIn('matrix.sub_level', prefixes[1])
         self.assertNotIn('matrix.os_patch_level', prefixes[1])
+        self.assertNotIn('matrix.sub_level', prefixes[2])
         self.assertTrue(restore['with']['key'].startswith(prefixes[0]))
         self.assertTrue(prefixes[0].startswith(prefixes[1]))
+        self.assertTrue(prefixes[1].startswith(prefixes[2]))
         self.assertIn('--disk_cache="$BAZEL_DISK_CACHE"', compile_step['run'])
         self.assertNotIn('bazel-bin', restore['with']['path'])
         self.assertIn('always() && !cancelled()', trim['if'])
         self.assertIn('always() && !cancelled()', save['if'])
-        self.assertEqual(int(trim['env']['BAZEL_CACHE_MAX_BYTES']), 4096 * 1024**2)
+        self.assertEqual(int(trim['env']['BAZEL_CACHE_MAX_BYTES']), 2 * 1024**3)
         self.assertLess(self.steps.index(restore), self.steps.index(compile_step))
         self.assertLess(self.steps.index(compile_step), self.steps.index(trim))
         self.assertLess(self.steps.index(trim), self.steps.index(save))
@@ -1089,9 +1085,7 @@ class WorkflowTests(unittest.TestCase):
         self.assertNotIn('artifact_mode', sign.get('if', ''))
 
     def test_disposable_clone_histories_are_not_downloaded_for_every_kernel(self):
-        # Official GKI uses the manifest's pinned LLVM/binutils; the extra
-        # legacy GCC checkout had no compiler/path consumer in these jobs.
-        self.assertNotIn('android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1', self.find('初始化并同步内核源码')['run'])
+        self.assertIn('aarch64-linux-gnu-6.4.1.git gcc --depth 1', self.find('初始化并同步内核源码')['run'])
         self.assertIn('AnyKernel3.git AnyKernel3 --ref "$ANYKERNEL_BRANCH" --depth 1', self.find('克隆依赖仓库')['run'])
 
     def test_ak3_preparation_does_not_require_compressed_image(self):

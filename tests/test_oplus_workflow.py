@@ -76,24 +76,15 @@ class OplusWorkflowTests(unittest.TestCase):
         self.assertTrue(all('uses' not in job for job in self.document['jobs'].values()))
         self.assertNotIn('workflow_call', self.document['on'])
 
-    def test_kernel_only_ecs_installation_and_current_run_statistics_keep_manager_flow(self):
-        steps = self.document['jobs']['build-oplus-kernel']['steps']
-        install = next(step for step in steps if step.get('name') == '安装固定 ECS 编译缓存工具')
-        restore = next(step for step in steps if step.get('id') == 'oplus-ccache')
-        start = next(step for step in steps if step.get('id') == 'oplus-cache-measurement')
-        build = next(step for step in steps if step.get('id') == 'oplus-build')
-        stats = next(step for step in steps if step.get('name') == '限制缓存容量并显示命中情况')
-        self.assertIn('tools/kernel_compile_cache.py install', install['run'])
-        self.assertLess(steps.index(install), steps.index(restore))
-        self.assertLess(steps.index(restore), steps.index(start))
-        self.assertLess(steps.index(start), steps.index(build))
-        self.assertIn('ccache --zero-stats', start['run'])
-        self.assertIn("steps.oplus-cache-measurement.outputs.started == 'true'", stats['if'])
-        self.assertIn('"$GITHUB_STEP_SUMMARY"', stats['run'])
-        self.assertIn('oplus-ccache-ecs-v1-', restore['with']['key'])
-        self.assertIn("hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')", restore['with']['key'])
-        for name in ('build-sukisu-manager', 'build-sukisu-lkm'):
-            self.assertNotIn('kernel_compile_cache.py', json.dumps(self.document['jobs'][name]))
+    def test_conventional_compiler_cache_has_no_experimental_engine_or_private_repository(self):
+        job = self.document['jobs']['build-oplus-kernel']
+        text = json.dumps(job)
+        for removed in ('kernel_compile_cache.py', 'persistent_kernel_cache.py',
+                        'thinlto_cache.py', 'gki-cache', 'CCACHE_PROGRAM'):
+            self.assertNotIn(removed, text)
+        restore = next(step for step in job['steps'] if step.get('id') == 'oplus-ccache')
+        self.assertTrue(restore['with']['key'].startswith('oplus-ccache-v1-'))
+        self.assertEqual(job['env']['CCACHE_MAXSIZE'], '3G')
 
     def test_base_gki_pipeline_is_preserved_and_manager_lkm_are_shared(self):
         before = copy.deepcopy(self.base)

@@ -23,19 +23,7 @@ class CcacheWorkflowTests(unittest.TestCase):
         self.assertLess(configured, run.index("ccache --set-config"))
         self.assertIn('echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"', run)
         self.assertEqual(self.step("恢复 ccache 缓存")["with"]["path"], "~/.ccache")
-        self.assertIn('build/build.sh CC="${CCACHE_PROGRAM:-/usr/bin/ccache} clang"', self.step("编译内核")["run"])
-
-    def test_guarded_ecs_installation_covers_supported_backends_and_precedes_cache_use(self):
-        install = self.step('安装固定 ECS 编译缓存工具')
-        self.assertEqual(install['if'], "steps.ccache-config.outputs.enabled == 'true'")
-        self.assertIn('tools/kernel_compile_cache.py" install', install['run'])
-        self.assertIn('--github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"', install['run'])
-        self.assertLess(self.steps.index(self.step('选择实际编译系统的对象缓存')), self.steps.index(install))
-        self.assertLess(self.steps.index(install), self.steps.index(self.step('恢复 ccache 缓存')))
-        self.assertIn('tools/kleaf_compile_cache.py', self.step('选择实际编译系统的对象缓存')['run'])
-        command = self.step('编译内核')['run']
-        bazel = command[command.index('tools/bazel build'):]
-        self.assertNotIn('CCACHE_PROGRAM', bazel)
+        self.assertIn('build/build.sh CC="/usr/bin/ccache clang"', self.step("编译内核")["run"])
 
     def test_restored_config_cannot_disable_compression_or_change_the_size_limit(self):
         env = self.job["env"]
@@ -44,7 +32,7 @@ class CcacheWorkflowTests(unittest.TestCase):
         self.assertNotIn("CCACHE_HARDLINK", env)
         self.assertEqual(env["CCACHE_NOHARDLINK"], "true")
         self.assertEqual(env["CCACHE_COMPRESS"], "true")
-        self.assertEqual(env["CCACHE_MAXSIZE"], "4096M")
+        self.assertEqual(env["CCACHE_MAXSIZE"], "2G")
         self.assertIn("ccache --set-config=hard_link=false", self.step("配置 ccache")["run"])
 
     def test_compiler_identity_uses_binary_content_without_correctness_relaxations(self):
@@ -62,8 +50,7 @@ class CcacheWorkflowTests(unittest.TestCase):
         self.assertLess(names.index(reset["name"]), names.index("编译内核"))
         self.assertLess(names.index("编译内核"), names.index(stats["name"]))
         self.assertEqual(reset["if"], "steps.ccache-config.outputs.enabled == 'true'")
-        self.assertNotIn('if [ -f "$KERNEL_ROOT/build/build.sh" ]', reset["run"])
-        self.assertIn('已接入的 Kleaf 均使用逐文件缓存', stats['run'])
+        self.assertIn('if [ -f "$KERNEL_ROOT/build/build.sh" ]', reset["run"])
         self.assertIn("ccache --zero-stats", reset["run"])
         self.assertIn("always()", stats["if"])
         self.assertIn("steps.ccache-measurement.outputs.enabled == 'true'", stats["if"])

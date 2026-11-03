@@ -1,7 +1,0 @@
-{
-  "reference": "main-kernel-2025",
-  "source_url": "https://android.googlesource.com/kernel/build/+/refs/heads/main-kernel-2025/kleaf/impl/kernel_build.bzl",
-  "source_sha256": "177ee636275455bcb5bb4f4f26896090379a577a7ef094810bc129b87a4300dd",
-  "license": "Apache-2.0; Copyright The Android Open Source Project",
-  "block": "# Actual kernel build\n           make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} {make_goals}\n         # Generate .symvers files that might be missing from Kbuild.\n           {gen_symvers_cmd}\n         # Install modules\n"
-}

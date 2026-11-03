@@ -19,7 +19,6 @@ from manager_variants import manager_profile, valid_manager_apk_filename
 from prepare_additional_gradle import prepare
 from sign_sukisu_manager import redact
 from manager_full_native import official_abis, verify_apk
-from fina_native_components import verify_staged
 
 BUILD_ALIAS = 'gki-fina-build-only'
 
@@ -68,13 +67,8 @@ def build(source: Path, output: Path):
         environment['KEYSTORE_PROPS'] = str(properties)
         # Paired, certificate-checked KernelSU LKMs are staged by the existing
         # eight-KMI job. Preserve them; build the remaining native dependencies.
-        staged_nomount = verify_staged(source, Path(os.environ.get('RUNNER_TEMP', tempfile.gettempdir()))
-                                      / 'manager-public-certificate.json',
-                                      subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD']).decode().strip())
-        if staged_nomount:
-            print('Reusing all eight verified, source-matched NoMount components from parallel native jobs.', flush=True)
         commands = [
-            ['bash', 'build.sh', *([] if staged_nomount else ['nomount']), 'sui', 'apk'],
+            ['bash', 'build.sh', 'nomount', 'sui', 'apk'],
             ['bash', str(Path(__file__).with_name('build_manager_native.sh')), str(source)],
             ['bash', 'build.sh', 'repack'],
         ]

@@ -53,8 +53,6 @@ class FinaBuildBoundaryTests(unittest.TestCase):
                 'SUKISU_APK_PASSWORD': 'permanent-password', 'ORG_GRADLE_PROJECT_KEYSTORE_PASSWORD': 'permanent-password'}
             with patch.dict(os.environ, environment), patch.object(builder, 'prepare'), \
                     patch.object(builder, 'official_abis', return_value=('arm64-v8a', 'x86_64', 'riscv64')), \
-                    patch.object(builder, 'verify_staged', return_value=False), \
-                    patch.object(builder.subprocess, 'check_output', return_value=b'0123456789abcdef0123456789abcdef01234567\n'), \
                     patch.object(builder, 'generate_build_key', side_effect=generate), \
                     patch.object(builder.subprocess, 'Popen', FailedNativeBuild):
                 with self.assertRaisesRegex(ValueError, 'canonical native build'):

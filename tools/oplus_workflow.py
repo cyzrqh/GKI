@@ -145,10 +145,7 @@ def prepare_job(base: dict) -> dict:
 
 
 def kernel_job() -> dict:
-    from kernel_cache_workflow import persistent_step
-    prefix = ("oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-"
-              "${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-"
-              '${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-')
+    prefix = 'oplus-ccache-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.id }}-${{ inputs.kernelsu_variant }}-${{ matrix.recipe_ref }}-'
     steps = [
         {'name': '检出独立构建工具', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
         python_dependencies(),
@@ -179,16 +176,7 @@ ccache --max-size "$CCACHE_MAXSIZE"
 ccache --set-config=compression=true
 ccache --set-config=compiler_check=content
 '''},
-        {'name': '安装固定 ECS 编译缓存工具',
-         'run': '''set -euo pipefail
-python3 tools/kernel_compile_cache.py install \\
-  --output "$RUNNER_TEMP/gki-ccache-ecs" \\
-  --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
-'''},
-        persistent_step('ccache', 'restore', '${{ env.CCACHE_DIR }}', prefix + 'objects',
-                        "success()"),
         {'name': '恢复本平台与内核的编译对象缓存', 'id': 'oplus-ccache',
-         'if': "steps.persistent-ccache-restore.outputs.restored != 'true' || steps.persistent-ccache-restore.outputs.legacy == 'true'",
          'uses': 'actions/cache/restore@v5', 'timeout-minutes': 2, 'continue-on-error': True,
          'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '1'},
          'with': {'path': '${{ env.CCACHE_DIR }}',
@@ -207,12 +195,6 @@ python3 tools/kernel_compile_cache.py install \\
          'run': '''python3 tools/apply_kpm_patch.py prepare --cache-dir "$RUNNER_TEMP/oplus-kpm-official" \\
   --github-env "$GITHUB_ENV" --ksu-source "$GITHUB_WORKSPACE/kernel_workspace/KernelSU"
 '''},
-        {'name': '开始记录本次 ECS 缓存命中', 'id': 'oplus-cache-measurement',
-         'run': '''set -euo pipefail
-ccache --zero-stats
-ccache --version
-echo 'started=true' >> "$GITHUB_OUTPUT"
-'''},
         recipe_step('build', '使用原生 Make 与对应 Clang/Rust 编译内核'),
         {'name': '应用并验证独立 KPM 启动载荷', 'if': KPM_IF,
          'run': '''python3 tools/apply_kpm_patch.py patch \\
@@ -228,27 +210,10 @@ echo 'started=true' >> "$GITHUB_OUTPUT"
         {'name': '上传原文件同名 AK3', 'uses': 'actions/upload-artifact@v7',
          'with': {'path': 'oplus-ready/${{ steps.oplus-assets.outputs.file }}', 'archive': False,
                   'if-no-files-found': 'error', 'overwrite': True}},
-        {'name': '限制缓存容量并显示命中情况',
-         'if': "always() && !cancelled() && steps.oplus-cache-measurement.outputs.started == 'true'",
-         'run': '''set -euo pipefail
-ccache --max-size "$CCACHE_MAXSIZE"
-ccache --cleanup
-report="$RUNNER_TEMP/oplus-ccache-statistics.txt"
-ccache --show-stats --verbose | tee "$report"
-{
-  echo '### 本次欧加真编译缓存'
-  echo ''
-  echo '以下数据只统计本次编译；更换工具链或配置后，受影响的缓存会重新生成。'
-  echo ''
-  echo '```text'
-  cat "$report"
-  echo '```'
-} >> "$GITHUB_STEP_SUMMARY"
-'''},
-        persistent_step('ccache', 'save', '${{ env.CCACHE_DIR }}', prefix + 'objects',
-                        "always() && !cancelled() && steps.oplus-build.outcome == 'success'"),
+        {'name': '限制缓存容量并显示命中情况', 'if': "always() && !cancelled() && steps.oplus-build.outcome == 'success'",
+         'run': 'ccache --max-size "$CCACHE_MAXSIZE"\nccache --cleanup\nccache --show-stats\n'},
         {'name': '保存已成功编译的平台缓存',
-         'if': "always() && !cancelled() && steps.oplus-build.outcome == 'success' && steps.oplus-ccache.outputs.cache-primary-key != '' && steps.persistent-ccache-save.outputs.saved != 'true'",
+         'if': "always() && !cancelled() && steps.oplus-build.outcome == 'success' && steps.oplus-ccache.outputs.cache-primary-key != ''",
          'uses': 'actions/cache/save@v5', 'timeout-minutes': 2, 'continue-on-error': True,
          'with': {'path': '${{ env.CCACHE_DIR }}', 'key': '${{ steps.oplus-ccache.outputs.cache-primary-key }}'}},
     ]
@@ -267,13 +232,9 @@ ccache --show-stats --verbose | tee "$report"
                 'SUSFS_SOURCES': '${{ needs.prepare-matrix.outputs.susfs_sources }}',
                 'AK3_REF': AK3_REF,
                 'PATCHES_REF': '${{ needs.prepare-matrix.outputs.patches_ref }}',
-                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '4096M'},
+                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '3G'},
         'steps': steps,
     }
-    from kernel_cache_workflow import wire_thinlto
-    wire_thinlto(job, prefix.replace('oplus-ccache-ecs-v1-', 'oplus-thinlto-v1-') + 'objects', oplus=True)
-    from kernel_cache_profile import wire_profile_alias
-    wire_profile_alias(job)
     return job
 
 

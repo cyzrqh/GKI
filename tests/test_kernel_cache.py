@@ -7,19 +7,15 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import generate_workflow as generator
-import kernel_cache_profile as profile
 
 
 def condition_value(expression, *, enabled='true', local='false', started='true',
-                    outcome='success', cancelled=False, restored='false', saved='false', legacy='false'):
+                    outcome='success', cancelled=False):
     values = {
         'steps.ccache-config.outputs.enabled': enabled,
         'env.ABK_LOCAL_CACHE_ENABLED': local,
         'env.CCACHE_COMPILE_STARTED': started,
         'steps.compile-kernel.outcome': outcome,
-        'steps.persistent-ccache-restore.outputs.restored': restored,
-        'steps.persistent-ccache-save.outputs.saved': saved,
-        'steps.persistent-ccache-restore.outputs.legacy': legacy,
     }
     for name, value in values.items():
         expression = expression.replace(name, repr(value))
@@ -32,12 +28,8 @@ def condition_value(expression, *, enabled='true', local='false', started='true'
 def render_key(template, **overrides):
     values = {'runner.os': 'Linux', 'runner.arch': 'X64', 'inputs.android_version': 'android13',
               'inputs.kernel_version': '5.15', 'inputs.sub_level': '41',
-              'inputs.os_patch_level': '2022-06', 'github.run_id': '100', 'github.run_attempt': '1',
-              "hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')": 'a' * 64}
+              'inputs.os_patch_level': '2022-06', 'github.run_id': '100', 'github.run_attempt': '1'}
     values.update(overrides)
-    expression = profile.profile_expression()[3:-3].strip()
-    digest = values[profile.HASH]
-    values[expression] = profile.OLD_PROFILE if digest == profile.DIAGNOSTIC_PROFILE else digest
     values.update({name.replace('inputs.', 'matrix.'): value for name, value in list(values.items())
                    if name.startswith('inputs.')})
     return re.sub(r'\$\{\{\s*(.*?)\s*\}\}', lambda match: values[match.group(1)], template)
@@ -52,11 +44,11 @@ class KernelCacheTests(unittest.TestCase):
         return next(step for step in self.steps if step.get('name') == name)
 
     def test_cache_detects_build_sh_after_sync_including_historical_61(self):
-        detection = self.find('选择实际编译系统的对象缓存')
+        detection = self.find('选择 build.sh 编译缓存')
         self.assertNotIn('if', detection)
         self.assertIn('if [ -f "$KERNEL_ROOT/build/build.sh" ]; then', detection['run'])
         self.assertIn("echo 'enabled=true'", detection['run'])
-        self.assertIn('tools/kleaf_compile_cache.py', detection['run'])
+        self.assertIn("echo 'enabled=false'", detection['run'])
         self.assertNotIn('inputs.kernel_version', detection['run'])
         self.assertLess(self.steps.index(self.find('初始化并同步内核源码')), self.steps.index(detection))
         measurement = self.find('开始记录实际 ccache 命中')
@@ -85,38 +77,30 @@ class KernelCacheTests(unittest.TestCase):
         self.assertNotIn('github.sha', key)
         prefixes = self.find('恢复 ccache 缓存')['with']['restore-keys'].splitlines()
         self.assertTrue(reference.startswith(render_key(prefixes[0])))
-        self.assertTrue(render_key(key, **{'inputs.os_patch_level': '2022-07'}).startswith(render_key(prefixes[-1])))
-        self.assertFalse(render_key(key, **{'inputs.sub_level': '74'}).startswith(render_key(prefixes[-1])))
-        # Guarded ECS cannot import stock or unbound public object caches.
-        for prefix in prefixes:
-            self.assertTrue(prefix.startswith('gki-ccache-ecs-v1-'))
-            self.assertIn("hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')", prefix)
-        changed = {"hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')": 'b' * 64}
-        self.assertNotEqual(reference, render_key(key, **changed))
+        self.assertTrue(render_key(key, **{'inputs.sub_level': '74'}).startswith(render_key(prefixes[-1])))
+        # Existing successful builds remain usable during migration, but every
+        # new run saves under a new v2 key instead of freezing that old entry.
+        self.assertIn('ccache-', prefixes[1])
 
     def test_failures_after_compilation_save_but_precompile_failures_do_not(self):
         condition = self.find('保存本次 ccache 编译结果')['if']
         for outcome in ('success', 'failure'):
             self.assertTrue(condition_value(condition, outcome=outcome))
-        self.assertFalse(condition_value(condition, saved='true'))
         for parameters in ({'started': 'false'}, {'started': ''}, {'outcome': 'skipped'},
                            {'outcome': 'cancelled'}, {'outcome': ''}, {'enabled': 'false'},
                            {'local': 'true'}, {'cancelled': True}):
             with self.subTest(parameters=parameters):
                 self.assertFalse(condition_value(condition, **parameters))
 
-    def test_marker_is_written_on_the_actual_build_sh_and_enabled_kleaf_compile_paths(self):
+    def test_marker_is_written_only_on_the_actual_build_sh_compilation_path(self):
         command = self.find('编译内核')['run']
         marker = "echo 'CCACHE_COMPILE_STARTED=true' >> \"$GITHUB_ENV\""
-        self.assertEqual(command.count(marker), 2)
+        self.assertEqual(command.count(marker), 1)
         build_branch = command.index('if [ -f "build/build.sh" ]; then')
-        invocation = command.index('--label "build.sh 内核编译" -- build/build.sh')
+        invocation = command.index('LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh')
         self.assertLess(build_branch, command.index(marker))
         self.assertLess(command.index(marker), invocation)
         self.assertLess(invocation, command.index('\nelse\n', invocation))
-        self.assertLess(command.index('\nelse\n', invocation), command.rindex(marker))
-        self.assertLess(command.rindex(marker), command.index('tools/bazel build'))
-        self.assertIn('if [ -n "${CCACHE_PROGRAM:-}" ]; then', command)
 
     def test_statistics_start_after_restoration_and_saving_follows_compile(self):
         restore = self.find('恢复 ccache 缓存')
@@ -129,8 +113,6 @@ class KernelCacheTests(unittest.TestCase):
         self.assertIn('ccache --zero-stats', measurement['run'])
         restore_condition = restore['if']
         self.assertTrue(condition_value(restore_condition))
-        self.assertFalse(condition_value(restore_condition, restored='true'))
-        self.assertTrue(condition_value(restore_condition, restored='true', legacy='true'))
         self.assertFalse(condition_value(restore_condition, enabled='false'))
         self.assertFalse(condition_value(restore_condition, local='true'))
 

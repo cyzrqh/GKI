@@ -287,11 +287,6 @@ jobs:
         persist-credentials: false
     - name: 验证管理器原生生命周期及真实 C 状态行为
       run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
-    - name: 验证 ThinLTO 链接缓存与真实增量链接
-      run: PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically
-    - name: 验证全系列缓存接入和编译退出状态
-      run: PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_kernel_build_identity test_kernel_cache_profile
-        test_run_kernel_build
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((matrix.variant
         == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
@@ -611,8 +606,7 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size',
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ matrix.kmi
           }}-${{ matrix.ddk_short }}${{ format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))
-          }}${{ matrix.variant == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
+          }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
           || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
     - name: 核实已缓存的原生模块
@@ -674,17 +668,6 @@ jobs:
         DDK_IMAGE: ${{ matrix.image }}
         KSU_REF: ${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref', matrix.variant)] }}
       run: bash tools/build_manager_extras.sh
-    - name: 并行准备并核实 FinaSU NoMount 组件
-      if: matrix.variant == 'FinaSU' && steps.lkm-cache.outputs.cache-hit != 'true'
-      env:
-        KSU_VARIANT: ${{ matrix.variant }}
-        MANAGER_PACKAGE: ${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}
-        MANAGER_CERT_SIZE: ${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size', matrix.variant)] }}
-        MANAGER_CERT_SHA256: ${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}
-        KMI: ${{ matrix.kmi }}
-        DDK_IMAGE: ${{ matrix.image }}
-        KSU_REF: ${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref', matrix.variant)] }}
-      run: bash tools/build_fina_nomount.sh
     - name: 保存已核实的原生模块供管理器使用
       if: steps.lkm-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
@@ -695,8 +678,7 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size',
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ matrix.kmi
           }}-${{ matrix.ddk_short }}${{ format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))
-          }}${{ matrix.variant == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
+          }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
           || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
     - name: 确认管理器可读取原生模块缓存（第 1 次）
@@ -712,8 +694,7 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size',
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ matrix.kmi
           }}-${{ matrix.ddk_short }}${{ format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))
-          }}${{ matrix.variant == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
+          }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
           || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: true
@@ -735,8 +716,7 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size',
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ matrix.kmi
           }}-${{ matrix.ddk_short }}${{ format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))
-          }}${{ matrix.variant == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
+          }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
           || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: true
@@ -759,8 +739,7 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size',
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ matrix.kmi
           }}-${{ matrix.ddk_short }}${{ format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))
-          }}${{ matrix.variant == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
+          }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
           || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: true
@@ -774,8 +753,7 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_package', matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_size',
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ matrix.kmi
           }}-${{ matrix.ddk_short }}${{ format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py'))
-          }}${{ matrix.variant == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
+          }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
           || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.lkm-published.outputs.cache-hit }}
@@ -799,7 +777,6 @@ jobs:
     if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-lkm.result == 'success'
     env:
       KSU_VARIANT: ${{ matrix.variant }}
-      GRADLE_OPTS: -Dorg.gradle.caching=true
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     needs:
     - prepare-matrix
@@ -966,9 +943,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android12-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[0].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -990,9 +966,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android12-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[0].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1015,9 +990,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android12-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[0].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1031,9 +1005,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android12-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[0].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-0.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-0.outputs.cache-matched-key }}
@@ -1065,9 +1038,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[1].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1089,9 +1061,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[1].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1114,9 +1085,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[1].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1130,9 +1100,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.10'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[1].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-1.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-1.outputs.cache-matched-key }}
@@ -1164,9 +1133,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[2].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1188,9 +1156,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[2].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1213,9 +1180,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[2].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1229,9 +1195,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android13-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[2].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-2.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-2.outputs.cache-matched-key }}
@@ -1263,9 +1228,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[3].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1287,9 +1251,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[3].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1312,9 +1275,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[3].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1328,9 +1290,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-5.15'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[3].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-3.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-3.outputs.cache-matched-key }}
@@ -1362,9 +1323,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-6.1'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[4].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1386,9 +1346,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-6.1'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[4].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1411,9 +1370,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-6.1'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[4].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1427,9 +1385,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android14-6.1'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[4].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-4.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-4.outputs.cache-matched-key }}
@@ -1461,9 +1418,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android15-6.6'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[5].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1485,9 +1441,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android15-6.6'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[5].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1510,9 +1465,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android15-6.6'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[5].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1526,9 +1480,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android15-6.6'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[5].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-5.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-5.outputs.cache-matched-key }}
@@ -1560,9 +1513,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android16-6.12'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[6].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1584,9 +1536,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android16-6.12'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[6].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1609,9 +1560,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android16-6.12'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[6].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1625,9 +1575,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android16-6.12'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[6].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-6.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-6.outputs.cache-matched-key }}
@@ -1659,9 +1608,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android17-6.18'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[7].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1683,9 +1631,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android17-6.18'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[7].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1708,9 +1655,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android17-6.18'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[7].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         lookup-only: false
         fail-on-cache-miss: false
@@ -1724,9 +1670,8 @@ jobs:
           matrix.variant)] }}-${{ needs.prepare-matrix.outputs[format('{0}_manager_cert_sha256', matrix.variant)] }}-${{ 'android17-6.18'
           }}-${{ fromJSON(needs.prepare-matrix.outputs[format('{0}_ddk_matrix', matrix.variant)]).include[7].ddk_short }}${{
           format('-native-{0}', hashFiles('tools/build_manager_extras*.sh', 'tools/manager_full_native.py')) }}${{ matrix.variant
-          == 'FinaSU' && format('-nomount-{0}', hashFiles('tools/build_fina_nomount.sh', 'tools/fina_native_components.py'))
-          || '' }}${{ matrix.variant == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json'))
-          || '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
+          == 'BakaSU' && format('-kpm-{0}', hashFiles('tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) ||
+          '' }}${{ matrix.variant != 'SukiSU' && matrix.variant != 'BakaSU' && format('-kpm-{0}', hashFiles('tools/additional_manager_kpm.py',
           'tools/patches/bakasu-kpm.patch', 'config/bakasu-kpm-port.json')) || '' }}
         CACHE_HIT_0: ${{ steps.manager-lkm-7.outputs.cache-hit }}
         CACHE_KEY_0: ${{ steps.manager-lkm-7.outputs.cache-matched-key }}
@@ -1753,10 +1698,6 @@ jobs:
           --expected-kmis "android12-5.10,android13-5.10,android13-5.15,android14-5.15,android14-6.1,android15-6.6,android16-6.12,android17-6.18" --report "$RUNNER_TEMP/manager-lkm-stage.json"
         python3 tools/manager_full_native.py stage --source manager-source --directory manager-lkm \
           --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
-        if [ "$KSU_VARIANT" = FinaSU ]; then
-          python3 tools/fina_native_components.py stage --source manager-source --directory manager-lkm \
-            --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
-        fi
     - name: 配置 BakaSU 配套管理器签名提示
       if: matrix.variant == 'BakaSU'
       run: |
@@ -1793,16 +1734,10 @@ jobs:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ~/.gradle/caches/build-cache-1
-        key: gki-manager-gradle-build-v2-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
+        key: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
           'manager-source/manager/gradle/libs.versions.toml') }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |-
-          gki-manager-gradle-build-v2-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
-          gki-manager-gradle-build-v2-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'SukiSU' }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
-          gki-manager-gradle-build-v2-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'KernelSU-Next' }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
-          gki-manager-gradle-build-v2-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'KernelSU' }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
-          gki-manager-gradle-build-v2-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'KowSU' }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
-          gki-manager-gradle-build-v2-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'FinaSU' }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
-          gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', 'manager-source/manager/gradle/libs.versions.toml') }}-
+        restore-keys: gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties',
+          'manager-source/manager/gradle/libs.versions.toml') }}-
     - name: 准备 Android SDK 与 NDK
       run: |
         set -euo pipefail
@@ -1847,19 +1782,12 @@ jobs:
           manager-source/target/release/.fingerprint
           !manager-source/target/**/release/deps/ksud-*
           !manager-source/target/**/release/deps/ksuinit-*
-        key: gki-manager-cargo-v3-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version
-          }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml',
-          'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh',
-          'tools/build_fina_manager.py') }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |-
-          gki-manager-cargo-v3-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
-          gki-manager-cargo-v3-${{ matrix.variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
-          gki-manager-cargo-v3-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'SukiSU' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
-          gki-manager-cargo-v3-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'KernelSU-Next' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
-          gki-manager-cargo-v3-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'KernelSU' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
-          gki-manager-cargo-v3-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'KowSU' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
-          gki-manager-cargo-v3-${{ matrix.variant == 'BakaSU' && 'BakaSU' || 'FinaSU' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', 'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-
-          gki-manager-cargo-${{ matrix.variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
+        key: gki-manager-cargo-${{ matrix.variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{
+          steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml',
+          'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh')
+          }}
+        restore-keys: gki-manager-cargo-${{ matrix.variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch
+          }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-
     - name: 编译管理器与同版本 ksud
       id: manager-build
       env:
@@ -1875,7 +1803,6 @@ jobs:
           KernelSU-Next|KernelSU|KowSU|FinaSU) script=tools/build_additional_manager.sh ;;
           *) echo 'Unknown manager variant' >&2; exit 1 ;;
         esac
-        python3 tools/manager_gradle_resources.py --source "$GITHUB_WORKSPACE/manager-source"
         bash -n "$script"
         bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
     - name: 实际验证八种 KMI 的镜像修补与恢复
@@ -1939,7 +1866,7 @@ jobs:
         key: ${{ steps.manager-gradle-cache.outputs.cache-primary-key }}
     - name: 保存管理器 Cargo 依赖
       uses: actions/cache/save@v5
-      if: always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-cargo-cache.outputs.cache-primary-key
+      if: always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key
         != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'
       continue-on-error: true
       timeout-minutes: 3
@@ -1975,9 +1902,8 @@ jobs:
       CCACHE_NOHASHDIR: 'true'
       CCACHE_NOHARDLINK: 'true'
       CCACHE_COMPRESS: 'true'
-      CCACHE_MAXSIZE: 4096M
+      CCACHE_MAXSIZE: 2G
       KSU_VARIANT: ${{ matrix.variant }}
-      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     steps: &id001
@@ -2522,13 +2448,10 @@ jobs:
         GKI_KERNEL_REF: ${{ matrix.kernel_ref }}
       run: |
         set -euo pipefail
-        source_sync_started=$SECONDS
-        source_checkout_jobs=$(nproc --all)
-        if [ "$source_checkout_jobs" -gt 8 ]; then source_checkout_jobs=8; fi
-        source_network_jobs=$((source_checkout_jobs * 2))
-        echo "官方源码同步：网络并行 $source_network_jobs，检出并行 $source_checkout_jobs"
+        python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \
+          https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc --depth 1
         formatted_branch="${GKI_ANDROID}-${GKI_KERNEL}-${GKI_PATCH}"
-        "$REPO" init --depth=1 --no-clone-bundle -u https://android.googlesource.com/kernel/manifest \
+        "$REPO" init --depth=1 -u https://android.googlesource.com/kernel/manifest \
           -b "common-${formatted_branch}" --repo-rev=v2.16
         python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \
           --manifest-root "$KERNEL_ROOT/.repo/manifests" \
@@ -2536,16 +2459,9 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \
           --manifest-root "$KERNEL_ROOT/.repo/manifests"
         for attempt in 1 2 3; do
-          if python3 "$GITHUB_WORKSPACE/tools/run_kernel_build.py" --label "官方源码同步" -- "$REPO" --trace sync -c -j"$source_checkout_jobs" \
-              --jobs-network="$source_network_jobs" --jobs-checkout="$source_checkout_jobs" \
-              --optimized-fetch --no-clone-bundle --no-tags --fail-fast; then
+          if "$REPO" --trace sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
             python3 "$GITHUB_WORKSPACE/tools/validate_kernel_source.py" \
               --kernel-root "$KERNEL_ROOT" --family "$GKI_KERNEL" --sublevel "$GKI_SUBLEVEL"
-            source_sync_seconds=$((SECONDS - source_sync_started))
-            echo "官方源码及工具链同步完成，用时 $source_sync_seconds 秒"
-            if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-              echo "官方源码及工具链同步：**$source_sync_seconds 秒**（网络并行 $source_network_jobs，检出并行 $source_checkout_jobs）。" >> "$GITHUB_STEP_SUMMARY"
-            fi
             exit 0
           fi
           echo "::warning::源码同步失败（${attempt}/3）"
@@ -4930,9 +4846,8 @@ jobs:
           sed -i '/^CONFIG_LOCALVERSION=/ s/="\([^"]*\)"/="'"$CLEAN_VERSION"'"/' ./common/arch/arm64/configs/gki_defconfig
         elif [ ! -f "build/build.sh" ]; then
           cd ./common
-          KERNEL_SOURCE_REF="$(git rev-parse --verify HEAD)"
-          BID="$(python3 "$GITHUB_WORKSPACE/tools/kernel_build_identity.py" --source-ref "$KERNEL_SOURCE_REF")"
-          GHASH="${KERNEL_SOURCE_REF:0:13}"
+          BID="ab$((RANDOM % 90000000 + 10000000))"
+          GHASH=$(git rev-parse --verify HEAD | cut -c1-13)
           case "${{ matrix.android_version }}-${{ matrix.kernel_version }}" in
             "android14-6.1")  KMI_TAG="android14-11" ;;
             "android15-6.6")  KMI_TAG="android15-8" ;;
@@ -7073,23 +6988,9 @@ jobs:
           echo "BAZEL_DISK_CACHE=$cache_dir" >> "$GITHUB_ENV"
           echo 'enabled=true' >> "$GITHUB_OUTPUT"
         fi
-    - name: 恢复独立仓库编译缓存（bazel）
-      id: persistent-bazel-restore
-      if: steps.bazel-cache-config.outputs.enabled == 'true'
-      continue-on-error: true
-      timeout-minutes: 8
-      env:
-        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
-        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        OBJECT_CACHE_KEY: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version
-          }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
-        OBJECT_CACHE_DIRECTORY: ${{ env.BAZEL_DISK_CACHE }}
-      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind bazel --directory "$OBJECT_CACHE_DIRECTORY"
-        --key "$OBJECT_CACHE_KEY"
     - name: 恢复 Bazel 磁盘缓存
       id: bazel-cache
-      if: steps.bazel-cache-config.outputs.enabled == 'true' && (steps.persistent-bazel-restore.outputs.restored != 'true'
-        || steps.persistent-bazel-restore.outputs.legacy == 'true')
+      if: steps.bazel-cache-config.outputs.enabled == 'true'
       uses: actions/cache/restore@v5
       continue-on-error: true
       timeout-minutes: 3
@@ -7102,45 +7003,21 @@ jobs:
         restore-keys: |
           gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
           gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
-    - name: 选择实际编译系统的对象缓存
+          gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
+    - name: 选择 build.sh 编译缓存
       id: ccache-config
       run: |
         set -euo pipefail
+        # Some historical 6.1 manifests also use build.sh. Select the real build
+        # system after source sync rather than assuming it from the kernel family.
         if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
           echo 'enabled=true' >> "$GITHUB_OUTPUT"
-          echo 'build_system=make' >> "$GITHUB_OUTPUT"
         else
-          echo 'build_system=kleaf' >> "$GITHUB_OUTPUT"
-          python3 "$GITHUB_WORKSPACE/tools/kleaf_compile_cache.py" \
-            --source "$KERNEL_ROOT" --program "$RUNNER_TEMP/gki-ccache-ecs/ccache" \
-            --output "$RUNNER_TEMP/gki-ccache-ecs/gki-make" --directory "$CCACHE_DIR"
+          echo 'enabled=false' >> "$GITHUB_OUTPUT"
         fi
-    - name: 安装固定 ECS 编译缓存工具
-      if: steps.ccache-config.outputs.enabled == 'true'
-      run: |
-        set -euo pipefail
-        python3 "$GITHUB_WORKSPACE/tools/kernel_compile_cache.py" install \
-          --output "$RUNNER_TEMP/gki-ccache-ecs" \
-          --github-env "$GITHUB_ENV" --github-path "$GITHUB_PATH"
-    - name: 恢复独立仓库编译缓存（ccache）
-      id: persistent-ccache-restore
-      if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
-      continue-on-error: true
-      timeout-minutes: 8
-      env:
-        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
-        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        OBJECT_CACHE_KEY: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
-          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
-          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
-        OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
-      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
-        --key "$OBJECT_CACHE_KEY" --share-variants
     - name: 恢复 ccache 缓存
       id: ccache-restore
-      if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true' && (steps.persistent-ccache-restore.outputs.restored
-        != 'true' || steps.persistent-ccache-restore.outputs.legacy == 'true')
+      if: steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
       uses: actions/cache/restore@v5
       continue-on-error: true
       timeout-minutes: 3
@@ -7148,24 +7025,24 @@ jobs:
         SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
       with:
         path: ~/.ccache
-        key: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
-          == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
-          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
-          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt
-          }}
+        key: gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{
+          matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41' || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
-          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41' || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
+          gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
+          ${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-ccache-
+          gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-
     - name: 开始记录实际 ccache 命中
       id: ccache-measurement
       if: steps.ccache-config.outputs.enabled == 'true'
       run: |
         set -euo pipefail
-        echo "Available build CPUs: $(nproc)"
-        free -h
-        ccache --zero-stats
-        ccache --show-config
-        echo 'enabled=true' >> "$GITHUB_OUTPUT"
+        if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
+          echo "Available build CPUs: $(nproc)"
+          free -h
+          ccache --zero-stats
+          ccache --show-config
+          echo 'enabled=true' >> "$GITHUB_OUTPUT"
+        fi
     - name: 核实 BakaSU 原生符号接口
       if: matrix.variant == 'BakaSU'
       run: python3 "$GITHUB_WORKSPACE/tools/ensure_bakasu_symbol_lookup.py" --kernel-root "$KERNEL_ROOT" --expected-ref "$BRANCH"
@@ -7215,32 +7092,6 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \
           --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \
           --ksu-source "$KERNEL_ROOT/KernelSU"
-    - name: 配置独立 ThinLTO 链接缓存
-      id: thinlto-config
-      if: success() && steps.ccache-config.outputs.enabled == 'true' && steps.ccache-config.outputs.build_system == 'make'
-      continue-on-error: true
-      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" configure --source "$KERNEL_ROOT/common" --directory "$GKI_THINLTO_CACHE_DIR"
-    - name: 恢复独立仓库编译缓存（thinlto）
-      id: persistent-thinlto-restore
-      if: success() && steps.thinlto-config.outputs.enabled == 'true'
-      continue-on-error: true
-      timeout-minutes: 3
-      env:
-        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
-        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        OBJECT_CACHE_KEY: gki-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
-          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
-          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref',
-          matrix.variant)] }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py')
-          }}
-        OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
-      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
-        --key "$OBJECT_CACHE_KEY"
-    - name: 显示本次恢复的 ThinLTO 链接对象
-      if: success() && steps.thinlto-config.outputs.enabled == 'true'
-      continue-on-error: true
-      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" report --directory "$GKI_THINLTO_CACHE_DIR"
     - name: 编译内核
       id: compile-kernel
       run: |
@@ -7463,7 +7314,7 @@ jobs:
 
         if [ -f "build/build.sh" ]; then
           echo 'CCACHE_COMPILE_STARTED=true' >> "$GITHUB_ENV"
-          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 python3 "$GITHUB_WORKSPACE/tools/run_kernel_build.py" --label "build.sh 内核编译" -- build/build.sh CC="${CCACHE_PROGRAM:-/usr/bin/ccache} clang" || exit 1
+          LTO=thin BUILD_CONFIG=common/build.config.gki.aarch64 build/build.sh CC="/usr/bin/ccache clang" || exit 1
           strings "out/${{ matrix.android_version }}-${{ matrix.kernel_version }}/dist/Image" | grep 'Linux version'
         else
           # 提取 gki_defconfig 修改到 fragment，避免 bazel trim 检查失败
@@ -7483,8 +7334,7 @@ jobs:
           fi
           : "${BAZEL_DISK_CACHE:?Bazel disk cache must be configured before compiling}"
           mkdir -p "$BAZEL_DISK_CACHE"
-          if [ -n "${CCACHE_PROGRAM:-}" ]; then echo 'CCACHE_COMPILE_STARTED=true' >> "$GITHUB_ENV"; fi
-            python3 "$GITHUB_WORKSPACE/tools/run_kernel_build.py" --label "Bazel 内核编译" -- tools/bazel build --disk_cache="$BAZEL_DISK_CACHE" --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
+          tools/bazel build --disk_cache="$BAZEL_DISK_CACHE" --config=fast $LTO_FLAG $FRAG_FLAG //common:kernel_aarch64_dist || exit 1
           strings ./bazel-bin/common/kernel_aarch64/Image | grep 'Linux version'
         fi
 
@@ -7498,74 +7348,28 @@ jobs:
       timeout-minutes: 1
       run: |
         set -euo pipefail
-        ccache --max-size "$CCACHE_MAXSIZE"
-        ccache --cleanup
         report="$RUNNER_TEMP/gki-ccache-statistics.txt"
         ccache --show-stats --verbose | tee "$report"
         {
           echo '### 本次内核编译缓存（ccache）'
           echo ''
-          echo '以下命中、未命中及不可缓存数量统计本次实际内核编译；build.sh 和已接入的 Kleaf 均使用逐文件缓存，Bazel 另有完整任务磁盘缓存。'
+          echo '以下命中、未命中及不可缓存数量仅统计本次 build.sh 编译；Bazel 使用单独的磁盘缓存。'
           echo ''
           echo '```text'
           cat "$report"
           echo '```'
         } >> "$GITHUB_STEP_SUMMARY"
-    - name: 限制并统计 ThinLTO 链接缓存
-      id: thinlto-trim
-      if: always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps.compile-kernel.outcome == 'success'
-      continue-on-error: true
-      run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" trim --directory "$GKI_THINLTO_CACHE_DIR"
-    - name: 保存独立仓库编译缓存（thinlto）
-      id: persistent-thinlto-save
-      if: always() && !cancelled() && steps.thinlto-config.outputs.enabled == 'true' && steps.compile-kernel.outcome == 'success'
-      continue-on-error: true
-      timeout-minutes: 3
-      env:
-        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
-        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        OBJECT_CACHE_KEY: gki-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
-          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
-          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref',
-          matrix.variant)] }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py')
-          }}
-        OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
-      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
-        --key "$OBJECT_CACHE_KEY"
-    - name: 保存独立仓库编译缓存（ccache）
-      id: persistent-ccache-save
-      if: always() && !cancelled() && steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
-        && env.CCACHE_COMPILE_STARTED == 'true' && (steps.compile-kernel.outcome == 'success' || steps.compile-kernel.outcome
-        == 'failure')
-      continue-on-error: true
-      timeout-minutes: 8
-      env:
-        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
-        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        OBJECT_CACHE_KEY: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
-          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
-          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
-        OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
-        CACHE_PERSISTENT_RESTORED: ${{ steps.persistent-ccache-restore.outputs.restored }}
-        CACHE_PERSISTENT_LEGACY: ${{ steps.persistent-ccache-restore.outputs.legacy }}
-      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
-        --key "$OBJECT_CACHE_KEY"
     - name: 保存本次 ccache 编译结果
       if: always() && !cancelled() && steps.ccache-config.outputs.enabled == 'true' && env.ABK_LOCAL_CACHE_ENABLED != 'true'
         && env.CCACHE_COMPILE_STARTED == 'true' && (steps.compile-kernel.outcome == 'success' || steps.compile-kernel.outcome
-        == 'failure') && steps.persistent-ccache-save.outputs.saved != 'true'
+        == 'failure')
       uses: actions/cache/save@v5
       continue-on-error: true
       timeout-minutes: 3
       with:
         path: ~/.ccache
-        key: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
-          == '11bef0ef2fd71957605f5fe2268979d0309489a140c5b30b0c1287e9c1a65afc' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
-          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
-          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt
-          }}
+        key: gki-ccache-v2-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{
+          matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt }}
     - name: 限制 Bazel 缓存上传体积
       id: bazel-cache-trim
       if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome !=
@@ -7573,7 +7377,7 @@ jobs:
       continue-on-error: true
       timeout-minutes: 2
       env:
-        BAZEL_CACHE_MAX_BYTES: '4294967296'
+        BAZEL_CACHE_MAX_BYTES: '2147483648'
       run: |
         set -euo pipefail
         # Stop idle Bazel writes before pruning; never cache its output tree.
@@ -7610,23 +7414,9 @@ jobs:
             output.write(f'ready={str(total > 0).lower()}\n')
         print(f'Bazel cache upload: {total / 1024**2:.1f} MiB (before trimming: {original / 1024**2:.1f} MiB)')
         PY
-    - name: 保存独立仓库编译缓存（bazel）
-      id: persistent-bazel-save
-      if: always() && !cancelled() && steps.bazel-cache-trim.outputs.ready == 'true' && steps.bazel-cache.outputs.cache-primary-key
-        != '' && steps.bazel-cache.outputs.cache-hit != 'true'
-      continue-on-error: true
-      timeout-minutes: 8
-      env:
-        CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
-        CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
-        OBJECT_CACHE_KEY: gki-bazel-v1-${{ runner.os }}-${{ runner.arch }}-${{ matrix.android_version }}-${{ matrix.kernel_version
-          }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
-        OBJECT_CACHE_DIRECTORY: ${{ env.BAZEL_DISK_CACHE }}
-      run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind bazel --directory "$OBJECT_CACHE_DIRECTORY"
-        --key "$OBJECT_CACHE_KEY"
     - name: 保存 Bazel 磁盘缓存
       if: always() && !cancelled() && steps.bazel-cache-trim.outputs.ready == 'true' && steps.bazel-cache.outputs.cache-primary-key
-        != '' && steps.bazel-cache.outputs.cache-hit != 'true' && steps.persistent-bazel-save.outputs.saved != 'true'
+        != '' && steps.bazel-cache.outputs.cache-hit != 'true'
       uses: actions/cache/save@v5
       continue-on-error: true
       timeout-minutes: 3
@@ -7957,9 +7747,8 @@ jobs:
       CCACHE_NOHASHDIR: 'true'
       CCACHE_NOHARDLINK: 'true'
       CCACHE_COMPRESS: 'true'
-      CCACHE_MAXSIZE: 4096M
+      CCACHE_MAXSIZE: 2G
       KSU_VARIANT: ${{ matrix.variant }}
-      GKI_THINLTO_CACHE_DIR: ${{ github.workspace }}/.gki-thinlto-cache
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     steps: *id001

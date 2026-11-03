@@ -15,7 +15,6 @@ from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cac
                               manager_lkm_job, source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
 from additional_manager_jobs import LOCAL_IF, ALL_IF, extend_manager_job
-from manager_cache_keys import restore_keys as manager_cache_restore_keys
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
@@ -116,13 +115,10 @@ def feature_inputs(source):
 
 
 SOURCE_SYNC = '''set -euo pipefail
-source_sync_started=$SECONDS
-source_checkout_jobs=$(nproc --all)
-if [ "$source_checkout_jobs" -gt 8 ]; then source_checkout_jobs=8; fi
-source_network_jobs=$((source_checkout_jobs * 2))
-echo "官方源码同步：网络并行 $source_network_jobs，检出并行 $source_checkout_jobs"
+python3 "$GITHUB_WORKSPACE/.github/scripts/cached-downloads.py" clone \\
+  https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-gnu-6.4.1.git gcc --depth 1
 formatted_branch="${GKI_ANDROID}-${GKI_KERNEL}-${GKI_PATCH}"
-"$REPO" init --depth=1 --no-clone-bundle -u https://android.googlesource.com/kernel/manifest \\
+"$REPO" init --depth=1 -u https://android.googlesource.com/kernel/manifest \\
   -b "common-${formatted_branch}" --repo-rev=v2.16
 python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \\
   --manifest-root "$KERNEL_ROOT/.repo/manifests" \\
@@ -130,16 +126,9 @@ python3 "$GITHUB_WORKSPACE/tools/set_kernel_ref.py" \\
 python3 "$GITHUB_WORKSPACE/tools/optimize_manifest_fetch.py" \\
   --manifest-root "$KERNEL_ROOT/.repo/manifests"
 for attempt in 1 2 3; do
-  if python3 "$GITHUB_WORKSPACE/tools/run_kernel_build.py" --label "官方源码同步" -- "$REPO" --trace sync -c -j"$source_checkout_jobs" \\
-      --jobs-network="$source_network_jobs" --jobs-checkout="$source_checkout_jobs" \\
-      --optimized-fetch --no-clone-bundle --no-tags --fail-fast; then
+  if "$REPO" --trace sync -c -j"$(nproc --all)" --no-tags --fail-fast; then
     python3 "$GITHUB_WORKSPACE/tools/validate_kernel_source.py" \\
       --kernel-root "$KERNEL_ROOT" --family "$GKI_KERNEL" --sublevel "$GKI_SUBLEVEL"
-    source_sync_seconds=$((SECONDS - source_sync_started))
-    echo "官方源码及工具链同步完成，用时 $source_sync_seconds 秒"
-    if [ -n "${GITHUB_STEP_SUMMARY:-}" ]; then
-      echo "官方源码及工具链同步：**$source_sync_seconds 秒**（网络并行 $source_network_jobs，检出并行 $source_checkout_jobs）。" >> "$GITHUB_STEP_SUMMARY"
-    fi
     exit 0
   fi
   echo "::warning::源码同步失败（${attempt}/3）"
@@ -184,18 +173,11 @@ KERNEL_JOB_IF = ("always() && !cancelled() && needs.prepare-matrix.result == 'su
 MANAGER_GRADLE_CACHE = '~/.gradle/caches/modules-2\n~/.gradle/wrapper\n'
 MANAGER_GRADLE_BUILD_CACHE = '~/.gradle/caches/build-cache-1'
 MANAGER_GRADLE_BUILD_CACHE_PREFIX = (
-    'gki-manager-gradle-build-v2-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-'
+    'gki-manager-gradle-build-v1-${{ runner.os }}-${{ runner.arch }}-jdk21-sdk37-ndk29-'
     "${{ hashFiles('manager-source/manager/gradle/wrapper/gradle-wrapper.properties', "
     "'manager-source/manager/gradle/libs.versions.toml') }}-"
 )
-MANAGER_CARGO_CACHE_PREFIX = (
-    'gki-manager-cargo-v3-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-'
-    '${{ steps.manager-rust-version.outputs.version }}-'
-    "${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', "
-    "'manager-source/.github/riscv64-cargo.toml', 'tools/build_manager_native.sh', "
-    "'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh', "
-    "'tools/build_additional_manager.sh', 'tools/build_fina_manager.py') }}-"
-)
+
 MANAGER_CARGO_CACHE = (
     '~/.cargo/registry/index\n~/.cargo/registry/cache\n~/.cargo/registry/src\n~/.cargo/git/db\n'
     'manager-source/target/*/release/deps\nmanager-source/target/*/release/build\n'
@@ -209,8 +191,7 @@ MANAGER_CARGO_CACHE = (
 def manager_job():
     job = {
         'name': '编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK', 'if': MANAGER_IF,
-        'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}',
-                'GRADLE_OPTS': '-Dorg.gradle.caching=true'},
+        'env': {'KSU_VARIANT': '${{ inputs.kernelsu_variant }}'},
         'needs': ['prepare-matrix', 'build-sukisu-lkm'], 'runs-on': 'ubuntu-24.04', 'timeout-minutes': 60,
         'permissions': {'contents': 'read', 'actions': 'read'},
         'outputs': {'manager_job_id': '${{ steps.manager-producer.outputs.manager_job_id }}',
@@ -264,10 +245,6 @@ PY
   --expected-kmis "''' + ','.join(KMIS) + '''" --report "$RUNNER_TEMP/manager-lkm-stage.json"
 python3 tools/manager_full_native.py stage --source manager-source --directory manager-lkm \\
   --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
-if [ "$KSU_VARIANT" = FinaSU ]; then
-  python3 tools/fina_native_components.py stage --source manager-source --directory manager-lkm \\
-    --identity "$RUNNER_TEMP/manager-public-certificate.json" --expected-ref "$KSU_REF"
-fi
 '''},
             {'name': '配置 BakaSU 配套管理器签名提示',
              'if': "inputs.kernelsu_variant == 'BakaSU'",
@@ -289,9 +266,7 @@ python3 tools/configure_bakasu_manager_notice.py --source "$GITHUB_WORKSPACE/man
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_GRADLE_BUILD_CACHE,
                      'key': MANAGER_GRADLE_BUILD_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
-                      'restore-keys': manager_cache_restore_keys(MANAGER_GRADLE_BUILD_CACHE_PREFIX, kind='gradle',
-                          legacy=(MANAGER_GRADLE_BUILD_CACHE_PREFIX.replace(
-                              'gki-manager-gradle-build-v2-${{ inputs.kernelsu_variant }}-', 'gki-manager-gradle-build-v1-'),))}},
+                      'restore-keys': MANAGER_GRADLE_BUILD_CACHE_PREFIX}},
             {'name': '准备 Android SDK 与 NDK',
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -318,10 +293,8 @@ rustup target add aarch64-linux-android --toolchain "$toolchain"
              'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 3,
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_CARGO_CACHE,
-                      'key': MANAGER_CARGO_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
-                      'restore-keys': manager_cache_restore_keys(MANAGER_CARGO_CACHE_PREFIX, kind='cargo',
-                          compiler_prefix="gki-manager-cargo-v3-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-",
-                          legacy=("gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-",))}},
+                      'key': "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-${{ hashFiles('manager-source/**/Cargo.lock', 'manager-source/**/Cargo.toml', 'manager-source/.github/scripts/setup-rust-build.sh', 'tools/build_sukisu_manager.sh', 'tools/build_bakasu_manager.sh') }}",
+                      'restore-keys': "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-"}},
             {'name': '编译管理器与同版本 ksud',
              'id': 'manager-build',
              'env': {'KSU_PACKAGE_NAME': '${{ needs.prepare-matrix.outputs.manager_package }}',
@@ -334,7 +307,6 @@ case "$KSU_VARIANT" in
   KernelSU-Next|KernelSU|KowSU|FinaSU) script=tools/build_additional_manager.sh ;;
   *) echo 'Unknown manager variant' >&2; exit 1 ;;
 esac
-python3 tools/manager_gradle_resources.py --source "$GITHUB_WORKSPACE/manager-source"
 bash -n "$script"
 bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEMP/manager-build"
 '''},
@@ -382,7 +354,7 @@ bash "$script" --source "$GITHUB_WORKSPACE/manager-source" --output "$RUNNER_TEM
              'with': {'path': MANAGER_GRADLE_CACHE,
                       'key': '${{ steps.manager-gradle-cache.outputs.cache-primary-key }}'}},
             {'name': '保存管理器 Cargo 依赖', 'uses': 'actions/cache/save@v5',
-             'if': "always() && !cancelled() && steps.manager-build.outcome == 'success' && steps.manager-cargo-cache.outputs.cache-primary-key != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'",
+             'if': "always() && !cancelled() && steps.manager-build.outcome != 'skipped' && steps.manager-cargo-cache.outputs.cache-primary-key != '' && steps.manager-cargo-cache.outputs.cache-hit != 'true'",
              'continue-on-error': True, 'timeout-minutes': 3,
              'with': {'path': MANAGER_CARGO_CACHE,
                       'key': '${{ steps.manager-cargo-cache.outputs.cache-primary-key }}'}},
@@ -551,6 +523,12 @@ fi
         'super_access_c = next((path for path in (ksu_dir / "extension/kpm/super_access.c", '
         'ksu_dir / "kpm/super_access.c") if path.is_file()), ksu_dir / "kpm/super_access.c")')
     compile_step = step_named(steps, '编译内核')
+    # Keep the correctness fix: a timeout must not replay defconfig preparation.
+    if compile_step.get('uses') == 'nick-fields/retry@v4':
+        settings = compile_step.pop('with')
+        compile_step.pop('uses')
+        compile_step['run'] = settings['command']
+        compile_step['timeout-minutes'] = 100
     steps.insert(steps.index(compile_step), {
         'name': '核实 BakaSU 原生符号接口',
         'if': "inputs.ksu_variant == 'BakaSU'",
@@ -707,8 +685,6 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
     # the free runner pool; waiting inside those jobs could starve its producer.
     job['needs'] = ['prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager']
     job['permissions'] = {'contents': 'read', 'actions': 'read'}
-    from kernel_cache_workflow import wire_gki_cache
-    wire_gki_cache(job)
     job['strategy'] = {'fail-fast': False, 'max-parallel': '${{ fromJSON(needs.prepare-matrix.outputs.max_parallel) }}',
                        'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.matrix) }}'}
     job['runs-on'] = job['runs-on'].replace("'ubuntu-latest'", "'ubuntu-24.04'")
@@ -734,10 +710,6 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
             {'name': '检出 gki', 'uses': 'actions/checkout@v6', 'with': {'persist-credentials': False}},
             {'name': '验证管理器原生生命周期及真实 C 状态行为',
              'run': "python3 -m unittest discover -s tests -p 'test_manager_port_native.py'"},
-            {'name': '验证 ThinLTO 链接缓存与真实增量链接',
-             'run': 'PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically'},
-            {'name': '验证全系列缓存接入和编译退出状态',
-             'run': 'PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_kernel_build_identity test_kernel_cache_profile test_run_kernel_build'},
             {'name': '检查管理器构建脚本', 'if': MANAGER_IF,
              'run': 'for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done'},
             {'name': '检查并生成矩阵', 'id': 'matrix', 'shell': 'bash', 'if': BUILD_IF,

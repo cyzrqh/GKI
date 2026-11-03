@@ -118,6 +118,50 @@ class KleafCacheTests(unittest.TestCase):
         self.assertEqual(0, second.returncode, second.stderr)
         self.assertEqual('', second.stdout)
 
+    def test_launcher_reports_probe_hidden_reasons_and_identity_after_make_without_changing_failure(self):
+        shell = bash()
+        if not shell:
+            self.skipTest('Bash required')
+        bin_dir = self.root / 'summary-bin'
+        bin_dir.mkdir()
+        self.program.parent.mkdir()
+        identities = self.program.parent / ('identities-' + 'a' * 32)
+        identities.mkdir()
+        # A compiler probe consumes the first guard note via stderr redirection.
+        # The end-of-Make summary must recover only whitelisted marker reasons.
+        self.program.write_text('#!/usr/bin/sh\nidentities=' + identities.as_posix() + '\n'
+            'cache_sha256sum=' + posix(bin_dir / 'sha256sum') + '\n'
+            ': > "$identities/trace-descriptor-unavailable"\n'
+            ': > "$identities/trace-private-command-do-not-print"\n'
+            'printf "hidden compiler probe reason\\n" >&2\n', encoding='utf-8', newline='\n')
+        self.program.chmod(0o700)
+        fingerprint = 'b' * 64
+        (identities / ('c' * 64 + '.json')).write_text(json.dumps({
+            'file_count': 417, 'toolchain_sha256': fingerprint,
+            'private': 'do-not-print-config-or-password'}), encoding='utf-8')
+        checksum = bin_dir / 'sha256sum'
+        checksum.write_text('#!/usr/bin/sh\nprintf "' + 'd' * 64 + '  -\\n"\n',
+                            encoding='utf-8', newline='\n')
+        checksum.chmod(0o700)
+        make = bin_dir / 'make'
+        make.write_text('#!/usr/bin/sh\n"$GUARD_PROGRAM" --version >/dev/null 2>&1\nexit 23\n',
+                        encoding='utf-8', newline='\n')
+        make.chmod(0o700)
+        output = self.source / 'final-output'
+        (output / 'include/generated').mkdir(parents=True)
+        (output / 'include/generated/autoconf.h').write_text('#define CONFIG_PRIVATE_PASSWORD do-not-print\n')
+        self.output.write_text(cache.launcher(self.program, self.directory), encoding='utf-8', newline='\n')
+        environment = {**os.environ, 'PATH': posix(bin_dir) + os.pathsep + os.environ['PATH'],
+                       'GUARD_PROGRAM': posix(self.program), 'OUT_DIR': posix(output)}
+        result = subprocess.run([shell, posix(self.output), '-C', posix(self.source), 'O=' + posix(output)],
+                                env=environment, cwd=self.root, capture_output=True, text=True, timeout=20)
+        self.assertEqual(23, result.returncode, result.stdout + result.stderr)
+        self.assertIn('Kleaf cache guard summary: reasons=descriptor-unavailable descriptors=1', result.stdout)
+        self.assertIn('Kleaf compiler identity: toolchain_sha256=' + fingerprint + ' file_count=417', result.stdout)
+        self.assertIn('Kleaf final bound configuration: sha256=' + 'd' * 64, result.stdout)
+        for private in ('private-command', 'do-not-print', 'hidden compiler probe reason', str(self.root)):
+            self.assertNotIn(private, result.stdout + result.stderr)
+
     def test_launcher_passes_only_the_final_make_output_matching_kleaf_environment(self):
         shell = bash()
         if not shell:

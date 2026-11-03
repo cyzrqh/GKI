@@ -150,8 +150,20 @@ def compiler_identity(compiler: Path, engine: Path) -> dict:
     def visit(path: Path, name: str, ancestors: frozenset[Path]) -> None:
         if len(inventory) > 100000:
             raise ValueError('Kernel compiler inventory exceeds its file limit')
-        canonical = path.resolve(strict=True)
         link = os.readlink(path) if path.is_symlink() else None
+        try:
+            canonical = path.resolve(strict=True)
+        except FileNotFoundError:
+            if link is None:
+                raise
+            # Official Clang distributions can ship compatibility symlinks
+            # whose targets are absent (e.g. r487747c libc++.so.1.0). Absence
+            # is an input state, not an omitted library: retain the complete
+            # link text and missing-target state in the inventory. If a later
+            # toolchain supplies that target, normal file hashing changes the
+            # identity; all existing real files keep their content checks.
+            inventory.append({'path': name, 'kind': 'dangling-symlink', 'link': link})
+            return
         mode = canonical.stat().st_mode
         if stat.S_ISDIR(mode):
             if canonical in ancestors:

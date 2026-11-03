@@ -92,7 +92,69 @@ if (set -C; : > "${cache_program}.kleaf-entered") 2>/dev/null; then
     "$cache_ready" "$compiler_ready" "$config_ready"
 fi
 export CCACHE_BASEDIR="${ROOT_DIR:-$PWD}"
-exec make "$@" "CC=$cache_program $compiler"
+report_guard_state() {
+  local identities_directory="" checksum_program="" line="" count=0
+  local parent="${cache_program%/*}" uuid="" reason="" reasons="" descriptors=0
+  # The installed guard binds its fresh identities UUID in its literal header.
+  # Read that value without sourcing/evaluating any script or guessed old UUID.
+  [ -f "$cache_program" ] && [ ! -L "$cache_program" ] || return 0
+  while IFS= read -r line; do
+    case "$line" in
+      identities=*) identities_directory="${line#identities=}";;
+      cache_sha256sum=*) checksum_program="${line#cache_sha256sum=}";;
+    esac
+    ((count+=1))
+    if [ "$count" -ge 20 ]; then break; fi
+  done < "$cache_program"
+  case "$identities_directory" in
+    "$parent"/identities-*) uuid="${identities_directory##*/identities-}";;
+    *) return 0;;
+  esac
+  [[ "$uuid" =~ ^[0-9a-f]{32}$ ]] || return 0
+  [ -d "$identities_directory" ] && [ ! -L "$identities_directory" ] || return 0
+  for reason in cache-unavailable compiler-unresolved utility-unavailable \
+      response-arguments config-unavailable descriptor-unavailable engine-entered; do
+    if [ -f "$identities_directory/trace-$reason" ] && [ ! -L "$identities_directory/trace-$reason" ]; then
+      reasons+="${reasons:+,}$reason"
+    fi
+  done
+  local descriptor="" basename="" identity="" fingerprint="" files=""
+  local fingerprint_pattern='"toolchain_sha256"[[:space:]]*:[[:space:]]*"([0-9a-f]{64})"'
+  local count_pattern='"file_count"[[:space:]]*:[[:space:]]*([0-9]{1,7})([,}[:space:]])'
+  for descriptor in "$identities_directory"/*.json; do
+    basename="${descriptor##*/}"
+    [[ "$basename" =~ ^[0-9a-f]{64}\.json$ ]] || continue
+    [ -f "$descriptor" ] && [ ! -L "$descriptor" ] || continue
+    identity=""
+    IFS= read -r -n 8192 identity < "$descriptor" || true
+    [[ "$identity" =~ $fingerprint_pattern ]] || continue
+    fingerprint="${BASH_REMATCH[1]}"
+    [[ "$identity" =~ $count_pattern ]] || continue
+    files="${BASH_REMATCH[1]}"
+    ((descriptors+=1))
+    printf 'Kleaf compiler identity: toolchain_sha256=%s file_count=%s\n' "$fingerprint" "$files"
+  done
+  printf 'Kleaf cache guard summary: reasons=%s descriptors=%s\n' "${reasons:-none}" "$descriptors"
+  if [[ "$checksum_program" == /* ]] && [ -x "$checksum_program" ] &&
+      [ -n "${GKI_CCACHE_AUTOCONF:-}" ] && [ -f "$GKI_CCACHE_AUTOCONF" ]; then
+    local digest=""
+    if digest=$("$checksum_program" < "$GKI_CCACHE_AUTOCONF" 2>/dev/null); then
+      digest="${digest%% *}"
+      if [[ "$digest" =~ ^[0-9a-f]{64}$ ]]; then
+        printf 'Kleaf final bound configuration: sha256=%s\n' "$digest"
+      fi
+    fi
+  fi
+}
+# Kbuild often suppresses compiler-probe stderr. Report the resulting bounded
+# state after Make, so those first-only guard reasons are still observable.
+if make "$@" "CC=$cache_program $compiler"; then
+  make_status=0
+else
+  make_status=$?
+fi
+report_guard_state || true
+exit "$make_status"
 ''')
 
 

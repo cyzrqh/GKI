@@ -124,6 +124,34 @@ class KernelCacheGuardTests(unittest.TestCase):
         self.stock.write_bytes(b'another cache engine')
         self.assertNotEqual(expected, cache.compiler_identity(root / 'bin/clang', self.stock))
 
+    @unittest.skipUnless(os.name == 'posix', 'Real compiler-package symlink verification requires POSIX')
+    def test_official_clang_dangling_compatibility_links_are_bound_as_absent_inputs(self):
+        root = self.toolchain()
+        target = root / 'lib/x86_64-unknown-linux-gnu/libc++.so.1.0'
+        target.parent.mkdir()
+        link = root / 'lib/libc++.so.1.0'
+        link.symlink_to('x86_64-unknown-linux-gnu/libc++.so.1.0')
+        missing = cache.compiler_identity(root / 'bin/clang', self.stock)
+        self.assertEqual(missing, cache.compiler_identity(root / 'bin/clang', self.stock))
+        # The absent link is retained, so removing it or changing even its
+        # still-missing target must change the complete toolchain fingerprint.
+        link.unlink()
+        without_link = cache.compiler_identity(root / 'bin/clang', self.stock)
+        self.assertNotEqual(missing, without_link)
+        link.symlink_to('x86_64-unknown-linux-gnu/another-missing-library')
+        self.assertNotEqual(missing, cache.compiler_identity(root / 'bin/clang', self.stock))
+        link.unlink()
+        link.symlink_to('x86_64-unknown-linux-gnu/libc++.so.1.0')
+        target.write_bytes(b'complete real library')
+        present = cache.compiler_identity(root / 'bin/clang', self.stock)
+        self.assertNotEqual(missing, present)
+        target.write_bytes(b'changed real library!')
+        self.assertNotEqual(present, cache.compiler_identity(root / 'bin/clang', self.stock))
+        # The existing directory-cycle rejection must remain effective.
+        (root / 'lib/cycle').symlink_to('.', target_is_directory=True)
+        with self.assertRaises(ValueError):
+            cache.compiler_identity(root / 'bin/clang', self.stock)
+
     def test_identity_content_is_portable_and_has_no_installation_time_or_absolute_paths(self):
         left, right = self.toolchain('first'), self.toolchain('second')
         first = cache.compiler_identity(left / 'bin/clang', self.stock)
@@ -276,6 +304,14 @@ class KernelCacheGuardTests(unittest.TestCase):
         native.write_text('#!/usr/bin/sh\nexec ' + ' '.join(shlex.quote(x) for x in invocation)
                           + ' "$@"\n', encoding='utf-8', newline='\n')
         native.chmod(0o700)
+        if os.name == 'posix':
+            # The real host driver still needs its assembler and linker. Bind
+            # only those two programs into the otherwise restricted test PATH;
+            # none of the guard's host utilities become discoverable there.
+            for program in ('as', 'ld'):
+                resolved = shutil.which(program)
+                self.assertIsNotNone(resolved, 'Real C verification requires ' + program)
+                (root / 'bin' / program).symlink_to(Path(resolved).resolve())
         # The tested subshell is single-process. The real Linux helper requires
         # flock; do not make production silently run without a lock.
         lock = root / 'bin/flock'
@@ -321,8 +357,9 @@ class KernelCacheGuardTests(unittest.TestCase):
                  ('kleaf_hint', '#include ' + json.dumps(autoconf.as_posix())
                   + '\nint main(void) { return CONFIG_VALUE == 2; }\n',
                   '#define CONFIG_VALUE 1\n', '#define CONFIG_VALUE 2\n')]
-        # Deliberately omit every host utility from PATH, as Android's
-        # HERMETIC_TOOLCHAIN does. The guard must use its bound absolute paths.
+        # Deliberately omit host shell utilities from PATH, as Android's
+        # HERMETIC_TOOLCHAIN does. Only compiler helpers above are provided;
+        # the guard must still use its bound absolute utility paths.
         environment = {**os.environ, 'GUARD_TEST_LOG': posix(log),
                        'PATH': str(root / 'bin'), 'CCACHE_IS_KERNEL_COMPILING': 'true'}
         fingerprints = []

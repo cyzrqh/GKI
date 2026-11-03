@@ -2049,7 +2049,7 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == 'eac002baa24f8d66b9a9bb41238ce2325743a3c68828d4a14306b3cdc410ea8c' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          'tools/kernel_compile_cache.py') == '5306047305f470ea63e721213c646469476f9e333cebeb2a7352a62dd4b5a1e3' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
           || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant
           }}-${{ matrix.recipe_ref }}-objects
         OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
@@ -2067,11 +2067,11 @@ jobs:
       with:
         path: ${{ env.CCACHE_DIR }}
         key: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
-          == 'eac002baa24f8d66b9a9bb41238ce2325743a3c68828d4a14306b3cdc410ea8c' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          == '5306047305f470ea63e721213c646469476f9e333cebeb2a7352a62dd4b5a1e3' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
           || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant
           }}-${{ matrix.recipe_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == 'eac002baa24f8d66b9a9bb41238ce2325743a3c68828d4a14306b3cdc410ea8c' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          'tools/kernel_compile_cache.py') == '5306047305f470ea63e721213c646469476f9e333cebeb2a7352a62dd4b5a1e3' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
           || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant
           }}-${{ matrix.recipe_ref }}-
     - name: 获取对应方案的完整源码及工具链
@@ -2121,7 +2121,7 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: oplus-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == 'eac002baa24f8d66b9a9bb41238ce2325743a3c68828d4a14306b3cdc410ea8c' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          'tools/kernel_compile_cache.py') == '5306047305f470ea63e721213c646469476f9e333cebeb2a7352a62dd4b5a1e3' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
           || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant
           }}-${{ matrix.recipe_ref }}-objects-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref', matrix.variant)] }}-${{
           hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py') }}
@@ -2189,7 +2189,7 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: oplus-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == 'eac002baa24f8d66b9a9bb41238ce2325743a3c68828d4a14306b3cdc410ea8c' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          'tools/kernel_compile_cache.py') == '5306047305f470ea63e721213c646469476f9e333cebeb2a7352a62dd4b5a1e3' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
           || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant
           }}-${{ matrix.recipe_ref }}-objects-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref', matrix.variant)] }}-${{
           hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py') }}
@@ -2205,7 +2205,7 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: oplus-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') == 'eac002baa24f8d66b9a9bb41238ce2325743a3c68828d4a14306b3cdc410ea8c' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          'tools/kernel_compile_cache.py') == '5306047305f470ea63e721213c646469476f9e333cebeb2a7352a62dd4b5a1e3' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
           || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.id }}-${{ matrix.variant
           }}-${{ matrix.recipe_ref }}-objects
         OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}

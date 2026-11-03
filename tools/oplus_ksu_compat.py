@@ -1,4 +1,4 @@
-"""Resolve the real built-in SukiSU include root for vendor Kbuild 6.12.
+"""Resolve the real built-in manager include root for vendor Kbuild.
 
 6.12 Makefile.build already prefixes src with VPATH. Upstream's fallback
 srctree/src therefore adds that prefix twice for an O=out built-in driver.
@@ -27,6 +27,22 @@ BUILTIN_ROOT = ('# GKI: src already contains VPATH on vendor Kbuild 6.12.\n'
                 'ifeq ($(KBUILD_EXTMOD),)\n'
                 'KSU_KERNEL_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))\n'
                 'endif\n')
+NEXT_FALLBACK = ('ifneq ($(KBUILD_EXTMOD),)\n'
+                 '# 6.18 exports the external module source as srcroot when M/MO are used.\n'
+                 'ifneq ($(srcroot),)\n'
+                 'KSU_KERNEL_DIR := $(srcroot)\n'
+                 'else\n'
+                 'KSU_KERNEL_DIR := $(KBUILD_EXTMOD)\n'
+                 'endif\n'
+                 'else ifeq ($(filter /%,$(src)),)\n'
+                 'KSU_KERNEL_DIR := $(srctree)/$(src)\n'
+                 'else\n'
+                 'KSU_KERNEL_DIR := $(src)\n'
+                 'endif\n')
+NEXT_BUILTIN_ROOT = ('# GKI: derive the built-in driver root from its included Kbuild.\n'
+                     'ifeq ($(KBUILD_EXTMOD),)\n'
+                     'KSU_KERNEL_DIR := $(realpath $(dir $(lastword $(MAKEFILE_LIST))))\n'
+                     'endif\n')
 CB_MEMBER = 'DEFINE_MEMBER(netlink_kernel_cfg, cb_mutex)\n'
 CB_GUARD = '#ifdef KSU_NETLINK_CFG_HAS_CB_MUTEX\n' + CB_MEMBER + '#endif\n'
 CB_KBUILD = ("ksu_netlink_cfg := $(shell sed -n '/struct netlink_kernel_cfg {/,/^};/p' $(srctree)/include/linux/netlink.h)\n"
@@ -56,7 +72,9 @@ def tracked_header(repository: Path, path: Path, reference: str) -> bytes:
     return official
 
 
-def prepare_builtin_includes(root: Path, reference: str) -> bool:
+def prepare_builtin_includes(root: Path, reference: str, *, variant: str = 'SukiSU') -> bool:
+    if variant not in ('SukiSU', 'KernelSU-Next'):
+        raise ValueError('Unsupported manager built-in include-root adaptation')
     if not isinstance(reference, str) or not re.fullmatch(r'[0-9a-f]{40}', reference):
         raise ValueError('SukiSU includes require a frozen full source SHA')
     root = root.resolve(strict=True)
@@ -80,15 +98,29 @@ def prepare_builtin_includes(root: Path, reference: str) -> bool:
     if 'KSU_KERNEL_DIR' not in native and 'KSU_KERNEL_DIR' not in text:
         # Older stable layouts use their native flat-header include flags.
         return False
-    if any(value.count(INCLUDE_FLAGS) != 1 or value.count(FALLBACK) != 1 for value in (native, text)):
-        raise ValueError('Review the changed SukiSU include-root layout before vendor 6.12 compilation')
+    fallback = NEXT_FALLBACK if variant == 'KernelSU-Next' else FALLBACK
+    adaptation = NEXT_BUILTIN_ROOT if variant == 'KernelSU-Next' else BUILTIN_ROOT
+    for value, current in ((native, False), (text, True)):
+        flags = [line for line in value.splitlines() if line.startswith('ccflags-y += -I$(KSU_KERNEL_DIR)')]
+        allowed = [INCLUDE_FLAGS.rstrip('\n')]
+        if variant == 'KernelSU-Next' and current:
+            # The reviewed Next SUSFS port also includes the repository UAPI root.
+            allowed.append(INCLUDE_FLAGS.rstrip('\n') + ' -I$(KSU_KERNEL_DIR)/..')
+        if len(flags) != 1 or flags[0] not in allowed or value.count(fallback) != 1:
+            raise ValueError('Review the changed ' + variant + ' include-root layout before vendor compilation')
+        if variant == 'KernelSU-Next':
+            remaining = value.replace(fallback, '', 1).replace(adaptation, '', 1)
+            if (re.search(r'(?m)^\s*(?:override\s+)?KSU_KERNEL_DIR\s*[:+?!]?=', remaining)
+                    or re.search(r'(?m)^\s*(?:-?include|sinclude)\s', value.split(fallback, 1)[0])):
+                raise ValueError('Review the changed KernelSU-Next include-root assignments or included makefiles')
     for header in (kernel / 'include/uapi/app_profile.h', kernel / 'include/klog.h'):
         tracked_header(repository, header, reference)
-    if BUILTIN_ROOT in text:
-        if text.count(BUILTIN_ROOT) != 1 or BUILTIN_ROOT + FALLBACK not in text:
-            raise ValueError('Unexpected or duplicate built-in SukiSU include-root adaptation')
+    combined = fallback + adaptation if variant == 'KernelSU-Next' else adaptation + fallback
+    if adaptation in text:
+        if text.count(adaptation) != 1 or combined not in text:
+            raise ValueError('Unexpected or duplicate built-in ' + variant + ' include-root adaptation')
         return False
-    changed = text.replace(FALLBACK, BUILTIN_ROOT + FALLBACK, 1).encode('utf-8')
+    changed = text.replace(fallback, combined, 1).encode('utf-8')
     temporary = stage(path, changed)
     try:
         if path.read_bytes() != before:

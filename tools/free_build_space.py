@@ -2,6 +2,7 @@
 """Bounded directory cleanup for disposable GitHub-hosted Linux kernel runners."""
 from __future__ import annotations
 
+from collections import deque
 import os
 from pathlib import Path
 import shutil
@@ -75,7 +76,9 @@ def print_disk_space(workspace: Path) -> None:
 def clean(workspace: Path, protected: tuple[Path, ...]) -> None:
     deadline = time.monotonic() + TOTAL_SECONDS
     print_disk_space(workspace)
-    for candidate in CLEANUP_DIRECTORIES:
+    pending = deque((candidate, False) for candidate in CLEANUP_DIRECTORIES)
+    while pending:
+        candidate, retrying = pending.popleft()
         if shutil.disk_usage(workspace).free >= TARGET_FREE:
             print("50 GiB cleanup target reached; keeping remaining preinstalled directories.", flush=True)
             break
@@ -93,9 +96,13 @@ def clean(workspace: Path, protected: tuple[Path, ...]) -> None:
         if not path.is_dir():
             print(f"::warning::Skipping non-directory {path}", flush=True)
             continue
-        print(f"Removing unused preinstalled directory: {path}", flush=True)
+        action = "Retrying timed-out directory" if retrying else "Removing unused preinstalled directory"
+        print(f"{action}: {path}", flush=True)
         started = time.monotonic()
-        limit = min(DIRECTORY_SECONDS, remaining - 6)
+        # A large SDK may need more than the first 90 seconds. Give other tools
+        # their first attempt before resuming it, once, within the same deadline.
+        limit = min(DIRECTORY_SECONDS * (2 if retrying else 1), remaining - 6)
+        timed_out = False
         try:
             result = subprocess.run(
                 # timeout runs inside sudo so the real deletion also stops if
@@ -106,9 +113,15 @@ def clean(workspace: Path, protected: tuple[Path, ...]) -> None:
             )
             if result.returncode:
                 print(f"::warning::Directory cleanup exited {result.returncode}: {path}", flush=True)
-        except (OSError, subprocess.TimeoutExpired):
+            timed_out = result.returncode in (124, 137)
+        except subprocess.TimeoutExpired:
             print(f"::warning::Directory cleanup could not finish within its limit: {path}", flush=True)
+            timed_out = True
+        except OSError as error:
+            print(f"::warning::Directory cleanup could not run: {path}: {error}", flush=True)
         print(f"Directory cleanup elapsed: {time.monotonic() - started:.1f}s", flush=True)
+        if timed_out and not retrying:
+            pending.append((candidate, True))
     print_disk_space(workspace)
     free = shutil.disk_usage(workspace).free
     if free < MINIMUM_FREE:

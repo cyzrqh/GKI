@@ -14,8 +14,11 @@ import json
 import os
 from pathlib import Path
 import re
+import signal
 import subprocess
 import sys
+import tempfile
+import time
 
 import yaml
 
@@ -43,11 +46,20 @@ LZ4_REPOSITORY = 'ShirkNeko/SukiSU_patch'
 # 6.6 compilation stages in run 40487592098. One matrix must use one patch.
 LZ4_REFERENCE = '1aaf4283e03b0a2861bf8db1e58624028db23a85'
 MAX_RECIPE = 2 * 1024 * 1024
+SOURCE_FETCH_TIMEOUT = 900
+NETWORK_GIT_ATTEMPTS = 2
+OWNED_PROCESS_GROUPS = os.name == 'posix'
 EXPRESSION = re.compile(r'\$\{\{\s*(.*?)\s*\}\}')
 
 
 class RecipeError(ValueError):
     """The selected method cannot be proven to match the reviewed layout."""
+
+
+class GitOperationError(RecipeError):
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
 
 
 @dataclass(frozen=True)
@@ -161,21 +173,90 @@ def parse_recipe(raw: bytes, profile: dict) -> dict:
     return document
 
 
+def run_git_process(command: list[str], environment: dict[str, str], timeout: int):
+    if not OWNED_PROCESS_GROUPS:
+        # Windows cannot reliably terminate Git's descendants using stdlib
+        # process groups. Its timeout is therefore never retried below.
+        return subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
+                              errors='replace', timeout=timeout, env=environment)
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                          encoding='utf-8', errors='replace', env=environment,
+                          start_new_session=True) as process:
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            # Git can leave fetch-pack/index-pack children holding pipes or
+            # locks. Stop the entire session we created, then reap it before
+            # any retry. SIGTERM lets Git clean its own lockfiles first.
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+            except ProcessLookupError:
+                pass
+            try:
+                process.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+            # Descendants may already have closed their inherited pipes; a
+            # completed communicate alone does not prove the group is gone.
+            try:
+                os.killpg(process.pid, getattr(signal, 'SIGKILL', 9))
+            except ProcessLookupError:
+                pass
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
 def git(directory: Path, *args: str) -> str:
     environment = {key: value for key, value in os.environ.items()
                    if not key.startswith('GIT_CONFIG_') and key not in {
                        'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX_FILE', 'GIT_OBJECT_DIRECTORY',
                        'GIT_ALTERNATE_OBJECT_DIRECTORIES', 'GIT_SHALLOW_FILE'}}
     environment.update(GIT_TERMINAL_PROMPT='0', GIT_NO_REPLACE_OBJECTS='1')
-    try:
-        result = subprocess.run(['git', '-C', str(directory), '-c', 'core.hooksPath=',
-            '-c', 'core.autocrlf=false', '-c', 'credential.helper=', '-c', 'http.extraHeader=', *args],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=240, env=environment)
-    except (OSError, subprocess.TimeoutExpired):
-        raise RecipeError('OPlus fixed source Git operation could not complete') from None
-    if result.returncode:
-        raise RecipeError('OPlus fixed source Git operation failed (exit ' + str(result.returncode) + ')')
-    return result.stdout.strip()
+    operation = args[0] if args else 'operation'
+    network = operation in ('fetch', 'ls-remote')
+    timeout = SOURCE_FETCH_TIMEOUT if operation == 'fetch' else 240
+    # clone_fixed owns fetch retries and gives every attempt a fresh checkout,
+    # so a forcibly stopped fetch cannot poison its next attempt with locks.
+    attempts = NETWORK_GIT_ATTEMPTS if operation == 'ls-remote' else 1
+    command = ['git', '-C', str(directory), '-c', 'core.hooksPath=',
+               '-c', 'core.autocrlf=false', '-c', 'credential.helper=', '-c', 'http.extraHeader=', *args]
+    for attempt in range(1, attempts + 1):
+        try:
+            result = run_git_process(command, environment, timeout)
+        except subprocess.TimeoutExpired:
+            reason = f'timed out after {timeout}s'
+            retryable = network and OWNED_PROCESS_GROUPS
+        except OSError:
+            raise RecipeError('OPlus fixed source Git ' + operation + ' could not start') from None
+        else:
+            if not result.returncode:
+                return result.stdout.strip()
+            reason = f'failed (exit {result.returncode})'
+            # Retry transport failures only. Missing commits, authentication,
+            # permissions and corrupt local repositories require a real fix.
+            diagnostic = result.stderr.lower()
+            permanent = re.search(
+                r'authentication failed|permission denied|access denied|no space left|'
+                r'couldn\'t find remote ref|not our ref|repository .*not found|protocol error|'
+                r'not a git repository|corrupt|bad object|invalid object|checksum mismatch|'
+                r'unable to (?:create|write)|cannot lock|did not receive expected object|inflate returned',
+                diagnostic)
+            retryable = network and not permanent and bool(re.search(
+                r'connection (?:timed out|reset)|operation timed out|could(?: not|n\'t) resolve host|'
+                r'failed to connect|couldn\'t connect|remote end hung up unexpectedly|'
+                r'early eof|unexpected disconnect|http/2 stream|gnutls_(?:handshake|recv).*(?:failed|error)|'
+                r'curl (?:16|18|28|35|52|55|56)\b|'
+                r'(?:http(?: error)?|requested url returned error:)\s*(?:408|429|500|502|503|504)\b',
+                diagnostic))
+        message = 'OPlus fixed source Git ' + operation + ' ' + reason
+        if not retryable or attempt == attempts:
+            suffix = f' (attempt {attempt}/{attempts})' if attempts > 1 else ''
+            raise GitOperationError(message + suffix, retryable) from None
+        # Do not print Git stderr: remote URLs or environment-derived headers
+        # can contain credentials. Each retry uses the identical pinned args.
+        print(message + f' (attempt {attempt}/{attempts}); retrying', file=sys.stderr, flush=True)
+        time.sleep(5 * attempt)
 
 
 def load_recipe(root: Path, profile: dict) -> dict:
@@ -369,13 +450,30 @@ def clone_fixed(repository: str, reference: str, directory: Path) -> None:
         raise RecipeError('Fixed source checkout requires a reviewed repository and full SHA')
     if directory.exists() or directory.is_symlink() or not directory.parent.is_dir():
         raise RecipeError('Fixed source checkout requires a fresh directory')
-    directory.mkdir()
-    git(directory, 'init', '--quiet')
-    git(directory, 'remote', 'add', 'origin', 'https://github.com/' + repository + '.git')
-    git(directory, 'fetch', '--quiet', '--depth=1', '--no-tags', '--no-recurse-submodules', 'origin', reference)
-    git(directory, 'checkout', '--quiet', '--detach', reference)
-    if git(directory, 'rev-parse', 'HEAD') != reference:
-        raise RecipeError('Fixed source checkout returned a different commit')
+    directory = directory.resolve()
+    for attempt in range(1, NETWORK_GIT_ATTEMPTS + 1):
+        # Only this newly created temporary directory is cleaned on failure;
+        # never remove .git locks from an existing caller-owned repository.
+        with tempfile.TemporaryDirectory(prefix='.oplus-source-', dir=directory.parent) as temporary:
+            staging = Path(temporary)
+            git(staging, 'init', '--quiet')
+            git(staging, 'remote', 'add', 'origin', 'https://github.com/' + repository + '.git')
+            try:
+                git(staging, 'fetch', '--quiet', '--depth=1', '--no-tags', '--no-recurse-submodules', 'origin', reference)
+            except GitOperationError as error:
+                if not error.retryable or attempt == NETWORK_GIT_ATTEMPTS:
+                    raise RecipeError(f'Fixed source fetch stopped (attempt {attempt}/{NETWORK_GIT_ATTEMPTS}): {error}') from None
+                print(f'Fixed source fetch failed (attempt {attempt}/{NETWORK_GIT_ATTEMPTS}): {error}; '
+                      'retrying the same commit in a fresh checkout', file=sys.stderr, flush=True)
+            else:
+                git(staging, 'checkout', '--quiet', '--detach', reference)
+                if git(staging, 'rev-parse', 'HEAD') != reference:
+                    raise RecipeError('Fixed source checkout returned a different commit')
+                if directory.exists() or directory.is_symlink():
+                    raise RecipeError('Fixed source destination was created during checkout')
+                staging.replace(directory)
+                return
+        time.sleep(5 * attempt)
 
 
 def dependency(repository: str, destination: Path) -> str:

@@ -1,11 +1,15 @@
 """Plan fixed OPlus methods without running downloads or kernel compilation."""
 import copy
+import contextlib
 import hashlib
+import io
 import json
 from pathlib import Path
 import re
 import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 import uuid
@@ -392,6 +396,244 @@ class OPlusRecipeTests(unittest.TestCase):
                 mock.patch.object(adapter, 'run_steps', side_effect=compiled) as run:
             adapter.execute_phase('build', workspace, profile, self.inputs(), workspace)
         run.assert_called_once()
+
+
+class OPlusGitTransportTests(unittest.TestCase):
+    def fetch_args(self):
+        return ('fetch', '--quiet', '--depth=1', '--no-tags', '--no-recurse-submodules',
+                'origin', 'a' * 40)
+
+    def success(self, stdout=''):
+        return subprocess.CompletedProcess(['git'], 0, stdout, '')
+
+    def test_large_pinned_fetch_recovers_from_timeout_with_identical_args(self):
+        # The failed jobs stopped at 240s before reaching toolchain setup.
+        fetched = []
+        def process(command, environment, timeout):
+            operation = command[command.index('http.extraHeader=') + 1]
+            directory = Path(command[command.index('-C') + 1])
+            if operation == 'init':
+                (directory / '.git').mkdir()
+            if operation == 'fetch':
+                self.assertEqual(900, timeout)
+                self.assertEqual(list(self.fetch_args()), command[-len(self.fetch_args()):])
+                self.assertFalse((directory / '.git/shallow.lock').exists())
+                fetched.append(directory)
+                if len(fetched) == 1:
+                    (directory / '.git/shallow.lock').write_text('left by stopped fetch')
+                    raise subprocess.TimeoutExpired('git', 900, stderr='private diagnostic must stay hidden')
+            return self.success('a' * 40 if operation == 'rev-parse' else '')
+        output = io.StringIO()
+        with (tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary,
+              mock.patch.object(adapter, 'run_git_process', side_effect=process),
+              mock.patch.object(adapter, 'OWNED_PROCESS_GROUPS', True),
+              mock.patch.object(adapter.time, 'sleep') as pause, contextlib.redirect_stderr(output)):
+            destination = Path(temporary) / 'source'
+            adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40, destination)
+            self.assertTrue((destination / '.git').is_dir())
+            self.assertFalse((destination / '.git/shallow.lock').exists())
+            self.assertEqual([destination], list(Path(temporary).iterdir()))
+            self.assertEqual(2, len(fetched))
+            self.assertNotEqual(*fetched)
+            self.assertTrue(all(not path.exists() for path in fetched))
+        pause.assert_called_once_with(5)
+        self.assertIn('retrying the same commit in a fresh checkout', output.getvalue())
+        self.assertNotIn('private diagnostic', output.getvalue())
+
+    def test_fetch_timeouts_stop_after_the_bounded_attempt_budget(self):
+        fetched = []
+        def process(command, environment, timeout):
+            if 'fetch' in command:
+                fetched.append(command)
+                raise subprocess.TimeoutExpired('git', 900)
+            return self.success()
+        with (tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary,
+              mock.patch.object(adapter, 'run_git_process', side_effect=process),
+              mock.patch.object(adapter, 'OWNED_PROCESS_GROUPS', True),
+              mock.patch.object(adapter.time, 'sleep') as pause,
+              contextlib.redirect_stderr(io.StringIO()),
+              self.assertRaisesRegex(adapter.RecipeError, r'fetch stopped \(attempt 2/2\).*timed out after 900s')):
+            adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40,
+                                Path(temporary) / 'source')
+        self.assertEqual(2, len(fetched))
+        self.assertEqual([mock.call(5)], pause.call_args_list)
+
+    def test_transient_network_failures_retry_without_exposing_remote_diagnostics(self):
+        for diagnostic in ('RPC failed; curl 56 Recv failure: Connection reset by peer',
+                           'fatal: early EOF', 'The requested URL returned error: 503',
+                           'Could not resolve host: github.com'):
+            result = subprocess.CompletedProcess(['git'], 128, '', diagnostic + ' private-header')
+            output = io.StringIO()
+            with (self.subTest(diagnostic=diagnostic),
+                  mock.patch.object(adapter, 'run_git_process', side_effect=[result, self.success()]) as run,
+                  mock.patch.object(adapter.time, 'sleep'), contextlib.redirect_stderr(output)):
+                self.assertEqual('', adapter.git(Path('fixed-source'), 'ls-remote', 'https://example.invalid', 'HEAD'))
+                self.assertEqual(2, run.call_count)
+                self.assertNotIn('private-header', output.getvalue())
+
+    def test_permanent_fetch_errors_do_not_retry_or_switch_the_fixed_commit(self):
+        for diagnostic in ("fatal: couldn't find remote ref " + 'a' * 40,
+                           'fatal: Authentication failed', 'fatal: Permission denied',
+                           'fatal: write error: No space left on device',
+                           'fatal: protocol error: bad pack header\nfatal: early EOF',
+                           'fatal: bad object\nRPC failed; curl 56',
+                           'fatal: pack checksum mismatch\nfatal: early EOF',
+                           'fatal: repository not found'):
+            result = subprocess.CompletedProcess(['git'], 128, '', diagnostic)
+            with (self.subTest(diagnostic=diagnostic),
+                  mock.patch.object(adapter, 'run_git_process', return_value=result) as run,
+                  mock.patch.object(adapter.time, 'sleep') as pause,
+                  self.assertRaisesRegex(adapter.RecipeError, r'Git fetch failed \(exit 128\)')):
+                adapter.git(Path('fixed-source'), *self.fetch_args())
+            run.assert_called_once()
+            pause.assert_not_called()
+
+    def test_local_git_timeout_and_missing_executable_are_not_retried(self):
+        for failure in (subprocess.TimeoutExpired('git', 240), FileNotFoundError('git unavailable')):
+            with (self.subTest(failure=type(failure).__name__),
+                  mock.patch.object(adapter, 'run_git_process', side_effect=failure) as run,
+                  mock.patch.object(adapter.time, 'sleep') as pause,
+                  self.assertRaises(adapter.RecipeError)):
+                adapter.git(Path('fixed-source'), 'rev-parse', 'HEAD')
+            run.assert_called_once()
+            self.assertEqual(240, run.call_args.args[2])
+            pause.assert_not_called()
+
+    def test_resolving_feature_head_keeps_the_shorter_timeout_and_same_query(self):
+        args = ('ls-remote', 'https://github.com/' + adapter.BBG_REPOSITORY + '.git', 'HEAD')
+        with (mock.patch.object(adapter, 'run_git_process', side_effect=[
+                subprocess.TimeoutExpired('git', 240), self.success('a' * 40 + '\tHEAD\n')]) as run,
+              mock.patch.object(adapter, 'OWNED_PROCESS_GROUPS', True),
+              mock.patch.object(adapter.time, 'sleep'), contextlib.redirect_stderr(io.StringIO())):
+            self.assertEqual('a' * 40 + '\tHEAD', adapter.git(Path('fixed-source'), *args))
+        self.assertEqual(run.call_args_list[0], run.call_args_list[1])
+        self.assertEqual(240, run.call_args.args[2])
+
+    def test_linux_timeout_terminates_owned_group_and_reaps_before_retry(self):
+        for child_holds_pipes in (False, True):
+            events = []
+            process = mock.MagicMock()
+            process.pid = 12345
+            responses = [subprocess.TimeoutExpired('git', 900),
+                         subprocess.TimeoutExpired('git', 5) if child_holds_pipes else ('', ''), ('', '')]
+            def communicate(timeout=None):
+                events.append(('communicate', timeout))
+                response = responses.pop(0)
+                if isinstance(response, BaseException):
+                    raise response
+                return response
+            process.communicate.side_effect = communicate
+            manager = mock.MagicMock()
+            manager.__enter__.return_value = process
+            def terminate(pid, sig):
+                events.append(('killpg', pid, sig))
+            with (self.subTest(child_holds_pipes=child_holds_pipes),
+                  mock.patch.object(adapter, 'OWNED_PROCESS_GROUPS', True),
+                  mock.patch.object(adapter.subprocess, 'Popen', return_value=manager) as popen,
+                  mock.patch.object(adapter.os, 'killpg', side_effect=terminate, create=True),
+                  self.assertRaises(subprocess.TimeoutExpired)):
+                adapter.run_git_process(['git', 'fetch'], {}, 900)
+            self.assertTrue(popen.call_args.kwargs['start_new_session'])
+            self.assertEqual([('communicate', 900), ('killpg', 12345, adapter.signal.SIGTERM),
+                              ('communicate', 5), ('killpg', 12345, getattr(adapter.signal, 'SIGKILL', 9)),
+                              ('communicate', None)], events)
+
+    def test_windows_fetch_timeout_is_not_retried_and_cleans_only_its_stage(self):
+        with (tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary,
+              mock.patch.object(adapter, 'OWNED_PROCESS_GROUPS', False),
+              mock.patch.object(adapter, 'run_git_process', side_effect=[
+                  self.success(), self.success(), subprocess.TimeoutExpired('git', 900)]) as run,
+              mock.patch.object(adapter.time, 'sleep') as pause):
+            with self.assertRaisesRegex(adapter.RecipeError, r'fetch stopped \(attempt 1/2\)'):
+                adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40,
+                                    Path(temporary) / 'source')
+            self.assertEqual([], list(Path(temporary).iterdir()))
+        self.assertEqual(3, run.call_count)
+        pause.assert_not_called()
+
+    def test_checkout_or_head_validation_failure_never_retries_or_publishes(self):
+        for failure in ('checkout', 'wrong-head'):
+            calls = []
+            def process(command, environment, timeout):
+                operation = command[command.index('http.extraHeader=') + 1]
+                calls.append(operation)
+                if operation == 'checkout' and failure == 'checkout':
+                    return subprocess.CompletedProcess(command, 128, '', 'fatal: bad object')
+                return self.success('b' * 40 if operation == 'rev-parse' else '')
+            with (self.subTest(failure=failure), tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary,
+                  mock.patch.object(adapter, 'run_git_process', side_effect=process),
+                  mock.patch.object(adapter.time, 'sleep') as pause):
+                with self.assertRaises(adapter.RecipeError):
+                    adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40,
+                                        Path(temporary) / 'source')
+                self.assertEqual([], list(Path(temporary).iterdir()))
+            self.assertEqual(1, calls.count('fetch'))
+            pause.assert_not_called()
+
+    def test_existing_or_concurrently_created_destination_is_never_overwritten(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary:
+            destination = Path(temporary) / 'source'
+            def process(command, environment, timeout):
+                if 'rev-parse' in command:
+                    destination.mkdir()
+                    (destination / 'keep.txt').write_text('caller owned')
+                    return self.success('a' * 40)
+                return self.success()
+            with (mock.patch.object(adapter, 'run_git_process', side_effect=process),
+                  self.assertRaisesRegex(adapter.RecipeError, 'created during checkout')):
+                adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40, destination)
+            self.assertEqual('caller owned', (destination / 'keep.txt').read_text())
+            self.assertEqual([destination], list(Path(temporary).iterdir()))
+            with (mock.patch.object(adapter, 'run_git_process') as run,
+                  self.assertRaisesRegex(adapter.RecipeError, 'fresh directory')):
+                adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', 'a' * 40, destination)
+            run.assert_not_called()
+
+    def test_real_local_git_checkout_keeps_identity_after_staging_is_moved(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary:
+            source = Path(temporary) / 'upstream'
+            source.mkdir()
+            adapter.git(source, 'init', '--quiet')
+            (source / 'Makefile').write_text('VERSION = 6\nPATCHLEVEL = 12\nSUBLEVEL = 38\n')
+            adapter.git(source, 'add', 'Makefile')
+            adapter.git(source, '-c', 'user.name=fixture', '-c', 'user.email=fixture@example.invalid',
+                        'commit', '--quiet', '-m', 'Local checkout fixture')
+            reference = adapter.git(source, 'rev-parse', 'HEAD')
+            destination = Path(temporary) / 'source'
+            original = adapter.run_git_process
+            def local_transport(command, environment, timeout):
+                if command[-4:-1] == ['remote', 'add', 'origin']:
+                    command = [*command[:-1], source.as_uri()]
+                return original(command, environment, timeout)
+            with mock.patch.object(adapter, 'run_git_process', side_effect=local_transport):
+                adapter.clone_fixed('OnePlusOSS/android_kernel_common_oneplus_sm8850', reference, destination)
+            self.assertEqual(reference, adapter.git(destination, 'rev-parse', 'HEAD'))
+            self.assertEqual((source / 'Makefile').read_bytes(), (destination / 'Makefile').read_bytes())
+            self.assertEqual({source, destination}, set(Path(temporary).iterdir()))
+
+    @unittest.skipUnless(adapter.OWNED_PROCESS_GROUPS and sys.platform.startswith('linux'),
+                         'Actual POSIX descendant termination requires a Linux host')
+    def test_real_linux_timeout_stops_a_descendant_that_ignores_sigterm(self):
+        with tempfile.TemporaryDirectory(dir=ROOT / 'tests') as temporary:
+            marker = Path(temporary) / 'child.pid'
+            program = ('import os,signal,time,sys\n'
+                       'if os.fork() == 0:\n'
+                       ' signal.signal(signal.SIGTERM, signal.SIG_IGN)\n'
+                       ' open(sys.argv[1], "w").write(str(os.getpid()))\n'
+                       ' time.sleep(60)\n'
+                       'else:\n'
+                       ' time.sleep(60)\n')
+            with self.assertRaises(subprocess.TimeoutExpired):
+                adapter.run_git_process([sys.executable, '-c', program, str(marker)], dict(adapter.os.environ), 0.5)
+            self.assertTrue(marker.is_file())
+            child = int(marker.read_text())
+            state = Path('/proc') / str(child) / 'stat'
+            for _ in range(100):
+                if not state.exists() or state.read_text().split()[2] == 'Z':
+                    break
+                adapter.time.sleep(0.01)
+            else:
+                self.fail('Timed-out Git descendant is still running')
 
 
 if __name__ == '__main__':

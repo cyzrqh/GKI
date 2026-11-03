@@ -238,12 +238,14 @@ class OPlusKernelTests(unittest.TestCase):
                     finally:
                         self.profile = original
 
-    def test_include_root_adaptation_is_only_for_oplus_sukisu_612(self):
-        for version, variant in (('6.1', 'SukiSU'), ('6.6', 'SukiSU'), ('6.12', 'SukiSU'), ('6.12', 'BakaSU')):
+    def test_include_root_adaptation_covers_sukisu_612_and_all_oplus_next_series(self):
+        for version, variant in (('6.1', 'SukiSU'), ('6.6', 'SukiSU'), ('6.12', 'SukiSU'), ('6.12', 'BakaSU'),
+                                  ('6.1', 'KernelSU-Next'), ('6.6', 'KernelSU-Next'), ('6.12', 'KernelSU-Next')):
             with self.subTest(version=version, variant=variant):
                 self.finalize_mocks(variant)
                 with mock.patch.object(kernel, 'validate_profile', side_effect=lambda profile: profile), \
                         mock.patch.object(kernel, 'native_inputs'), \
+                        mock.patch('additional_manager_integration.configure') as official_trust, \
                         mock.patch('oplus_ksu_compat.prepare_builtin_includes') as includes:
                     old = self.profile
                     self.profile = {**old, 'kernel_version': version}
@@ -251,7 +253,11 @@ class OPlusKernelTests(unittest.TestCase):
                         self.finalize(variant=variant)
                     finally:
                         self.profile = old
-                    if version == '6.12' and variant == 'SukiSU':
+                    if variant == 'KernelSU-Next':
+                        includes.assert_called_once_with(self.root, self.reference, variant=variant)
+                        official_trust.assert_called_once_with(self.root, '710', 'e' * 64,
+                            kernel.manager_profile(variant)['package'], '41075', variant=variant)
+                    elif version == '6.12' and variant == 'SukiSU':
                         includes.assert_called_once_with(self.root, self.reference)
                     else:
                         includes.assert_not_called()

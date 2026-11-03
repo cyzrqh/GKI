@@ -118,8 +118,96 @@ class FreeBuildSpaceSafetyTests(unittest.TestCase):
             run = self.invoke_clean(lambda: 45 * space.GIB)
         run.assert_not_called()
 
+    def test_partial_sdk_cleanup_resumes_after_other_tools_and_reclaims_real_fixture(self):
+        other = self.root / "other-unused-tool"
+        other.mkdir()
+        (other / "payload").write_text("unused tool", encoding="utf-8")
+        (self.unused / "remaining-sdk").write_text("partially removed SDK", encoding="utf-8")
+        free = 13.6 * space.GIB
+        attempts = []
+
+        def delete_fixture(command, **kwargs):
+            nonlocal free
+            path = Path(command[-1])
+            self.assertIn(path, (self.unused, other))
+            self.assertEqual(path.parent, self.root)
+            self.assertEqual(command[-4:-1], ["/usr/bin/rm", "-rf", "--"])
+            attempts.append(path)
+            if len(attempts) == 1:
+                free = 20 * space.GIB
+                return SimpleNamespace(returncode=124)
+            shutil.rmtree(path)
+            free = (34.9 if path == other else 51) * space.GIB
+            return SimpleNamespace(returncode=0)
+
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(space, "print_disk_space"), \
+                mock.patch.object(space, "CLEANUP_DIRECTORIES", (self.unused, other)), \
+                mock.patch.object(space.shutil, "disk_usage", side_effect=lambda _: SimpleNamespace(free=free)), \
+                mock.patch.object(space.time, "monotonic", side_effect=(0, 0, 0, 90, 90, 90, 192, 192, 192, 250)), \
+                mock.patch.object(space.subprocess, "run", side_effect=delete_fixture) as run:
+            space.clean(self.workspace, (self.workspace,))
+
+        self.assertEqual(attempts, [self.unused, other, self.unused])
+        self.assertEqual([call.args[0][4] for call in run.call_args_list], ["90.0s", "90.0s", "180.0s"])
+        self.assertFalse(self.unused.exists())
+        self.assertFalse(other.exists())
+        self.assertTrue(self.workspace.is_dir())
+
+    def test_retry_is_clipped_to_global_deadline(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(space, "print_disk_space"), \
+                mock.patch.object(space, "CLEANUP_DIRECTORIES", (self.unused,)), \
+                mock.patch.object(space.shutil, "disk_usage", return_value=SimpleNamespace(free=45 * space.GIB)), \
+                mock.patch.object(space.time, "monotonic", side_effect=(0, 0, 0, 90, 400, 400, 410)), \
+                mock.patch.object(space.subprocess, "run", side_effect=(SimpleNamespace(returncode=124), SimpleNamespace(returncode=0))) as run:
+            space.clean(self.workspace, (self.workspace,))
+        self.assertEqual(run.call_count, 2)
+        self.assertEqual(run.call_args.args[0][4], "14.0s")
+        self.assertEqual(run.call_args.kwargs["timeout"], 20)
+
+    def test_retry_stops_when_global_budget_is_already_exhausted(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(space, "print_disk_space"), \
+                mock.patch.object(space, "CLEANUP_DIRECTORIES", (self.unused,)), \
+                mock.patch.object(space.shutil, "disk_usage", return_value=SimpleNamespace(free=39 * space.GIB)), \
+                mock.patch.object(space.time, "monotonic", side_effect=(0, 0, 0, 90, space.TOTAL_SECONDS)), \
+                mock.patch.object(space.subprocess, "run", return_value=SimpleNamespace(returncode=124)) as run:
+            with self.assertRaisesRegex(ValueError, "at least 40 GiB"):
+                space.clean(self.workspace, (self.workspace,))
+        run.assert_called_once()
+
+    def test_retry_is_skipped_when_first_attempt_reached_the_target(self):
+        free = 45 * space.GIB
+
+        def timed_out_after_reclaiming(*args, **kwargs):
+            nonlocal free
+            free = 50 * space.GIB
+            return SimpleNamespace(returncode=124)
+
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(space, "print_disk_space"), \
+                mock.patch.object(space, "CLEANUP_DIRECTORIES", (self.unused,)), \
+                mock.patch.object(space.shutil, "disk_usage", side_effect=lambda _: SimpleNamespace(free=free)), \
+                mock.patch.object(space.subprocess, "run", side_effect=timed_out_after_reclaiming) as run:
+            space.clean(self.workspace, (self.workspace,))
+        run.assert_called_once()
+
+    def test_retry_rechecks_path_safety_before_deletion(self):
+        with contextlib.redirect_stdout(io.StringIO()), \
+                mock.patch.object(space, "print_disk_space"), \
+                mock.patch.object(space, "CLEANUP_DIRECTORIES", (self.unused,)), \
+                mock.patch.object(space.shutil, "disk_usage", return_value=SimpleNamespace(free=45 * space.GIB)), \
+                mock.patch.object(space, "safe_directory", side_effect=(self.unused, ValueError("Path changed to a symlink"))) as safe, \
+                mock.patch.object(space.subprocess, "run", return_value=SimpleNamespace(returncode=124)) as run:
+            space.clean(self.workspace, (self.workspace,))
+        self.assertEqual(safe.call_count, 2)
+        run.assert_called_once()
+
     def test_timeout_or_failed_deletion_does_not_bypass_final_space_protection(self):
-        for result in (SimpleNamespace(returncode=124), subprocess.TimeoutExpired("timeout", 90)):
+        for result, attempts in ((SimpleNamespace(returncode=124), 2), (SimpleNamespace(returncode=137), 2),
+                                 (subprocess.TimeoutExpired("timeout", 90), 2),
+                                 (SimpleNamespace(returncode=1), 1), (OSError("sudo unavailable"), 1)):
             with self.subTest(result=result), contextlib.ExitStack() as stack:
                 stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
                 stack.enter_context(mock.patch.object(space, "print_disk_space"))
@@ -132,6 +220,7 @@ class FreeBuildSpaceSafetyTests(unittest.TestCase):
                     run.return_value = result
                 with self.assertRaisesRegex(ValueError, "at least 40 GiB"):
                     space.clean(self.workspace, (self.workspace,))
+                self.assertEqual(run.call_count, attempts)
 
 
 if __name__ == "__main__":

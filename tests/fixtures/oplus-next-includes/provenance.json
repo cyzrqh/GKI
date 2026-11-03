@@ -1,0 +1,15 @@
+{
+  "repository": "KernelSU-Next/KernelSU-Next",
+  "commit": "a6c81fa4a8b7341d0bc5c3e4507531459df871ae",
+  "stable_commit": "4c706b5938665866ebe16944a481a7b91e3396af",
+  "stable_tag": "v3.4.2",
+  "note": "Exact native Kbuild include-root fragment shared by the frozen latest and stable commits. app_profile.h and klog.h are unmodified tracked official headers; kernel/include/uapi is the native ../../uapi symlink. Samsung KDP header is the exact reviewed next-susfs23.patch addition.",
+  "source_kbuild_blob": "a02fd187706a2aca3bf2dab46387e59ffdf33bd1",
+  "susfs_patch_sha256": "c5f485abe94b3b70893da73d155c1a9474d474ecf1d8f05abf668831de69c7d6",
+  "sha256": {
+    "Kbuild-include.inc": "6ffd76946456f106b593c04e172649cde92d750dec27d25a6608542b29f935d7",
+    "app_profile.h": "dffad173122bb7bb183a61b5c24269e3cb36e3d4f22598cd34c0130945bed615",
+    "klog.h": "5ce695964da0e05f23a5afe07cf5dac86a38772321e9dfbcf6201f60877805b1",
+    "ksu_samsung_kdp.h": "bac83aa535b6033b464573e5c5c55b19f16d93ccc7b5c618141119af782ed9ab"
+  }
+}

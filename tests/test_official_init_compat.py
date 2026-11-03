@@ -203,6 +203,7 @@ int ksu_selinux_inode_init(void);
 void put_cred(int *credential);
 ''')
         model = '''#include <assert.h>
+#include <string.h>
 #include "infra/symbol_resolver.h"
 #define __init
 #define pr_warn(...) ((void)0)
@@ -219,7 +220,10 @@ void put_cred(int *credential);
 static void *kallsyms_on_each_symbol_fn;
 static void *kallsyms_on_each_match_symbol_fn;
 unsigned long find_kernel_symbol_exact(const char *name) {
-    return name[16] == 'm' ? 22 : 11;
+    if (strcmp(name, "kallsyms_on_each_symbol") == 0) return 11;
+    if (strcmp(name, "kallsyms_on_each_match_symbol") == 0) return 22;
+    assert(!"unexpected native symbol lookup");
+    return 0;
 }
 '''
         self.write('infra/symbol_resolver.c', model + NATIVE_INITIALIZER + '''

@@ -5,7 +5,7 @@
   "port_repository": "https://gitlab.com/simonpunk/susfs4ksu",
   "reference": "kernel_patches/KernelSU/10_enable_susfs_for_ksu.patch",
   "review": "Retain upstream symbol resolver and SELinux inode initialization; use SUSFS hook lifecycle",
-  "patch_sha256": "e92c2a9cf7dd4a137f1313115fc6e72299c5199782c8a974447aa85e6af81622",
+  "patch_sha256": "26ffde7cae300e872287eda0b1f9cb4e0aa5dfaf1201376e150d1a8f55377551",
   "objects": {
     "10d032620b3681c3cc16ac6b886b7f9976e77ff2": "58a9e7a11d25ce90ad3bf8d095e073278f6848565a6f754bde41bdedfd95fa2c",
     "be25a826b16dc2820df0661295b144d54a99cf24": "0b633d396f9341026b9f00b9e3638c832585ce4be09d8be749ddd343134d2f28",

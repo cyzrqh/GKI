@@ -227,6 +227,9 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
         elif name == 'kow-susfs23':
             from verify_kow_susfs import verify_kow_port
             verify_kow_port(source)
+        if name in ('official-susfs23', 'official-susfs23-stable', 'kow-susfs23'):
+            from ensure_official_init_compat import ensure_official_init_compat
+            ensure_official_init_compat(source)
         verify_native_policy_generation(source)
     def call(repo, *args):
         return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false',
@@ -276,6 +279,11 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
         if (not reverse_ok or call(checked, 'ls-files', '--unmerged').stdout.strip()
                 or call(checked, 'diff', '--quiet', 'HEAD', '--', 'kernel', 'uapi').returncode):
             raise ValueError('SUSFS port could not reverse back to the exact selected official source')
+        if prepared.stat().st_size and call(source, 'apply', '--reverse', '--check', str(prepared)).returncode == 0:
+            # The complete port may already use the selected upstream's
+            # reviewed policy-generation call instead of the old patch context.
+            verify()
+            return
         if (not prepared.stat().st_size or call(source, 'apply', '--check', str(prepared)).returncode
                 or call(source, 'apply', str(prepared)).returncode):
             raise ValueError('Rebased Next SUSFS port could not pass the real source dry run')

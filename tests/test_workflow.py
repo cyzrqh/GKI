@@ -1046,6 +1046,7 @@ class WorkflowTests(unittest.TestCase):
         script = self.find('应用 SUSFS 补丁')['run']
         self.assertLess(script.index('--phase prepare'), script.index('patch -p1 < "50_add_susfs'))
         self.assertLess(script.index('ensure_susfs_headers.py'), script.index('--phase finish'))
+        self.assertLess(script.index('ensure_susfs_inode_compat.py'), script.index('--phase finish'))
         self.assertEqual(script.count('SUSFS_VERSION="2.0.0"'), 1)  # Missing-header fallback only.
         self.assertIn('[ "$SUSFS_VERSION" = "2.3.0" ] && [[ "$rel_path" == */fdinfo.c.patch ]]', script)
 

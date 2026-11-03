@@ -15,6 +15,7 @@ from manager_lkm_jobs import (KMIS, SOURCE_BUNDLE_PATH, load_ddk_matrix, lkm_cac
                               manager_lkm_job, source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
 from additional_manager_jobs import LOCAL_IF, ALL_IF, extend_manager_job
+from manager_cache_keys import restore_keys as manager_cache_restore_keys
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = Path('.github/workflows/kernel-full-feature-matrix.yml')
@@ -288,8 +289,9 @@ python3 tools/configure_bakasu_manager_notice.py --source "$GITHUB_WORKSPACE/man
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_GRADLE_BUILD_CACHE,
                      'key': MANAGER_GRADLE_BUILD_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
-                      'restore-keys': MANAGER_GRADLE_BUILD_CACHE_PREFIX + '\n' + MANAGER_GRADLE_BUILD_CACHE_PREFIX.replace(
-                          'gki-manager-gradle-build-v2-${{ inputs.kernelsu_variant }}-', 'gki-manager-gradle-build-v1-')}},
+                      'restore-keys': manager_cache_restore_keys(MANAGER_GRADLE_BUILD_CACHE_PREFIX, kind='gradle',
+                          legacy=(MANAGER_GRADLE_BUILD_CACHE_PREFIX.replace(
+                              'gki-manager-gradle-build-v2-${{ inputs.kernelsu_variant }}-', 'gki-manager-gradle-build-v1-'),))}},
             {'name': '准备 Android SDK 与 NDK',
              'run': '''set -euo pipefail
 sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
@@ -317,9 +319,9 @@ rustup target add aarch64-linux-android --toolchain "$toolchain"
              'env': {'SEGMENT_DOWNLOAD_TIMEOUT_MINS': '2'},
              'with': {'path': MANAGER_CARGO_CACHE,
                       'key': MANAGER_CARGO_CACHE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}',
-                      'restore-keys': MANAGER_CARGO_CACHE_PREFIX + '\n'
-                          + "gki-manager-cargo-v3-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-\n"
-                          + "gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-"}},
+                      'restore-keys': manager_cache_restore_keys(MANAGER_CARGO_CACHE_PREFIX, kind='cargo',
+                          compiler_prefix="gki-manager-cargo-v3-${{ inputs.kernelsu_variant }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-",
+                          legacy=("gki-manager-cargo-${{ inputs.kernelsu_variant == 'BakaSU' && 'v2-bakasu' || 'v1' }}-${{ runner.os }}-${{ runner.arch }}-ndk29-${{ steps.manager-rust-version.outputs.version }}-",))}},
             {'name': '编译管理器与同版本 ksud',
              'id': 'manager-build',
              'env': {'KSU_PACKAGE_NAME': '${{ needs.prepare-matrix.outputs.manager_package }}',
@@ -761,6 +763,8 @@ python3 tools/matrix.py --kernel-versions "$KERNEL_VERSIONS" --targets "$TARGETS
 command -v cc >/dev/null
 python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
 python3 -m unittest discover -s tests -p 'test_susfs_headers.py'
+python3 -m unittest discover -s tests -p 'test_susfs_inode_compat.py'
+python3 -m unittest discover -s tests -p 'test_official_init_compat.py'
 python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
 python3 -m unittest discover -s tests -p 'test_manager_feature_config.py'
 '''},

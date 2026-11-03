@@ -171,7 +171,7 @@ index fb70411be222a6b15004834ea27d35435d45b009..4703cea34ed9591b08e566880f8d5d3b
 +
  # Keep a new line here!! Because someone may append config
 diff --git a/kernel/core/init.c b/kernel/core/init.c
-index 6ee1c35de07c806c5c4c5b1710bb97852580585b..1cd24847209582140d449a3d100bb15b43a0ae58 100644
+index 6ee1c35de07c806c5c4c5b1710bb97852580585b..91fa595205991ad7cb112bb5bd4d9c1913fbeb40 100644
 --- a/kernel/core/init.c
 +++ b/kernel/core/init.c
 @@ -6,6 +6,7 @@
@@ -191,7 +191,7 @@ index 6ee1c35de07c806c5c4c5b1710bb97852580585b..1cd24847209582140d449a3d100bb15b
  #include "runtime/ksud.h"
  #include "runtime/ksud_boot.h"
  #include "feature/sulog.h"
-@@ -22,21 +21,15 @@
+@@ -22,21 +21,16 @@
  #include "ksu.h"
  #include "infra/file_wrapper.h"
  #include "selinux/selinux.h"
@@ -200,7 +200,7 @@ index 6ee1c35de07c806c5c4c5b1710bb97852580585b..1cd24847209582140d449a3d100bb15b
  #include "feature/selinux_hide.h"
  #include "feature/module_blacklist.h"
  #include "feature/shell_su_adb_only.h"
--#include "infra/symbol_resolver.h"
+ #include "infra/symbol_resolver.h"
  #include "preinit/preinit.h"
 +#include "hook/setuid_hook.h"
 +#include "feature/sucompat.h"

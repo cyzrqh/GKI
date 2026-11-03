@@ -43,7 +43,7 @@
       "branch": "dev",
       "head": "19e257bd229d9b0a7ef1f3864ffcdb0d661fc06a"
     },
-    "sukisu_head": "b8bd4b6c440addfaa5fe5cf518ff59cae0a0af47",
+    "sukisu_head": "b34a3c98b027c21e1e12aee21122b9115657296e",
     "sukisu_release": {
       "commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
       "tag": "v4.3.0"
@@ -69,11 +69,11 @@
   },
   "changes": [
     {
-      "candidate": "b8bd4b6c440addfaa5fe5cf518ff59cae0a0af47",
+      "candidate": "b34a3c98b027c21e1e12aee21122b9115657296e",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "main",
       "source": "SukiSU",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/b8bd4b6c440addfaa5fe5cf518ff59cae0a0af47"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/b34a3c98b027c21e1e12aee21122b9115657296e"
     },
     {
       "candidate": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
@@ -235,7 +235,7 @@
         "branch": "dev",
         "head": "19e257bd229d9b0a7ef1f3864ffcdb0d661fc06a"
       },
-      "head": "b8bd4b6c440addfaa5fe5cf518ff59cae0a0af47",
+      "head": "b34a3c98b027c21e1e12aee21122b9115657296e",
       "release": {
         "commit": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
         "newer_than_baseline": true,

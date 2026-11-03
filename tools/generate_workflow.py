@@ -765,6 +765,7 @@ python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'
 python3 -m unittest discover -s tests -p 'test_susfs_headers.py'
 python3 -m unittest discover -s tests -p 'test_susfs_inode_compat.py'
 python3 -m unittest discover -s tests -p 'test_official_init_compat.py'
+python3 -m unittest discover -s tests -p 'test_kow_selinux_view.py'
 python3 -m unittest discover -s tests -p 'test_susfs_priority.py'
 python3 -m unittest discover -s tests -p 'test_manager_feature_config.py'
 '''},

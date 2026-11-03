@@ -284,6 +284,12 @@ for ((i=0; i<${#arguments[@]}; i++)); do
 done
 add_config "$PWD/include/generated/autoconf.h"
 add_config "$PWD/out/include/generated/autoconf.h"
+# The Kleaf Make launcher validates its final O= directory against OUT_DIR.
+# Retain this full generated configuration in addition to every native include
+# candidate; the cache engine hashes the actual header bytes on every call.
+if [[ "${GKI_CCACHE_AUTOCONF:-}" == /*/include/generated/autoconf.h ]]; then
+  add_config "$GKI_CCACHE_AUTOCONF"
+fi
 if [ "${#configs[@]}" -eq 0 ]; then cache_note config-unavailable; exec "$compiler" "$@"; fi
 canonical=$("$cache_readlink" -f -- "$compiler") || { cache_note compiler-unresolved; exec "$compiler" "$@"; }
 key=$(printf '%s' "$canonical" | "$cache_sha256sum")

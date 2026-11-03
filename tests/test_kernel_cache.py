@@ -7,10 +7,11 @@ import unittest
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import generate_workflow as generator
+import kernel_cache_profile as profile
 
 
 def condition_value(expression, *, enabled='true', local='false', started='true',
-                    outcome='success', cancelled=False, restored='false', saved='false'):
+                    outcome='success', cancelled=False, restored='false', saved='false', legacy='false'):
     values = {
         'steps.ccache-config.outputs.enabled': enabled,
         'env.ABK_LOCAL_CACHE_ENABLED': local,
@@ -18,6 +19,7 @@ def condition_value(expression, *, enabled='true', local='false', started='true'
         'steps.compile-kernel.outcome': outcome,
         'steps.persistent-ccache-restore.outputs.restored': restored,
         'steps.persistent-ccache-save.outputs.saved': saved,
+        'steps.persistent-ccache-restore.outputs.legacy': legacy,
     }
     for name, value in values.items():
         expression = expression.replace(name, repr(value))
@@ -33,6 +35,9 @@ def render_key(template, **overrides):
               'inputs.os_patch_level': '2022-06', 'github.run_id': '100', 'github.run_attempt': '1',
               "hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')": 'a' * 64}
     values.update(overrides)
+    expression = profile.profile_expression()[3:-3].strip()
+    digest = values[profile.HASH]
+    values[expression] = profile.OLD_PROFILE if digest == profile.DIAGNOSTIC_PROFILE else digest
     values.update({name.replace('inputs.', 'matrix.'): value for name, value in list(values.items())
                    if name.startswith('inputs.')})
     return re.sub(r'\$\{\{\s*(.*?)\s*\}\}', lambda match: values[match.group(1)], template)
@@ -125,6 +130,7 @@ class KernelCacheTests(unittest.TestCase):
         restore_condition = restore['if']
         self.assertTrue(condition_value(restore_condition))
         self.assertFalse(condition_value(restore_condition, restored='true'))
+        self.assertTrue(condition_value(restore_condition, restored='true', legacy='true'))
         self.assertFalse(condition_value(restore_condition, enabled='false'))
         self.assertFalse(condition_value(restore_condition, local='true'))
 

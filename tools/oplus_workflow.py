@@ -134,7 +134,8 @@ def prepare_job(base: dict) -> dict:
                        "python3 -m unittest discover -s tests -p 'test_oplus_*.py'\n"
                        "python3 -m unittest discover -s tests -p 'test_susfs_map_compat.py'\n"
                        "python3 -m unittest discover -s tests -p 'test_susfs_headers.py'\n"
-                       "python3 -m unittest discover -s tests -p 'test_official_init_compat.py'"}]
+                       "python3 -m unittest discover -s tests -p 'test_official_init_compat.py'\n"
+                       "python3 -m unittest discover -s tests -p 'test_kow_selinux_view.py'"}]
         if step.get('id') == 'matrix':
             steps.append({'name': '固定原生 AnyKernel3 与可选 Unicode 补丁', 'id': 'oplus-deps',
                           'env': {'GH_TOKEN': '${{ github.token }}', 'UNICODE_BYPASS': '${{ inputs.use_unicode_bypass }}'},

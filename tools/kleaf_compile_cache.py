@@ -39,11 +39,55 @@ compiler="${CC:-clang}"
 for argument in "$@"; do
   case "$argument" in CC=*) compiler="${argument#CC=}";; esac
 done
+# Resolve only the output selected by this exact Make invocation. Kleaf may
+# invoke the compiler from a directory where -I/PWD do not expose autoconf.h.
+# Never reuse an inherited hint or search unrelated output trees for a header.
+unset GKI_CCACHE_AUTOCONF
+make_directory="$PWD"
+make_output=""
+directory_valid=true
+arguments=("$@")
+for ((index=0; index<${#arguments[@]}; index++)); do
+  argument="${arguments[$index]}"
+  selected_directory=""
+  case "$argument" in
+    -C|--directory)
+      if ((index+1<${#arguments[@]})); then
+        ((index+=1))
+        selected_directory="${arguments[$index]}"
+      else
+        directory_valid=false
+      fi;;
+    -C?*) selected_directory="${argument#-C}";;
+    --directory=*) selected_directory="${argument#--directory=}";;
+    O=*) make_output="${argument#O=}";;
+  esac
+  if [ -n "$selected_directory" ]; then
+    case "$selected_directory" in
+      /*) ;;
+      *) selected_directory="$make_directory/$selected_directory";;
+    esac
+    if resolved_directory=$(cd -P -- "$selected_directory" 2>/dev/null && pwd -P); then
+      make_directory="$resolved_directory"
+    else
+      directory_valid=false
+    fi
+  fi
+done
+if $directory_valid && [ -n "$make_output" ] && [ -n "${OUT_DIR:-}" ]; then
+  case "$make_output" in /*) ;; *) make_output="$make_directory/$make_output";; esac
+  if resolved_output=$(cd -P -- "$make_output" 2>/dev/null && pwd -P) &&
+      resolved_environment=$(cd -P -- "$OUT_DIR" 2>/dev/null && pwd -P) &&
+      [ "$resolved_output" = "$resolved_environment" ] &&
+      [ -f "$resolved_output/include/generated/autoconf.h" ]; then
+    export GKI_CCACHE_AUTOCONF="$resolved_output/include/generated/autoconf.h"
+  fi
+fi
 if (set -C; : > "${cache_program}.kleaf-entered") 2>/dev/null; then
   cache_ready=false; compiler_ready=false; config_ready=false
   if [ -x "$cache_program" ]; then cache_ready=true; fi
   if command -v -- "${compiler%% *}" >/dev/null 2>&1; then compiler_ready=true; fi
-  if [ -n "${OUT_DIR:-}" ] && [ -f "$OUT_DIR/include/generated/autoconf.h" ]; then config_ready=true; fi
+  if [ -n "${GKI_CCACHE_AUTOCONF:-}" ]; then config_ready=true; fi
   printf 'Kleaf cache launcher executed: cache_ready=%s compiler_ready=%s config_ready=%s\n' \
     "$cache_ready" "$compiler_ready" "$config_ready"
 fi

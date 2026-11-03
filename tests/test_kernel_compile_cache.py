@@ -317,12 +317,17 @@ class KernelCacheGuardTests(unittest.TestCase):
                  ('string', "int main(void) { return CONFIG_LABEL[3] == 't'; }\n",
                   '#define CONFIG_LABEL "ab one"\n', '#define CONFIG_LABEL "ab two"\n'),
                  ('equal_size', 'int main(void) { return CONFIG_VALUE == 2; }\n',
+                  '#define CONFIG_VALUE 1\n', '#define CONFIG_VALUE 2\n'),
+                 ('kleaf_hint', '#include ' + json.dumps(autoconf.as_posix())
+                  + '\nint main(void) { return CONFIG_VALUE == 2; }\n',
                   '#define CONFIG_VALUE 1\n', '#define CONFIG_VALUE 2\n')]
         # Deliberately omit every host utility from PATH, as Android's
         # HERMETIC_TOOLCHAIN does. The guard must use its bound absolute paths.
         environment = {**os.environ, 'GUARD_TEST_LOG': posix(log),
                        'PATH': str(root / 'bin'), 'CCACHE_IS_KERNEL_COMPILING': 'true'}
         fingerprints = []
+        hidden_cwd = self.root / 'compiler-cwd'
+        hidden_cwd.mkdir()
         for name, source, before, after in cases:
             values, keys = [], []
             src = self.root / 'sample.c'
@@ -330,9 +335,16 @@ class KernelCacheGuardTests(unittest.TestCase):
             for index, config in enumerate((before, after)):
                 autoconf.write_text(config, encoding='utf-8', newline='\n')
                 executable = self.root / ('sample-' + name + '-' + str(index) + ('.exe' if os.name == 'nt' else ''))
-                result = subprocess.run([shell, posix(wrapper), posix(native), '-Werror', '-include',
-                    posix(autoconf), posix(src), '-o', posix(executable)], env=environment,
-                    capture_output=True, text=True, encoding='utf-8', cwd=self.root, timeout=90)
+                hint_case = name == 'kleaf_hint'
+                selected_environment = {**environment}
+                selected_environment.pop('GKI_CCACHE_AUTOCONF', None)
+                if hint_case:
+                    selected_environment['GKI_CCACHE_AUTOCONF'] = posix(autoconf)
+                flags = [] if hint_case else ['-include', posix(autoconf)]
+                result = subprocess.run([shell, posix(wrapper), posix(native), '-Werror', *flags,
+                    posix(src), '-o', posix(executable)], env=selected_environment,
+                    capture_output=True, text=True, encoding='utf-8',
+                    cwd=hidden_cwd if hint_case else self.root, timeout=90)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertTrue(log.is_file(), 'Compiler unexpectedly bypassed the verified-cache branch')
                 lines = log.read_text().splitlines()

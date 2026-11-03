@@ -118,6 +118,48 @@ class KleafCacheTests(unittest.TestCase):
         self.assertEqual(0, second.returncode, second.stderr)
         self.assertEqual('', second.stdout)
 
+    def test_launcher_passes_only_the_final_make_output_matching_kleaf_environment(self):
+        shell = bash()
+        if not shell:
+            self.skipTest('Bash required')
+        source = self.root / 'source'
+        final = source / 'final-output'
+        generated = final / 'include/generated'
+        generated.mkdir(parents=True)
+        (source / 'nested').mkdir()
+        (generated / 'autoconf.h').write_text('#define CONFIG_TEST 1\n')
+        empty = source / 'empty-output'
+        empty.mkdir()
+        bin_dir = self.root / 'output-bin'
+        bin_dir.mkdir()
+        log = self.root / 'selected-config.log'
+        make = bin_dir / 'make'
+        make.write_text('#!/usr/bin/sh\nprintf "%s\\n" "${GKI_CCACHE_AUTOCONF:-}" > "$CONFIG_LOG"\n',
+                        encoding='utf-8', newline='\n')
+        make.chmod(0o700)
+        self.output.parent.mkdir()
+        self.output.write_text(cache.launcher(self.program, self.directory), encoding='utf-8', newline='\n')
+        cases = (
+            (['-C', 'source', 'O=ignored-output', 'O=final-output'], posix(final), True),
+            (['--directory=source', '-Cnested', '-C', '..', 'O=final-output'], posix(final), True),
+            (['-C', 'source', 'O=' + posix(final)], 'source/final-output', True),
+            (['-C', 'source', 'O=empty-output'], posix(final), False),
+            (['-C', 'source', 'O=final-output'], posix(empty), False),
+            (['-C', 'source', 'O=final-output', 'O='], posix(final), False),
+            (['-C', 'source'], posix(final), False),
+            (['-C', 'source', 'O=final-output'], '', False),
+        )
+        for arguments, out_dir, expected in cases:
+            with self.subTest(arguments=arguments, out_dir=out_dir):
+                environment = {**os.environ, 'PATH': posix(bin_dir) + os.pathsep + os.environ['PATH'],
+                               'OUT_DIR': out_dir, 'CONFIG_LOG': posix(log),
+                               'GKI_CCACHE_AUTOCONF': 'inherited-unrelated-config'}
+                result = subprocess.run([shell, posix(self.output), *arguments], env=environment,
+                                        capture_output=True, text=True, cwd=self.root, timeout=20)
+                self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+                self.assertEqual(posix(generated / 'autoconf.h') if expected else '',
+                                 log.read_text('utf-8').strip())
+
     def test_all_five_families_retain_upstream_thinlto_cache_policy(self):
         rows = json.loads((ROOT / 'tests/fixtures/kleaf-cache/native-lto-blocks.json').read_text())
         self.assertEqual({'5.10', '5.15', '6.1', '6.6', '6.12'}, {row['kernel'].rsplit('.', 1)[0] for row in rows})

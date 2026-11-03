@@ -1837,7 +1837,9 @@ jobs:
       AK3_REF: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
       PATCHES_REF: ${{ needs.prepare-matrix.outputs[format('{0}_patches_ref', matrix.variant)] }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
-      CCACHE_MAXSIZE: 3G
+      CCACHE_MAXSIZE: 50G
+      CCACHE_COMPRESS: 'true'
+      CCACHE_NOHARDLINK: 'true'
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     steps: &id001
@@ -2191,7 +2193,9 @@ jobs:
       AK3_REF: 091ee586e1a5d5c1c1c957d48fe7c61638d04dc4
       PATCHES_REF: ${{ needs.prepare-matrix.outputs[format('{0}_patches_ref', matrix.variant)] }}
       CCACHE_DIR: ${{ github.workspace }}/.oplus-ccache
-      CCACHE_MAXSIZE: 3G
+      CCACHE_MAXSIZE: 50G
+      CCACHE_COMPRESS: 'true'
+      CCACHE_NOHARDLINK: 'true'
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     steps: *id001

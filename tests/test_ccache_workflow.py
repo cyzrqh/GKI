@@ -32,7 +32,8 @@ class CcacheWorkflowTests(unittest.TestCase):
         self.assertNotIn("CCACHE_HARDLINK", env)
         self.assertEqual(env["CCACHE_NOHARDLINK"], "true")
         self.assertEqual(env["CCACHE_COMPRESS"], "true")
-        self.assertEqual(env["CCACHE_MAXSIZE"], "2G")
+        self.assertEqual(env["CCACHE_MAXSIZE"], "50G")
+        self.assertIn('ccache --max-size "$CCACHE_MAXSIZE"', self.step("配置 ccache")["run"])
         self.assertIn("ccache --set-config=hard_link=false", self.step("配置 ccache")["run"])
 
     def test_compiler_identity_uses_binary_content_without_correctness_relaxations(self):

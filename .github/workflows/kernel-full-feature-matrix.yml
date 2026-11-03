@@ -1902,7 +1902,7 @@ jobs:
       CCACHE_NOHASHDIR: 'true'
       CCACHE_NOHARDLINK: 'true'
       CCACHE_COMPRESS: 'true'
-      CCACHE_MAXSIZE: 2G
+      CCACHE_MAXSIZE: 50G
       KSU_VARIANT: ${{ matrix.variant }}
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
@@ -2159,7 +2159,7 @@ jobs:
         mkdir -p "$CCACHE_DIR"
         mkdir -p ~/.cache/bazel
         ccache --version
-        ccache --max-size=2G
+        ccache --max-size "$CCACHE_MAXSIZE"
         ccache --set-config=compression=true
         ccache --set-config=hard_link=false
         echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"
@@ -7747,7 +7747,7 @@ jobs:
       CCACHE_NOHASHDIR: 'true'
       CCACHE_NOHARDLINK: 'true'
       CCACHE_COMPRESS: 'true'
-      CCACHE_MAXSIZE: 2G
+      CCACHE_MAXSIZE: 50G
       KSU_VARIANT: ${{ matrix.variant }}
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
       GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}

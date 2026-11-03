@@ -64,6 +64,59 @@ class KernelCacheGuardTests(unittest.TestCase):
             (root / name).write_bytes(value)
         return root
 
+    def shell_policy_fixture(self, name, *, modern=True, pinned=True):
+        """Exercise the real guard with a recording engine and native fallback."""
+        import shlex
+        shell = bash()
+        if not shell:
+            self.skipTest('Bash is required')
+        directory = self.root / name
+        root = self.toolchain(name + '/toolchain')
+        compiler = root / 'bin/clang'
+        compiler.write_text('#!/usr/bin/sh\nprintf "native compiler\\n"\n', newline='\n')
+        compiler.chmod(0o700)
+        engine, log = directory / 'engine', directory / 'engine.log'
+        engine.write_text('#!/usr/bin/sh\nprintf "%s\\n" "$CCACHE_COMPILERCHECK" '
+                          '"${CCACHE_IS_KERNEL_COMPILING:-}" "$CCACHE_EXTRAFILES" '
+                          '"$SOURCE_DATE_EPOCH" "$CCACHE_NOINODECACHE" > "$GUARD_TEST_LOG"\n'
+                          'printf "recording engine\\n"\n', newline='\n')
+        engine.chmod(0o700)
+        utilities = directory / 'utilities'
+        utilities.mkdir()
+        lock, checksum = utilities / 'flock', utilities / 'sha256sum'
+        lock.write_text('#!/usr/bin/sh\nexit 0\n', newline='\n')
+        checksum.write_text('#!/usr/bin/sh\nexec ' + shlex.quote(posix(sys.executable)) + ' -c '
+            + shlex.quote("import sys,hashlib; print(hashlib.sha256(sys.stdin.buffer.read()).hexdigest()+'  -')")
+            + '\n', encoding='utf-8', newline='\n')
+        lock.chmod(0o700); checksum.chmod(0o700)
+        tools = {'env': posix(Path(shell).parent / 'env.exe') if os.name == 'nt' else shutil.which('env'),
+                 'readlink': posix(Path(shell).parent / 'readlink.exe') if os.name == 'nt' else shutil.which('readlink'),
+                 'flock': posix(lock), 'sha256sum': posix(checksum)}
+        identities = directory / 'ids'
+        identities.mkdir()
+        descriptor = identities / (cache.sha(posix(compiler).encode()) + '.json')
+        with mock.patch.object(cache, 'modern_clang', return_value=modern):
+            identity = cache.compiler_identity(compiler, engine)
+        descriptor.write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')) + '\n')
+        configs = [directory / 'include/generated/autoconf.h', directory / 'other/include/generated/autoconf.h']
+        for index, config in enumerate(configs):
+            config.parent.mkdir(parents=True)
+            config.write_text('#define CONFIG_VALUE ' + str(index) + '\n')
+        inherited = directory / 'inherited.guard'
+        inherited.write_bytes(b'keep inherited extra input')
+        wrapper = directory / 'ccache'
+        wrapper.write_text(cache.shell_wrapper(posix(engine), Path('/not-invoked'), Path(posix(identities)),
+            posix(sys.executable), tools, pinned_ecs_sha256=identity['engine_sha256'] if pinned else ''),
+            encoding='utf-8', newline='\n')
+        environment = {**os.environ, 'GUARD_TEST_LOG': posix(log), 'CCACHE_COMPILERCHECK': 'none',
+                       'CCACHE_IS_KERNEL_COMPILING': 'true', 'CCACHE_EXTRAFILES': posix(inherited)}
+        def run(*extra):
+            return subprocess.run([shell, posix(wrapper), posix(compiler), '-include', posix(configs[0]),
+                '-I' + posix(configs[1].parent.parent), '-c', 'sample.c', *extra], env=environment,
+                capture_output=True, text=True, encoding='utf-8', errors='replace', cwd=directory, timeout=30)
+        return {'run': run, 'directory': directory, 'descriptor': descriptor, 'identity': identity,
+                'compiler': compiler, 'configs': configs, 'inherited': inherited, 'log': log}
+
     def test_real_lock_is_immutable_and_matches_expected_elf_identity(self):
         spec = cache.load_lock()
         self.assertEqual(spec['commit'], 'f4e3a8084a7a5f8203e16ea177c8847c7ff517dc')
@@ -83,6 +136,7 @@ class KernelCacheGuardTests(unittest.TestCase):
         self.assertEqual(result['engine'], 'ccache-ECS')
         self.assertEqual((output / 'ccache-real').read_bytes(), self.value)
         self.assertTrue((output / 'ccache').read_text().startswith('#!/bin/bash\n'))
+        self.assertIn('pinned_ecs_sha256=' + self.item['sha256'] + '\n', (output / 'ccache').read_text())
         self.assertEqual(json.loads((output / 'cache-tool.json').read_text()), result)
         self.assertEqual([], list(output.glob('.ccache-real-*')))
 
@@ -102,6 +156,7 @@ class KernelCacheGuardTests(unittest.TestCase):
                 self.assertEqual('stock-ccache', result['engine'])
                 self.assertEqual(str(self.stock.resolve()), result['engine_path'])
                 self.assertFalse((self.root / label / 'ccache-real').exists())
+                self.assertIn("pinned_ecs_sha256=''\n", Path(result['program']).read_text())
                 execution.assert_not_called()
 
     def test_download_failure_or_absent_stock_disables_cache_without_disabling_compilation(self):
@@ -109,6 +164,7 @@ class KernelCacheGuardTests(unittest.TestCase):
                 contextlib.redirect_stderr(io.StringIO()):
             result = cache.install(self.root / 'offline', stock=self.root / 'absent')
         self.assertEqual('disabled', result['engine'])
+        self.assertIn("pinned_ecs_sha256=''\n", Path(result['program']).read_text())
         self.assertIn('exec "$compiler" "$@"', Path(result['program']).read_text())
 
     def test_full_compiler_linker_resource_and_library_contents_bind_identity(self):
@@ -198,8 +254,75 @@ class KernelCacheGuardTests(unittest.TestCase):
         self.assertIn('unset CCACHE_IS_KERNEL_COMPILING', wrapper)
         import re
         self.assertEqual({'cache-unavailable', 'compiler-unresolved', 'utility-unavailable',
-                          'response-arguments', 'config-unavailable', 'descriptor-unavailable', 'engine-entered'},
+                          'response-arguments', 'plugin-arguments', 'config-unavailable',
+                          'descriptor-unavailable', 'engine-entered'},
                          set(re.findall(r'cache_note ([a-z-]+)', wrapper)))
+
+    def test_modern_verified_ecs_binds_live_compiler_full_inventory_and_every_config_before_none(self):
+        fixture = self.shell_policy_fixture('modern-pinned')
+        result = fixture['run']()
+        self.assertEqual(0, result.returncode, result.stderr)
+        self.assertEqual('recording engine', result.stdout.strip())
+        lines = fixture['log'].read_text().splitlines()
+        expected = [fixture['descriptor'], fixture['compiler'], *fixture['configs'], fixture['inherited']]
+        self.assertEqual(['none', 'true', ':'.join(posix(path) for path in expected), cache.EPOCH, '1'], lines)
+        # The descriptor stays a per-job snapshot, while the actual compiler
+        # file remains an extra input even after same-size/mtime changes.
+        original_descriptor = fixture['descriptor'].read_bytes()
+        old = fixture['compiler'].read_bytes()
+        before = fixture['compiler'].stat()
+        fixture['compiler'].write_bytes(old.replace(b'native compiler', b'native changed!'))
+        os.utime(fixture['compiler'], ns=(before.st_atime_ns, before.st_mtime_ns))
+        self.assertEqual(len(old), fixture['compiler'].stat().st_size)
+        self.assertEqual(0, fixture['run']().returncode)
+        self.assertEqual(original_descriptor, fixture['descriptor'].read_bytes())
+        self.assertEqual(lines, fixture['log'].read_text().splitlines())
+        self.assertNotEqual(cache.sha(old), cache.file_digest(fixture['compiler']))
+
+    def test_old_unknown_and_stock_compilers_keep_content_even_with_an_inherited_none_override(self):
+        for name, modern, pinned in (('old-pinned', False, True), ('modern-stock', True, False),
+                                     ('unknown-stock', False, False)):
+            with self.subTest(name=name):
+                fixture = self.shell_policy_fixture(name, modern=modern, pinned=pinned)
+                result = fixture['run']('-fplugin=legacy-plugin.so')
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual('recording engine', result.stdout.strip())
+                lines = fixture['log'].read_text().splitlines()
+                expected = [fixture['descriptor'], *fixture['configs'], fixture['inherited']]
+                self.assertEqual(['content', 'true' if modern else '',
+                                  ':'.join(posix(path) for path in expected), cache.EPOCH, '1'], lines)
+
+    def test_modern_pinned_policy_bypasses_missing_or_invalid_proofs_and_external_plugins(self):
+        cases = ('missing-config', 'missing-descriptor', 'disabled-descriptor', 'incomplete-descriptor',
+                 'wrong-engine', 'wrong-compiler', '-fplugin=outside.so', '-fpass-plugin=outside.so', '-load=outside.so',
+                 '--load=outside.so', '-mllvm=-load=outside.so', '-mllvm=--load-pass-plugin=outside.so',
+                 '-Xclang=-load', '@hidden-options')
+        for index, case in enumerate(cases):
+            with self.subTest(case=case):
+                fixture = self.shell_policy_fixture('bypass-' + str(index))
+                extra = []
+                if case == 'missing-config':
+                    for config in fixture['configs']: config.unlink()
+                elif case == 'missing-descriptor':
+                    fixture['descriptor'].unlink()
+                elif case == 'disabled-descriptor':
+                    fixture['descriptor'].with_suffix('.disabled').touch()
+                elif case in ('incomplete-descriptor', 'wrong-engine', 'wrong-compiler'):
+                    identity = fixture['identity']
+                    if case == 'incomplete-descriptor': identity.pop('toolchain_sha256')
+                    elif case == 'wrong-compiler': identity['compiler'] = 'bin/another-clang'
+                    else: identity['engine_sha256'] = '0' * 64
+                    fixture['descriptor'].write_text(json.dumps(identity, sort_keys=True, separators=(',', ':')))
+                else:
+                    extra = [case]
+                result = fixture['run'](*extra)
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual('native compiler', result.stdout.strip())
+                self.assertFalse(fixture['log'].exists())
+                reason = ('plugin-arguments' if case.startswith('-') else
+                          'response-arguments' if case.startswith('@') else
+                          'config-unavailable' if case == 'missing-config' else 'descriptor-unavailable')
+                self.assertIn('Kernel cache guard: ' + reason, result.stderr)
 
     def test_bash_wrapper_forwards_flags_management_and_bypasses_unprovable_sources(self):
         shell = bash()

@@ -218,14 +218,17 @@ def bound_tools() -> dict[str, str]:
 
 
 def shell_wrapper(engine: str, helper: Path, identities: Path, python: str,
-                  tool_paths: dict[str, str] | None = None) -> str:
+                  tool_paths: dict[str, str] | None = None, *, pinned_ecs_sha256: str = '') -> str:
     # All paths are inserted as shell literals. No eval or shell-built commands.
+    if pinned_ecs_sha256 and not re.fullmatch(r'[0-9a-f]{64}', pinned_ecs_sha256):
+        raise ValueError('Invalid verified ECS engine identity')
     tools = bound_tools() if tool_paths is None else tool_paths
     header = ('#!/bin/bash\nset -euo pipefail\n'
               f'engine={shlex.quote(engine)}\nhelper={shlex.quote(helper.as_posix())}\n'
               f'identities={shlex.quote(identities.as_posix())}\npython={shlex.quote(python)}\n')
     header += ''.join('cache_' + name + '=' + shlex.quote(tools.get(name, '')) + '\n'
                       for name in ('env', 'readlink', 'flock', 'sha256sum'))
+    header += 'pinned_ecs_sha256=' + shlex.quote(pinned_ecs_sha256) + '\n'
     return header + r'''
 cache_note() {
   local reason="$1"
@@ -276,10 +279,14 @@ add_config() {
   return 0
 }
 arguments=("$@")
+plugin_arguments=false
 for ((i=0; i<${#arguments[@]}; i++)); do
   argument="${arguments[$i]}"
   # Hidden include paths cannot be proved by this shell-only guard.
   if [[ "$argument" == @* ]]; then cache_note response-arguments; exec "$compiler" "$@"; fi
+  case "$argument" in
+    -fplugin*|-fpass-plugin*|-load*|--load*|-mllvm=-load*|-mllvm=--load*|-Xclang=-load*) plugin_arguments=true;;
+  esac
   case "$argument" in
     -include|-I|-isystem|-iquote)
       if ((i+1<${#arguments[@]})); then
@@ -324,12 +331,38 @@ if [ ! -f "$descriptor" ]; then
   ) 9>"$identities/$key.lock"
 fi
 if [ ! -f "$descriptor" ] || [ -L "$descriptor" ]; then cache_note descriptor-unavailable; exec "$compiler" "$@"; fi
+identity=$(<"$descriptor")
+modern=false
+if [[ "$identity" == *'"ecs_kernel_mode":true'* ]]; then modern=true; fi
+inventory_compiler_check=false
 extra="$descriptor"
+if $modern && [ -n "$pinned_ecs_sha256" ]; then
+  # Accept only the complete canonical descriptor written by this job's
+  # helper, with the exact ECS engine verified by the installer. A modern
+  # stock fallback must retain ordinary ccache's compiler-content check.
+  descriptor_pattern='^\{"compiler":"(bin/[^/"\\]+)","ecs_kernel_mode":true,"engine_sha256":"([0-9a-f]{64})","file_count":[1-9][0-9]{0,5},"guard":"gki-kernel-cache-v1","schema_version":1,"source_date_epoch":"1748178000","toolchain_sha256":"[0-9a-f]{64}"\}$'
+  if [[ ! "$identity" =~ $descriptor_pattern ]] || [ "${BASH_REMATCH[1]:-}" != "bin/${canonical##*/}" ] ||
+      [ "${BASH_REMATCH[2]:-}" != "$pinned_ecs_sha256" ]; then
+    cache_note descriptor-unavailable; exec "$compiler" "$@"
+  fi
+  # ECS skips compiler hashing after learning a kernel anchor. Bind the real
+  # compiler bytes through EXTRAFILES on every call instead, keeping that
+  # protection and a stable key before and after the anchor is learned.
+  if [[ "$canonical" == *:* || "$canonical" == *$'\n'* || "$canonical" == *$'\r'* ]] ||
+      [ ! -f "$canonical" ] || [ -L "$canonical" ]; then
+    cache_note compiler-unresolved; exec "$compiler" "$@"
+  fi
+  # External plugins are outside the standalone compiler inventory. Preserve
+  # their native behavior without dropping their compiler-content checks.
+  if $plugin_arguments; then cache_note plugin-arguments; exec "$compiler" "$@"; fi
+  extra+=":$canonical"
+  inventory_compiler_check=true
+fi
 for config in "${configs[@]}"; do extra+=":$config"; done
 if [ -n "${CCACHE_EXTRAFILES:-}" ]; then extra+=":$CCACHE_EXTRAFILES"; fi
 export CCACHE_EXTRAFILES="$extra"
-identity=$(<"$descriptor")
-if [[ "$identity" == *'"ecs_kernel_mode":true'* ]]; then export CCACHE_IS_KERNEL_COMPILING=true; fi
+if $modern; then export CCACHE_IS_KERNEL_COMPILING=true; fi
+if $inventory_compiler_check; then export CCACHE_COMPILERCHECK=none; fi
 cache_note engine-entered
 exec "$engine" "$compiler" "$@"
 '''
@@ -341,6 +374,7 @@ def install(output: Path, *, stock: Path = Path('/usr/bin/ccache')) -> dict:
         raise ValueError('Unsupported cache-tool output path')
     engine = ''
     kind = 'disabled'
+    pinned_ecs_sha256 = ''
     try:
         item = load_lock()
         value = download(item)
@@ -349,6 +383,7 @@ def install(output: Path, *, stock: Path = Path('/usr/bin/ccache')) -> dict:
         write_atomic(binary, value, 0o700)
         probe_binary(binary)
         engine, kind = str(binary), 'ccache-ECS'
+        pinned_ecs_sha256 = item['sha256']
     except (OSError, ValueError, UnicodeError, http.client.HTTPException, subprocess.SubprocessError):
         print('::warning::Pinned ECS cache unavailable or invalid; using guarded ordinary ccache.', file=sys.stderr)
         if stock.is_file() and os.access(stock, os.X_OK):
@@ -361,7 +396,8 @@ def install(output: Path, *, stock: Path = Path('/usr/bin/ccache')) -> dict:
         identities.chmod(0o700)
     helper = Path(__file__).resolve()
     wrapper = output / 'ccache'
-    write_atomic(wrapper, shell_wrapper(engine, helper, identities, sys.executable).encode('utf-8'), 0o700)
+    write_atomic(wrapper, shell_wrapper(engine, helper, identities, sys.executable,
+                                       pinned_ecs_sha256=pinned_ecs_sha256).encode('utf-8'), 0o700)
     result = {'schema_version': 1, 'guard': GUARD, 'engine': kind,
               'engine_path': engine, 'program': str(wrapper), 'helper': str(helper)}
     write_atomic(output / 'cache-tool.json', (json.dumps(result, sort_keys=True) + '\n').encode())

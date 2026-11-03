@@ -131,6 +131,7 @@ class KleafCacheTests(unittest.TestCase):
         # The end-of-Make summary must recover only whitelisted marker reasons.
         self.program.write_text('#!/usr/bin/sh\nidentities=' + identities.as_posix() + '\n'
             'cache_sha256sum=' + posix(bin_dir / 'sha256sum') + '\n'
+            ': > "$identities/trace-plugin-arguments"\n'
             ': > "$identities/trace-descriptor-unavailable"\n'
             ': > "$identities/trace-private-command-do-not-print"\n'
             'printf "hidden compiler probe reason\\n" >&2\n', encoding='utf-8', newline='\n')
@@ -156,7 +157,7 @@ class KleafCacheTests(unittest.TestCase):
         result = subprocess.run([shell, posix(self.output), '-C', posix(self.source), 'O=' + posix(output)],
                                 env=environment, cwd=self.root, capture_output=True, text=True, timeout=20)
         self.assertEqual(23, result.returncode, result.stdout + result.stderr)
-        self.assertIn('Kleaf cache guard summary: reasons=descriptor-unavailable descriptors=1', result.stdout)
+        self.assertIn('Kleaf cache guard summary: reasons=plugin-arguments,descriptor-unavailable descriptors=1', result.stdout)
         self.assertIn('Kleaf compiler identity: toolchain_sha256=' + fingerprint + ' file_count=417', result.stdout)
         self.assertIn('Kleaf final bound configuration: sha256=' + 'd' * 64, result.stdout)
         for private in ('private-command', 'do-not-print', 'hidden compiler probe reason', str(self.root)):

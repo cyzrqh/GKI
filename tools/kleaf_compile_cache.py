@@ -113,7 +113,7 @@ report_guard_state() {
   [[ "$uuid" =~ ^[0-9a-f]{32}$ ]] || return 0
   [ -d "$identities_directory" ] && [ ! -L "$identities_directory" ] || return 0
   for reason in cache-unavailable compiler-unresolved utility-unavailable \
-      response-arguments config-unavailable descriptor-unavailable engine-entered; do
+      response-arguments plugin-arguments config-unavailable descriptor-unavailable engine-entered; do
     if [ -f "$identities_directory/trace-$reason" ] && [ ! -L "$identities_directory/trace-$reason" ]; then
       reasons+="${reasons:+,}$reason"
     fi

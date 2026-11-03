@@ -166,8 +166,12 @@ class KernelCacheGuardTests(unittest.TestCase):
         self.assertIn('"$cache_env" -u LD_PRELOAD -u FAKESTAT -u FAKETIME', wrapper)
         self.assertIn('"$cache_flock" -x 9', wrapper)
         self.assertIn('export CCACHE_EXTRAFILES="$extra"', wrapper)
-        self.assertIn('if [ "${#configs[@]}" -eq 0 ]; then exec "$compiler" "$@"; fi', wrapper)
+        self.assertIn('if [ "${#configs[@]}" -eq 0 ]; then cache_note config-unavailable; exec "$compiler" "$@"; fi', wrapper)
         self.assertIn('unset CCACHE_IS_KERNEL_COMPILING', wrapper)
+        import re
+        self.assertEqual({'cache-unavailable', 'compiler-unresolved', 'utility-unavailable',
+                          'response-arguments', 'config-unavailable', 'descriptor-unavailable', 'engine-entered'},
+                         set(re.findall(r'cache_note ([a-z-]+)', wrapper)))
 
     def test_bash_wrapper_forwards_flags_management_and_bypasses_unprovable_sources(self):
         shell = bash()
@@ -193,6 +197,47 @@ class KernelCacheGuardTests(unittest.TestCase):
                                         encoding='utf-8', cwd=self.root, timeout=30)
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
                 self.assertEqual(expected, result.stdout.strip())
+
+    def test_bypass_diagnostics_are_once_per_reason_and_do_not_expose_inputs(self):
+        shell = bash()
+        if not shell:
+            self.skipTest('Bash required')
+        compiler = self.root / 'native-compiler'
+        compiler.write_text('#!/usr/bin/sh\nprintf "native compile\\n"\n', newline='\n')
+        compiler.chmod(0o700)
+        engine = self.root / 'engine'
+        engine.write_text('#!/usr/bin/sh\nprintf "engine compile\\n"\n', newline='\n')
+        engine.chmod(0o700)
+        # These utilities are only tested for executability: every case below
+        # safely exits before any compiler identity operation can call them.
+        utility = self.root / 'utility'
+        utility.write_text('#!/usr/bin/sh\nexit 0\n', newline='\n')
+        utility.chmod(0o700)
+        ready = {name: posix(utility) for name in ('env', 'readlink', 'flock', 'sha256sum')}
+        cases = (
+            ('cache-unavailable', '', ready, [posix(compiler), '-c', 'private-source.c']),
+            ('utility-unavailable', posix(engine), {**ready, 'flock': ''}, [posix(compiler), '-c', 'private-source.c']),
+            ('response-arguments', posix(engine), ready, [posix(compiler), '@private-response-options']),
+            ('config-unavailable', posix(engine), ready, [posix(compiler), '-c', 'private-source.c']),
+        )
+        for reason, program, tools, arguments in cases:
+            with self.subTest(reason=reason):
+                identities = self.root / ('diagnostics-' + reason)
+                identities.mkdir()
+                wrapper = self.root / ('wrapper-' + reason)
+                wrapper.write_text(cache.shell_wrapper(program, Path('/not-invoked'), Path(posix(identities)),
+                    posix(sys.executable), tools), encoding='utf-8', newline='\n')
+                command = [shell, posix(wrapper), *arguments]
+                first = subprocess.run(command, capture_output=True, text=True, cwd=self.root, timeout=20)
+                self.assertEqual(0, first.returncode, first.stdout + first.stderr)
+                self.assertEqual('native compile', first.stdout.strip())
+                self.assertEqual('Kernel cache guard: ' + reason, first.stderr.strip())
+                self.assertNotIn('private', first.stderr)
+                self.assertNotIn(str(self.root), first.stderr)
+                second = subprocess.run(command, capture_output=True, text=True, cwd=self.root, timeout=20)
+                self.assertEqual(0, second.returncode, second.stdout + second.stderr)
+                self.assertEqual('native compile', second.stdout.strip())
+                self.assertEqual('', second.stderr)
 
     def test_bounded_probe_and_truncated_http_failure_fall_back_to_guarded_stock(self):
         import http.client

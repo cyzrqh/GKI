@@ -3533,8 +3533,9 @@ job:
         sed -i '/^CONFIG_LOCALVERSION=/ s/="\([^"]*\)"/="'"$CLEAN_VERSION"'"/' ./common/arch/arm64/configs/gki_defconfig
       elif [ ! -f "build/build.sh" ]; then
         cd ./common
-        BID="ab$((RANDOM % 90000000 + 10000000))"
-        GHASH=$(git rev-parse --verify HEAD | cut -c1-13)
+        KERNEL_SOURCE_REF="$(git rev-parse --verify HEAD)"
+        BID="$(python3 "$GITHUB_WORKSPACE/tools/kernel_build_identity.py" --source-ref "$KERNEL_SOURCE_REF")"
+        GHASH="${KERNEL_SOURCE_REF:0:13}"
         case "${{ inputs.android_version }}-${{ inputs.kernel_version }}" in
           "android14-6.1")  KMI_TAG="android14-11" ;;
           "android15-6.6")  KMI_TAG="android15-8" ;;

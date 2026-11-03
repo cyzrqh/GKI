@@ -26,7 +26,9 @@ def wire_gki_cache(job):
     selection['run'] = '''set -euo pipefail
 if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
   echo 'enabled=true' >> "$GITHUB_OUTPUT"
+  echo 'build_system=make' >> "$GITHUB_OUTPUT"
 else
+  echo 'build_system=kleaf' >> "$GITHUB_OUTPUT"
   python3 "$GITHUB_WORKSPACE/tools/kleaf_compile_cache.py" \\
     --source "$KERNEL_ROOT" --program "$RUNNER_TEMP/gki-ccache-ecs/ccache" \\
     --output "$RUNNER_TEMP/gki-ccache-ecs/gki-make" --directory "$CCACHE_DIR"
@@ -93,6 +95,8 @@ echo 'enabled=true' >> "$GITHUB_OUTPUT"
     trim['env']['BAZEL_CACHE_MAX_BYTES'] = str(4096 * 1024 * 1024)
     key = next(step for step in steps if step.get('id') == 'persistent-ccache-restore')['env']['OBJECT_CACHE_KEY']
     wire_thinlto(job, key.replace('gki-ccache-ecs-v1-', 'gki-thinlto-v1-'), oplus=False)
+    from kernel_cache_profile import wire_profile_alias
+    wire_profile_alias(job)
 
 
 def wire_thinlto(job, key, *, oplus):
@@ -105,7 +109,7 @@ def wire_thinlto(job, key, *, oplus):
             "${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', "
             "'tools/thinlto_cache.py') }}")
     condition = 'success()' if oplus else ("success() && steps.ccache-config.outputs.enabled == 'true'"
-                                         " && steps.bazel-cache-config.outputs.enabled != 'true'")
+                                         " && steps.ccache-config.outputs.build_system == 'make'")
     source = '$GITHUB_WORKSPACE/kernel_workspace/common' if oplus else '$KERNEL_ROOT/common'
     compile_id = 'oplus-build' if oplus else 'compile-kernel'
     compile_step = next(step for step in steps if step.get('id') == compile_id)

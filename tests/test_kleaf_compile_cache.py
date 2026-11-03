@@ -52,6 +52,20 @@ class KleafCacheTests(unittest.TestCase):
             self.assertFalse(self.configure())
             self.assertEqual(text, self.target.read_text('utf-8'))
 
+    def test_official_2025_plain_make_retains_symvers_and_module_install_and_is_idempotent(self):
+        row = json.loads((ROOT / 'tests/fixtures/kleaf-cache/main-kernel-2025-block.json').read_text())
+        text = 'command = """\n' + row['block'] + ' make modules_install\n"""\n'
+        self.target.write_text(text, encoding='utf-8')
+        self.assertTrue(self.configure())
+        actual = self.target.read_text('utf-8')
+        self.assertEqual(1, actual.count(self.output.as_posix()))
+        expected = actual.replace('         ' + cache.MARKER + '\n', '').replace(
+            self.output.as_posix() + ' -C ', 'make -C ')
+        self.assertEqual(text, expected)
+        self.assertIn('{gen_symvers_cmd}', actual)
+        self.assertTrue(self.configure())
+        self.assertEqual(actual, self.target.read_text('utf-8'))
+
     def test_launcher_preserves_official_compiler_flags_and_failure_status(self):
         shell = bash()
         if not shell:
@@ -77,6 +91,32 @@ class KleafCacheTests(unittest.TestCase):
         self.assertEqual(arguments, actual[:-1])
         self.assertEqual('CC=' + self.program.as_posix() + ' clang-actual', actual[-1])
         self.assertEqual([self.directory.as_posix(), posix(self.source)], environment_log.read_text('utf-8').splitlines())
+
+    def test_launcher_reports_execution_readiness_once_without_logging_paths_or_argv(self):
+        shell = bash()
+        if not shell:
+            self.skipTest('Bash required')
+        bin_dir = self.root / 'diagnostic-bin'
+        bin_dir.mkdir()
+        make = bin_dir / 'make'
+        make.write_text('#!/usr/bin/sh\nexit 0\n', encoding='utf-8', newline='\n')
+        make.chmod(0o700)
+        self.program.parent.mkdir()
+        self.program.write_text('#!/usr/bin/sh\nexec "$@"\n', encoding='utf-8', newline='\n')
+        self.program.chmod(0o700)
+        self.output.write_text(cache.launcher(self.program, self.directory), encoding='utf-8', newline='\n')
+        environment = {**os.environ, 'PATH': posix(bin_dir) + os.pathsep + os.environ['PATH'],
+                       'CC': 'missing-native-compiler', 'OUT_DIR': posix(self.root / 'missing-config')}
+        args = [shell, posix(self.output), 'VALUE=do-not-log-this-argument']
+        first = subprocess.run(args, env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(0, first.returncode, first.stderr)
+        self.assertEqual('Kleaf cache launcher executed: cache_ready=true compiler_ready=false config_ready=false',
+                         first.stdout.strip())
+        self.assertNotIn(str(self.root), first.stdout)
+        self.assertNotIn('do-not-log', first.stdout)
+        second = subprocess.run(args, env=environment, capture_output=True, text=True, timeout=20)
+        self.assertEqual(0, second.returncode, second.stderr)
+        self.assertEqual('', second.stdout)
 
     def test_all_five_families_retain_upstream_thinlto_cache_policy(self):
         rows = json.loads((ROOT / 'tests/fixtures/kleaf-cache/native-lto-blocks.json').read_text())

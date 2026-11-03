@@ -119,6 +119,22 @@ class ThinLTOCacheTests(unittest.TestCase):
 
 
 class ThinLTOWorkflowTests(unittest.TestCase):
+    def test_native_make_build_keeps_link_cache_even_when_bazel_is_also_available(self):
+        from generate_workflow import create_workflow
+        job = create_workflow(ROOT)['jobs']['build-kernel']
+        steps = {s['id']: s for s in job['steps'] if 'id' in s}
+        selector = steps['ccache-config']['run']
+        self.assertIn("echo 'build_system=make'", selector)
+        self.assertIn("echo 'build_system=kleaf'", selector)
+        gate = steps['thinlto-config']['if']
+        for system in ('make', 'kleaf'):
+            for bazel_available in ('true', 'false'):
+                condition = (gate.replace('success()', 'True')
+                             .replace('steps.ccache-config.outputs.enabled', repr('true'))
+                             .replace('steps.ccache-config.outputs.build_system', repr(system))
+                             .replace('steps.bazel-cache-config.outputs.enabled', repr(bazel_available)))
+                self.assertEqual(system == 'make', eval(condition.replace('&&', ' and '), {'__builtins__': {}}))
+
     def test_both_existing_make_entries_restore_before_link_and_save_only_after_success(self):
         from generate_workflow import create_workflow
         from oplus_workflow import create_workflow as create_oplus

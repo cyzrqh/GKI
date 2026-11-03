@@ -737,7 +737,7 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
             {'name': '验证 ThinLTO 链接缓存与真实增量链接',
              'run': 'PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically'},
             {'name': '验证全系列缓存接入和编译退出状态',
-             'run': 'PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_run_kernel_build'},
+             'run': 'PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_kernel_build_identity test_kernel_cache_profile test_run_kernel_build'},
             {'name': '检查管理器构建脚本', 'if': MANAGER_IF,
              'run': 'for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done'},
             {'name': '检查并生成矩阵', 'id': 'matrix', 'shell': 'bash', 'if': BUILD_IF,

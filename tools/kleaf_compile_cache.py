@@ -16,6 +16,9 @@ from persistent_kernel_cache import checked_root, is_link
 
 MARKER = '# gki-guarded-kleaf-compiler-cache-v1'
 MAKE = '{interceptor_command_prefix} make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} '
+MAKE_FRAGMENT = 'make -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} '
+MAKE_COMMAND = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<interceptor>\{interceptor_command_prefix\} )?'
+                          + re.escape(MAKE_FRAGMENT))
 START = '# Actual kernel build\n'
 END = '# Install modules\n'
 
@@ -36,6 +39,14 @@ compiler="${CC:-clang}"
 for argument in "$@"; do
   case "$argument" in CC=*) compiler="${argument#CC=}";; esac
 done
+if (set -C; : > "${cache_program}.kleaf-entered") 2>/dev/null; then
+  cache_ready=false; compiler_ready=false; config_ready=false
+  if [ -x "$cache_program" ]; then cache_ready=true; fi
+  if command -v -- "${compiler%% *}" >/dev/null 2>&1; then compiler_ready=true; fi
+  if [ -n "${OUT_DIR:-}" ] && [ -f "$OUT_DIR/include/generated/autoconf.h" ]; then config_ready=true; fi
+  printf 'Kleaf cache launcher executed: cache_ready=%s compiler_ready=%s config_ready=%s\n' \
+    "$cache_ready" "$compiler_ready" "$config_ready"
+fi
 export CCACHE_BASEDIR="${ROOT_DIR:-$PWD}"
 exec make "$@" "CC=$cache_program $compiler"
 ''')
@@ -51,14 +62,20 @@ def configure(source: Path, program: Path, output: Path, directory: Path) -> boo
         return False
     prefix, rest = text.split(START, 1)
     block, suffix = rest.split(END, 1)
-    command = '{interceptor_command_prefix} ' + shell_path(output) + ' -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} '
+    command = shell_path(output) + ' -C ${{KERNEL_DIR}} ${{TOOL_ARGS}} O=${{OUT_DIR}} '
     if MARKER in text:
-        if text.count(MARKER) != 1 or MAKE in block or not 1 <= block.count(command) <= 4:
+        if (text.count(MARKER) != 1 or MAKE_COMMAND.search(block)
+                or not 1 <= block.count(command) <= 4
+                or block.count(MAKE_FRAGMENT) != block.count(command)):
             return False
     else:
-        if not 1 <= block.count(MAKE) <= 4:
+        matches = list(MAKE_COMMAND.finditer(block))
+        if not 1 <= len(matches) <= 4 or block.count(MAKE_FRAGMENT) != len(matches):
             return False
-        block = '         ' + MARKER + '\n' + block.replace(MAKE, command)
+        # New Kleaf removed the interceptor prefix. Preserve either reviewed
+        # native command's exact arguments and optional interceptor unchanged.
+        block = '         ' + MARKER + '\n' + MAKE_COMMAND.sub(
+            lambda match: match['indent'] + (match['interceptor'] or '') + command, block)
     checked_root(output.absolute().parent, create=True)
     checked_root(directory, create=True)
     if is_link(output) or output.exists() and not output.is_file():

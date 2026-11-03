@@ -215,6 +215,12 @@ def shell_wrapper(engine: str, helper: Path, identities: Path, python: str,
     header += ''.join('cache_' + name + '=' + shlex.quote(tools.get(name, '')) + '\n'
                       for name in ('env', 'readlink', 'flock', 'sha256sum'))
     return header + r'''
+cache_note() {
+  local reason="$1"
+  if (set -C; : > "$identities/trace-$reason") 2>/dev/null; then
+    printf 'Kernel cache guard: %s\n' "$reason" >&2
+  fi
+}
 export CCACHE_COMPILERCHECK=content
 export CCACHE_SLOPPINESS=include_file_ctime,include_file_mtime
 unset CCACHE_INODECACHE
@@ -233,14 +239,14 @@ if [ "$#" -eq 0 ] || [[ "$1" == -* ]]; then
   printf '%s\n' 'Kernel compiler cache unavailable; compiling without cache.'
   exit 0
 fi
-compiler=$(command -v -- "$1") || exit 127
+compiler=$(command -v -- "$1") || { cache_note compiler-unresolved; exit 127; }
 shift
-if [ ! -x "$compiler" ]; then exit 127; fi
-if [ -z "$engine" ] || $overrides; then exec "$compiler" "$@"; fi
+if [ ! -x "$compiler" ]; then cache_note compiler-unresolved; exit 127; fi
+if [ -z "$engine" ] || $overrides; then cache_note cache-unavailable; exec "$compiler" "$@"; fi
 # The kernel's hermetic build may replace PATH. Use only host utilities bound
 # before that transition; never prepend the whole original host PATH.
 for utility in "$cache_env" "$cache_readlink" "$cache_flock" "$cache_sha256sum"; do
-  if [ -z "$utility" ] || [ ! -x "$utility" ]; then exec "$compiler" "$@"; fi
+  if [ -z "$utility" ] || [ ! -x "$utility" ]; then cache_note utility-unavailable; exec "$compiler" "$@"; fi
 done
 # Keep all plausible generated autoconf candidates. Hashing an extra one is
 # conservative; choosing a wrong single include-search candidate is unsafe.
@@ -261,7 +267,7 @@ arguments=("$@")
 for ((i=0; i<${#arguments[@]}; i++)); do
   argument="${arguments[$i]}"
   # Hidden include paths cannot be proved by this shell-only guard.
-  if [[ "$argument" == @* ]]; then exec "$compiler" "$@"; fi
+  if [[ "$argument" == @* ]]; then cache_note response-arguments; exec "$compiler" "$@"; fi
   case "$argument" in
     -include|-I|-isystem|-iquote)
       if ((i+1<${#arguments[@]})); then
@@ -278,14 +284,14 @@ for ((i=0; i<${#arguments[@]}; i++)); do
 done
 add_config "$PWD/include/generated/autoconf.h"
 add_config "$PWD/out/include/generated/autoconf.h"
-if [ "${#configs[@]}" -eq 0 ]; then exec "$compiler" "$@"; fi
-canonical=$("$cache_readlink" -f -- "$compiler") || exec "$compiler" "$@"
+if [ "${#configs[@]}" -eq 0 ]; then cache_note config-unavailable; exec "$compiler" "$@"; fi
+canonical=$("$cache_readlink" -f -- "$compiler") || { cache_note compiler-unresolved; exec "$compiler" "$@"; }
 key=$(printf '%s' "$canonical" | "$cache_sha256sum")
 key=${key%% *}
-if [[ ! "$key" =~ ^[0-9a-f]{64}$ ]]; then exec "$compiler" "$@"; fi
+if [[ ! "$key" =~ ^[0-9a-f]{64}$ ]]; then cache_note compiler-unresolved; exec "$compiler" "$@"; fi
 descriptor="$identities/$key.json"
 disabled="$identities/$key.disabled"
-if [ -f "$disabled" ]; then exec "$compiler" "$@"; fi
+if [ -f "$disabled" ]; then cache_note descriptor-unavailable; exec "$compiler" "$@"; fi
 if [ ! -f "$descriptor" ]; then
   (
     "$cache_flock" -x 9
@@ -299,13 +305,14 @@ if [ ! -f "$descriptor" ]; then
     fi
   ) 9>"$identities/$key.lock"
 fi
-if [ ! -f "$descriptor" ] || [ -L "$descriptor" ]; then exec "$compiler" "$@"; fi
+if [ ! -f "$descriptor" ] || [ -L "$descriptor" ]; then cache_note descriptor-unavailable; exec "$compiler" "$@"; fi
 extra="$descriptor"
 for config in "${configs[@]}"; do extra+=":$config"; done
 if [ -n "${CCACHE_EXTRAFILES:-}" ]; then extra+=":$CCACHE_EXTRAFILES"; fi
 export CCACHE_EXTRAFILES="$extra"
 identity=$(<"$descriptor")
 if [[ "$identity" == *'"ecs_kernel_mode":true'* ]]; then export CCACHE_IS_KERNEL_COMPILING=true; fi
+cache_note engine-entered
 exec "$engine" "$compiler" "$@"
 '''
 

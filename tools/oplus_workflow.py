@@ -271,6 +271,8 @@ ccache --show-stats --verbose | tee "$report"
     }
     from kernel_cache_workflow import wire_thinlto
     wire_thinlto(job, prefix.replace('oplus-ccache-ecs-v1-', 'oplus-thinlto-v1-') + 'objects', oplus=True)
+    from kernel_cache_profile import wire_profile_alias
+    wire_profile_alias(job)
     return job
 
 

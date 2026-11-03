@@ -290,7 +290,8 @@ jobs:
     - name: 验证 ThinLTO 链接缓存与真实增量链接
       run: PYTHONPATH=tools:tests python3 -m unittest test_thinlto_cache.ThinLTOCacheTests.test_real_llvm_thinlto_cache_survives_a_fresh_directory_and_relinks_identically
     - name: 验证全系列缓存接入和编译退出状态
-      run: PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_run_kernel_build
+      run: PYTHONPATH=tools:tests python3 -m unittest test_kleaf_compile_cache test_kernel_build_identity test_kernel_cache_profile
+        test_run_kernel_build
     - name: 检查管理器构建脚本
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((matrix.variant
         == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
@@ -4928,8 +4929,9 @@ jobs:
           sed -i '/^CONFIG_LOCALVERSION=/ s/="\([^"]*\)"/="'"$CLEAN_VERSION"'"/' ./common/arch/arm64/configs/gki_defconfig
         elif [ ! -f "build/build.sh" ]; then
           cd ./common
-          BID="ab$((RANDOM % 90000000 + 10000000))"
-          GHASH=$(git rev-parse --verify HEAD | cut -c1-13)
+          KERNEL_SOURCE_REF="$(git rev-parse --verify HEAD)"
+          BID="$(python3 "$GITHUB_WORKSPACE/tools/kernel_build_identity.py" --source-ref "$KERNEL_SOURCE_REF")"
+          GHASH="${KERNEL_SOURCE_REF:0:13}"
           case "${{ matrix.android_version }}-${{ matrix.kernel_version }}" in
             "android14-6.1")  KMI_TAG="android14-11" ;;
             "android15-6.6")  KMI_TAG="android15-8" ;;
@@ -7105,7 +7107,9 @@ jobs:
         set -euo pipefail
         if [ -f "$KERNEL_ROOT/build/build.sh" ]; then
           echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          echo 'build_system=make' >> "$GITHUB_OUTPUT"
         else
+          echo 'build_system=kleaf' >> "$GITHUB_OUTPUT"
           python3 "$GITHUB_WORKSPACE/tools/kleaf_compile_cache.py" \
             --source "$KERNEL_ROOT" --program "$RUNNER_TEMP/gki-ccache-ecs/ccache" \
             --output "$RUNNER_TEMP/gki-ccache-ecs/gki-make" --directory "$CCACHE_DIR"
@@ -7126,8 +7130,9 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
-          }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
+          'tools/kernel_compile_cache.py') == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
+          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
         OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind ccache --directory "$OBJECT_CACHE_DIRECTORY"
         --key "$OBJECT_CACHE_KEY" --share-variants
@@ -7143,11 +7148,13 @@ jobs:
       with:
         path: ~/.ccache
         key: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
-          }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level
-          }}-${{ github.run_id }}-${{ github.run_attempt }}
+          == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
+          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
         restore-keys: |
-          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
-          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
+          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41' || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-
+          gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41' || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-
     - name: 开始记录实际 ccache 命中
       id: ccache-measurement
       if: steps.ccache-config.outputs.enabled == 'true'
@@ -7209,7 +7216,7 @@ jobs:
           --ksu-source "$KERNEL_ROOT/KernelSU"
     - name: 配置独立 ThinLTO 链接缓存
       id: thinlto-config
-      if: success() && steps.ccache-config.outputs.enabled == 'true' && steps.bazel-cache-config.outputs.enabled != 'true'
+      if: success() && steps.ccache-config.outputs.enabled == 'true' && steps.ccache-config.outputs.build_system == 'make'
       continue-on-error: true
       run: python3 "$GITHUB_WORKSPACE/tools/thinlto_cache.py" configure --source "$KERNEL_ROOT/common" --directory "$GKI_THINLTO_CACHE_DIR"
     - name: 恢复独立仓库编译缓存（thinlto）
@@ -7221,9 +7228,10 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: gki-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
-          }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref', matrix.variant)]
-          }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py')
+          'tools/kernel_compile_cache.py') == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
+          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref',
+          matrix.variant)] }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py')
           }}
         OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" restore --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
@@ -7516,9 +7524,10 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: gki-thinlto-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
-          }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref', matrix.variant)]
-          }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py')
+          'tools/kernel_compile_cache.py') == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
+          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}-${{ needs.prepare-matrix.outputs[format('{0}_ksu_ref',
+          matrix.variant)] }}-${{ hashFiles('**/common/arch/arm64/configs/gki_defconfig', '**/KernelSU/kernel/Kbuild', 'tools/thinlto_cache.py')
           }}
         OBJECT_CACHE_DIRECTORY: ${{ env.GKI_THINLTO_CACHE_DIR }}
       run: python3 "$GITHUB_WORKSPACE/tools/persistent_kernel_cache.py" save --kind thinlto --directory "$OBJECT_CACHE_DIRECTORY"
@@ -7534,8 +7543,9 @@ jobs:
         CACHE_REPOSITORY: ${{ github.repository_owner }}/gki-cache
         CACHE_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         OBJECT_CACHE_KEY: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json',
-          'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level
-          }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
+          'tools/kernel_compile_cache.py') == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
+          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ matrix.variant }}
         OBJECT_CACHE_DIRECTORY: ${{ env.CCACHE_DIR }}
         CACHE_PERSISTENT_RESTORED: ${{ steps.persistent-ccache-restore.outputs.restored }}
         CACHE_PERSISTENT_LEGACY: ${{ steps.persistent-ccache-restore.outputs.legacy }}
@@ -7551,8 +7561,10 @@ jobs:
       with:
         path: ~/.ccache
         key: gki-ccache-ecs-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py')
-          }}-${{ matrix.android_version }}-${{ matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level
-          }}-${{ github.run_id }}-${{ github.run_attempt }}
+          == '18a55a68598103729badbf0edab30807fc4adb71088129e4dc5667db1d31ec7e' && '217f51aaeb82d358b33c728205e4575476c9d41b984cf64f20641376e6e59b41'
+          || hashFiles('config/kernel-cache-tools.json', 'tools/kernel_compile_cache.py') }}-${{ matrix.android_version }}-${{
+          matrix.kernel_version }}-${{ matrix.sub_level }}-${{ matrix.os_patch_level }}-${{ github.run_id }}-${{ github.run_attempt
+          }}
     - name: 限制 Bazel 缓存上传体积
       id: bazel-cache-trim
       if: always() && !cancelled() && steps.bazel-cache-config.outputs.enabled == 'true' && steps.compile-kernel.outcome !=

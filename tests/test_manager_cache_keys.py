@@ -61,6 +61,7 @@ class ManagerCacheKeysTests(unittest.TestCase):
         exact = render(CARGO, 'KernelSU') + 'old-run-1'
         changed = render(CARGO, 'SukiSU', digest='inputs-changed') + 'new-run-1'
         self.assertEqual(exact, restored_key(patterns, {exact: 1, changed: 2}))
+        self.assertIsNone(restored_key(patterns, {changed: 2}))
 
     def test_cargo_fallback_never_crosses_rust_ndk_os_or_architecture(self):
         patterns = render(restore_keys(CARGO, kind='cargo', compiler_prefix=CARGO_COMPILER), 'KowSU')
@@ -97,6 +98,21 @@ class ManagerCacheKeysTests(unittest.TestCase):
         self.assertEqual(list(legacy), patterns[-2:])
         self.assertEqual(1, patterns.count(CARGO))
 
+    def test_actual_generated_cache_inputs_fit_actions_primary_plus_restore_key_limit(self):
+        # Validate the production prefixes, not a shortened test-only key.
+        from generate_workflow import MANAGER_CARGO_CACHE_PREFIX, MANAGER_GRADLE_BUILD_CACHE_PREFIX
+        compiler = MANAGER_CARGO_CACHE_PREFIX.split('${{ hashFiles(', 1)[0]
+        for prefix, kind, own_compiler in (
+            (MANAGER_CARGO_CACHE_PREFIX, 'cargo', compiler),
+            (MANAGER_GRADLE_BUILD_CACHE_PREFIX, 'gradle', None),
+        ):
+            actual = restore_keys(prefix, kind=kind, compiler_prefix=own_compiler,
+                                  legacy=('existing-migration-prefix-',))
+            self.assertLessEqual(1 + len(actual.splitlines()), 10)
+            for selected in MANAGERS:
+                self.assertLessEqual(1 + len(render(actual, selected).splitlines()), 10)
+                self.assertEqual(render(prefix, selected), render(actual.splitlines()[0], selected))
+
     def test_unknown_or_weakened_guards_are_rejected(self):
         invalid = (
             (CARGO, {'kind': 'apk'}),
@@ -107,6 +123,8 @@ class ManagerCacheKeysTests(unittest.TestCase):
             (GRADLE, {'kind': 'gradle', 'compiler_prefix': GRADLE.split('${{ hashFiles(', 1)[0]}),
             (GRADLE.replace('-ndk29-', '-'), {'kind': 'gradle'}),
             (CARGO, {'kind': 'cargo', 'legacy': ('valid-\ninjected-',)}),
+            (CARGO, {'kind': 'cargo', 'compiler_prefix': CARGO_COMPILER,
+                     'legacy': ('legacy-one-', 'legacy-two-', 'legacy-three-')}),
         )
         for prefix, options in invalid:
             with self.subTest(prefix=prefix, options=options), self.assertRaises(ValueError):

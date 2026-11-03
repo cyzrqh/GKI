@@ -51,7 +51,6 @@ def restore_keys(prefix: str, *, kind: str, compiler_prefix: str | None = None,
 
     own = [prefix] + ([compiler_prefix] if compiler_prefix else [])
     siblings = []
-    broad_siblings = []
     for variant in MANAGERS:
         if variant == 'BakaSU':
             continue
@@ -59,6 +58,10 @@ def restore_keys(prefix: str, *, kind: str, compiler_prefix: str | None = None,
         # expressions collapse to its own namespace rather than crossing NDKs.
         routed = "${{ inputs.kernelsu_variant == 'BakaSU' && 'BakaSU' || '" + variant + "' }}"
         siblings.append(prefix.replace(VARIANT, routed))
-        if compiler_prefix:
-            broad_siblings.append(compiler_prefix.replace(VARIANT, routed))
-    return '\n'.join(dict.fromkeys([*own, *siblings, *broad_siblings, *legacy]))
+    # Actions permits ten keys in total, including its primary save key.
+    # Prefer exact-input sibling objects over broad cross-source snapshots;
+    # the latter would exceed that limit and disable restoration altogether.
+    ordered = list(dict.fromkeys([*own, *siblings, *legacy]))
+    if len(ordered) > 9:
+        raise ValueError('Actions accepts at most nine restore prefixes plus its primary key')
+    return '\n'.join(ordered)

@@ -17,11 +17,8 @@ def expression(value):
 
 COMBINED = '(' + ' || '.join("inputs.kernelsu_variant == '" + selection + "'"
                              for selection in COMBINED_GROUPS) + ')'
-SELECTION = ' || '.join("inputs.kernelsu_variant == '" + selection + "' && '"
-                       + json.dumps(variants, separators=(',', ':')) + "'"
-                       for selection, variants in COMBINED_GROUPS.items())
-SELECTION += " || format('[\"{0}\"]', inputs.kernelsu_variant)"
-VARIANTS = {'variant': expression('fromJSON(' + SELECTION + ')')}
+VARIANTS = {'variant': expression('fromJSON(needs.select-managers.outputs.active_managers)')}
+SELECTION_READY = "needs.select-managers.result == 'success' && needs.select-managers.outputs.active_count != '0'"
 
 
 def rewrite(value, replacements):
@@ -56,6 +53,36 @@ def outputs_by_manager(outputs):
             for variant in MANAGERS for key, value in outputs.items()}
 
 
+def selected_manager_job(original_prepare):
+    """Resolve every selected source once, before scheduling expensive work."""
+    original_sources = next(step for step in original_prepare['steps'] if step.get('id') == 'sources')
+    environment = {key: value for key, value in original_sources['env'].items() if key != 'KSU_VARIANT'}
+    environment['MANAGER_SELECTION'] = '${{ inputs.kernelsu_variant }}'
+    checkout = next(step for step in original_prepare['steps']
+                    if step.get('uses') == 'actions/checkout@v6' and 'repository' not in step.get('with', {}))
+    return {
+        'name': '选择可构建的管理器', 'if': original_prepare['if'],
+        'runs-on': 'ubuntu-24.04', 'timeout-minutes': 10,
+        'permissions': {'contents': 'read'},
+        'outputs': {key: expression('steps.selection.outputs.' + key)
+                    for key in ('active_managers', 'active_count', 'resolution')},
+        'steps': [copy.deepcopy(checkout), {
+            'name': '固定正式版或最新版，跳过未发布正式版的组合成员', 'id': 'selection',
+            'env': environment,
+            'run': 'python3 tools/resolve_manager_selection.py --selection "$MANAGER_SELECTION" --tier "$KSU_TIER" \\\n'
+                   '  --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"',
+        }],
+    }
+
+
+def require_selection(job):
+    dependencies = job.get('needs', [])
+    dependencies = [dependencies] if isinstance(dependencies, str) else list(dependencies)
+    if 'select-managers' not in dependencies:
+        dependencies.append('select-managers')
+    job['needs'] = dependencies
+
+
 def add_combined(workflow, *, oplus):
     root = copy.deepcopy(workflow)
     kernel_id = 'build-oplus-kernel' if oplus else 'build-kernel'
@@ -63,29 +90,39 @@ def add_combined(workflow, *, oplus):
     jobs = root['jobs']
     original_prepare = copy.deepcopy(jobs['prepare-matrix'])
     original_manager = copy.deepcopy(jobs['build-sukisu-manager'])
+    # Keep a single lightweight discovery stage. Empty active selections are
+    # successful no-op runs, so no empty manager matrix reaches a runner.
+    jobs = {'select-managers': selected_manager_job(original_prepare), **jobs}
+    root['jobs'] = jobs
     for name in ('prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager', kernel_id):
         jobs[name] = scoped(jobs[name])
         jobs[name].setdefault('env', {})['KSU_VARIANT'] = expression('matrix.variant')
         jobs[name]['env']['GKI_COMBINED_WORKER'] = expression(COMBINED + " && 'true' || 'false'")
 
     prepare = jobs['prepare-matrix']
-    prepare['if'] = original_prepare['if']
+    require_selection(prepare)
+    prepare['if'] = SELECTION_READY + ' && (' + original_prepare['if'] + ')'
     prepare['name'] = expression(COMBINED + " && format('准备源码与构建目标 · {0}', matrix.variant) || '选择内核版本与补丁月份'")
     prepare['strategy'] = {'fail-fast': False, 'matrix': copy.deepcopy(VARIANTS)}
     prepare['outputs'] = outputs_by_manager(original_prepare['outputs'])
     prepare['outputs'].update({key: expression('steps.selected-layout.outputs.' + key)
         for key in ('kernel_primary', 'kernel_overflow', 'overflow_count', 'ddk_build_matrix')})
+    sources = next(step for step in prepare['steps'] if step.get('id') == 'sources')
+    sources['env']['MANAGER_RESOLUTION'] = '${{ needs.select-managers.outputs.resolution }}'
+    sources['run'] = 'python3 tools/resolve_manager_selection.py --source-for "$KSU_VARIANT"'
     prepare['steps'].append({'name': '只展开所选管理器的构建目标', 'id': 'selected-layout',
         'env': {'KERNEL_MATRIX': '${{ steps.matrix.outputs.matrix }}',
                 'DDK_MATRIX': '${{ steps.lkm-matrix.outputs.matrix }}',
-                'MANAGER_SELECTION': '${{ inputs.kernelsu_variant }}'},
+                'MANAGER_SELECTION': '${{ inputs.kernelsu_variant }}',
+                'MANAGER_RESOLUTION': '${{ needs.select-managers.outputs.resolution }}'},
         'run': 'python3 tools/manager_matrix_layout.py'})
     ready = "always() && !cancelled() && needs.prepare-matrix.result == 'success'"
     lkm = jobs['build-sukisu-lkm']
     lkm['if'] = ready
     lkm['strategy']['matrix'] = '${{ fromJSON(needs.prepare-matrix.outputs.ddk_build_matrix) }}'
     manager = jobs['build-sukisu-manager']
-    manager['if'] = ready + " && needs.build-sukisu-lkm.result == 'success'"
+    require_selection(manager)
+    manager['if'] = ready + ' && ' + SELECTION_READY + " && needs.build-sukisu-lkm.result == 'success'"
     manager['strategy'] = {'fail-fast': False, 'matrix': copy.deepcopy(VARIANTS)}
     manager['outputs'] = outputs_by_manager(original_manager['outputs'])
 
@@ -121,6 +158,7 @@ def add_combined(workflow, *, oplus):
         kernel_success = "inputs.operation == '仅编译管理器安装包' || (" + kernel_success + ')'
     release_environment = {
         'MANAGER_SELECTION': '${{ inputs.kernelsu_variant }}',
+        'MANAGER_RESOLUTION': '${{ needs.select-managers.outputs.resolution }}',
         'RELEASE_PLATFORM': 'oplus' if oplus else 'gki',
         'OPERATION': '编译内核' if oplus else '${{ inputs.operation }}',
     }
@@ -136,16 +174,15 @@ def add_combined(workflow, *, oplus):
             value = 'needs.' + job_name + ".outputs['" + variant.lower() + '_' + output + "']"
             release_environment[prefix + field] = expression(value + (' || ' + fallback if fallback else ''))
     if oplus:
-        first_managers = {variant: variant.lower() for variant in MANAGERS}
-        first_managers.update({selection: variants[0].lower()
-                               for selection, variants in COMBINED_GROUPS.items()})
-        first = "fromJSON('" + json.dumps(first_managers, separators=(',', ':')) + "')[inputs.kernelsu_variant]"
+        normalized = {variant: variant.lower() for variant in MANAGERS}
+        first = ("fromJSON('" + json.dumps(normalized, separators=(',', ':'))
+                 + "')[fromJSON(needs.select-managers.outputs.active_managers)[0]]")
         release_environment['OPLUS_MATRIX'] = expression(
             "needs.prepare-matrix.outputs[format('{0}_matrix', " + first + ')]')
     jobs[publish_id] = {
         'name': '核验与发行',
-        'needs': ['prepare-matrix', 'build-sukisu-manager', kernel_id, overflow_id],
-        'if': ready + " && needs.build-sukisu-manager.result == 'success' && (" + kernel_success + ')',
+        'needs': ['select-managers', 'prepare-matrix', 'build-sukisu-manager', kernel_id, overflow_id],
+        'if': ready + ' && ' + SELECTION_READY + " && needs.build-sukisu-manager.result == 'success' && (" + kernel_success + ')',
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 30,
         'permissions': {'contents': 'write', 'actions': 'write'},
         'concurrency': release_tag_concurrency(),

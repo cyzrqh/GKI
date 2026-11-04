@@ -22,7 +22,8 @@ sys.path.insert(0, str(ROOT / 'tests'))
 from apk_fixture import manager_metadata, signed_apk
 from embedded_build_metadata import read_manager_apk
 from kernel_fixture import ak3_bytes, kernel_fixture
-from manager_variants import COMBINED_MANAGERS, COMBINED_SELECTION, LOCAL_MANAGERS, manager_profile
+from manager_variants import (COMBINED_MANAGERS, COMBINED_SELECTION, LOCAL_MANAGERS,
+                              manager_profile, selected_managers)
 from test_additional_managers import manifest
 import test_oplus_assets as oplus_fixture
 import oplus_assets
@@ -43,9 +44,10 @@ CURRENT = {'GITHUB_REPOSITORY': 'cyzrqh/gki', 'GITHUB_RUN_ID': '123',
            'GITHUB_RUN_ATTEMPT': '1', 'GITHUB_SHA': 'a' * 40}
 
 
-def manager_fixture(variant, *, reference='b' * 40):
+def manager_fixture(variant, *, reference='b' * 40, branch=None):
     profile = manager_profile(variant)
-    code, branch, _ = TIERS[variant]
+    code, default_branch, _ = TIERS[variant]
+    branch = default_branch if branch is None else branch
     metadata = manager_metadata(file=f"{profile['apk_prefixes'][0]}_v4.2.0_{code}-release.apk",
                                 package=profile['package'], ksu_variant=variant, ksu_ref=reference,
                                 ksu_version_code=code, ksu_version_name='4.2.0', ksu_branch=branch)
@@ -87,11 +89,11 @@ class SelectedGkiReleaseTests(unittest.TestCase):
         self.inputs, self.managers, self.kernels = {}, {}, {}
         self.originals = {}
 
-    def populate(self, variants=COMBINED_MANAGERS, *, kernels=True, boot=False):
+    def populate(self, variants=COMBINED_MANAGERS, *, kernels=True, boot=False, branch=None):
         for variant in variants:
             directory = self.source / ('artifact-' + variant)
             directory.mkdir()
-            raw, manager, receipt = manager_fixture(variant)
+            raw, manager, receipt = manager_fixture(variant, branch=branch)
             apk = directory / manager['file']
             apk.write_bytes(raw)
             self.originals[apk.name] = raw
@@ -116,9 +118,11 @@ class SelectedGkiReleaseTests(unittest.TestCase):
             self.originals[filename] = path.read_bytes()
             self.kernels[variant] = path, document, image
 
-    def prepare(self, *, selection=COMBINED_SELECTION, operation='编译内核', inputs=None, output=None):
+    def prepare(self, *, selection=COMBINED_SELECTION, operation='编译内核', inputs=None, output=None,
+                resolution=None):
         return selected.prepare(self.source, output or self.output, selection=selection, platform='gki',
-                                operation=operation, manager_inputs=self.inputs if inputs is None else inputs)
+                                operation=operation, manager_inputs=self.inputs if inputs is None else inputs,
+                                resolution=resolution)
 
     def assert_original_assets(self, expected=None):
         expected = self.originals if expected is None else expected
@@ -307,6 +311,7 @@ class SelectedGkiReleaseTests(unittest.TestCase):
 class SelectedOplusReleaseTests(unittest.TestCase):
     variants = COMBINED_MANAGERS
     selection = COMBINED_SELECTION
+    branch = None
 
     @classmethod
     def setUpClass(cls):
@@ -325,7 +330,7 @@ class SelectedOplusReleaseTests(unittest.TestCase):
         self.output = self.fixture.directory / 'selected-release'
         self.inputs, self.originals, self.kernels = {}, {}, {}
         for variant in self.variants:
-            raw, manager, receipt = manager_fixture(variant, reference=self.fixture.ksu_ref)
+            raw, manager, receipt = manager_fixture(variant, reference=self.fixture.ksu_ref, branch=self.branch)
             (self.source / manager['file']).write_bytes(raw)
             environment = {'KSU_VARIANT': variant, 'KSU_REF': manager['ksu_ref'], 'KSU_BRANCH': manager['ksu_branch'],
                            'MANAGER_VERSION_CODE': manager['ksu_version_code'], 'MANAGER_VERSION_NAME': manager['ksu_version_name'],
@@ -342,10 +347,10 @@ class SelectedOplusReleaseTests(unittest.TestCase):
         self.originals = {path.name: path.read_bytes() for path in self.source.iterdir()}
         os.environ['GKI_MANAGER_METADATA'] = 'preexisting value'
 
-    def prepare(self, *, selection=None, inputs=None):
+    def prepare(self, *, selection=None, inputs=None, resolution=None):
         return selected.prepare(self.source, self.output, selection=selection or self.selection, platform='oplus', operation='编译内核',
                                 manager_inputs=self.inputs if inputs is None else inputs,
-                                oplus_matrix={'include': [self.fixture.profile]})
+                                oplus_matrix={'include': [self.fixture.profile]}, resolution=resolution)
 
     def test_three_oplus_source_profiles_and_receipts_are_verified_then_combined(self):
         result = self.prepare()
@@ -533,6 +538,174 @@ class SelectedAdditionalOplusReleaseTests(SelectedOplusReleaseTests):
         self.assertEqual({name: hashlib.sha256(raw).hexdigest() for name, raw in self.originals.items()},
                          checksums(self.output / 'assets/SHA256SUMS.txt'))
         self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
+
+
+class SkippedStableReleaseTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        oplus_fixture.OplusAssetsTests.setUpClass()
+
+    @classmethod
+    def tearDownClass(cls):
+        oplus_fixture.OplusAssetsTests.tearDownClass()
+
+    def gki(self, variants, *, kernels=True):
+        fixture = SelectedGkiReleaseTests()
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        fixture.populate(variants, kernels=kernels, branch='Stable(标准)')
+        return fixture
+
+    def oplus(self, selection, variants):
+        fixture = SelectedOplusReleaseTests()
+        fixture.selection, fixture.variants, fixture.branch = selection, variants, 'Stable(标准)'
+        fixture.setUp()
+        self.addCleanup(fixture.doCleanups)
+        return fixture
+
+    def resolution(self, selection, variants, *, reference='b' * 40):
+        from resolve_build_sources import source_result
+        return {'schema_version': 1, 'selection': selection, 'tier': '正式版',
+                'active_managers': list(variants),
+                'skipped_managers': [{'variant': variant, 'reason': '官方尚未发布正式版'}
+                    for variant in selected_managers(selection) if variant not in variants],
+                'sources': {variant: source_result(reference, manager_profile(variant)['repository'],
+                                                   'v4.2.0', 'Stable(标准)') for variant in variants}}
+
+    def test_each_group_publishes_only_active_managers_and_explains_missing_stable_releases(self):
+        for selection, variants in ((COMBINED_SELECTION, ('SukiSU', 'KernelSU-Next')),
+                                    (SECOND_SELECTION, ('KernelSU', 'FinaSU'))):
+            with self.subTest(selection=selection):
+                fixture = self.gki(variants)
+                receipt = self.resolution(selection, variants)
+                result = fixture.prepare(selection=selection, resolution=receipt)
+                self.assertTrue(result['publish'])
+                self.assertEqual(list(variants), result['managers'])
+                self.assertEqual(2, result['kernels'])
+                fixture.assert_original_assets()
+                title = (fixture.output / 'title.txt').read_text(encoding='utf-8')
+                notes = (fixture.output / 'release.md').read_text(encoding='utf-8')
+                for row in receipt['skipped_managers']:
+                    self.assertNotIn(row['variant'], title)
+                    self.assertIn('- ' + row['variant'] + '：官方尚未发布正式版。', notes)
+
+    def test_only_one_available_manager_keeps_its_normal_report_title_and_checksums(self):
+        variants = ('KernelSU-Next',)
+        fixture = self.gki(variants)
+        receipt = self.resolution(COMBINED_SELECTION, variants)
+        moment = datetime(2026, 11, 5, tzinfo=timezone.utc)
+        renderer = legacy_gki.render_notes
+        def render(manager, kernels, **options):
+            return renderer(manager, kernels, generated_at=moment, **options)
+        with mock.patch.object(legacy_gki, 'render_notes', side_effect=render):
+            fixture.prepare(resolution=receipt)
+            with mock.patch.dict(os.environ, {'GKI_MANAGER_METADATA': json.dumps(fixture.inputs[variants[0]]['metadata'])}):
+                legacy_gki.prepare(fixture.source, fixture.root / 'legacy', expected_kernel_count=1)
+        self.assertEqual((fixture.root / 'legacy/title.txt').read_bytes(),
+                         (fixture.output / 'title.txt').read_bytes())
+        self.assertTrue((fixture.output / 'release.md').read_bytes().startswith(
+            (fixture.root / 'legacy/release.md').read_bytes()))
+        self.assertEqual((fixture.root / 'legacy/assets/SHA256SUMS.txt').read_bytes(),
+                         (fixture.output / 'assets/SHA256SUMS.txt').read_bytes())
+        fixture.assert_original_assets()
+
+    def test_skipping_a_manager_does_not_hide_missing_outputs_or_partial_catalogs(self):
+        variants = ('SukiSU', 'KernelSU-Next')
+        fixture = self.gki(variants)
+        receipt = self.resolution(COMBINED_SELECTION, variants)
+        fixture.inputs[variants[0]]['full_catalog'] = False
+        self.assertFalse(fixture.prepare(resolution=receipt)['publish'])
+        path = fixture.kernels[variants[1]][0]
+        path.unlink()
+        with self.assertRaises(ValueError):
+            fixture.prepare(resolution=receipt, output=fixture.root / 'missing-output')
+        self.assertFalse((fixture.root / 'missing-output').exists())
+
+    def test_skipped_manager_artifacts_and_producer_outputs_are_rejected(self):
+        fixture = self.gki(COMBINED_MANAGERS)
+        variants = ('SukiSU', 'KernelSU-Next')
+        receipt = self.resolution(COMBINED_SELECTION, variants)
+        with self.assertRaisesRegex(ValueError, 'active managers'):
+            fixture.prepare(resolution=receipt)
+        inputs = {variant: fixture.inputs[variant] for variant in variants}
+        with self.assertRaises(ValueError):
+            fixture.prepare(inputs=inputs, resolution=receipt)
+        self.assertFalse(fixture.output.exists())
+
+    def test_available_apk_must_match_the_fixed_source_and_formal_channel(self):
+        variants = ('SukiSU', 'KernelSU-Next')
+        fixture = self.gki(variants)
+        receipt = self.resolution(COMBINED_SELECTION, variants, reference='c' * 40)
+        with self.assertRaisesRegex(ValueError, 'fixed official source or channel'):
+            fixture.prepare(resolution=receipt)
+        self.assertFalse(fixture.output.exists())
+        latest = self.gki(variants)
+        # Rebuild one signed fixture as a genuine latest-channel artifact. It
+        # must not be accepted by the formal selection merely because its APK
+        # and AK3 are mutually paired and come from the current producer.
+        path, document, image = latest.kernels['KernelSU-Next']
+        raw, manager, metadata = manager_fixture('KernelSU-Next', branch='Latest(最新)')
+        next(latest.source.rglob(manager['file'])).write_bytes(raw)
+        latest.inputs['KernelSU-Next']['metadata'] = metadata
+        changed, changed_image = kernel_fixture(manager, file=document['file'])
+        path.write_bytes(ak3_bytes(changed, changed_image))
+        with self.assertRaisesRegex(ValueError, 'fixed official source or channel'):
+            latest.prepare(resolution=self.resolution(COMBINED_SELECTION, variants))
+        self.assertFalse(latest.output.exists())
+
+    def test_all_skipped_cannot_create_an_empty_or_falsely_successful_release(self):
+        fixture = self.gki(())
+        receipt = self.resolution(COMBINED_SELECTION, ())
+        with self.assertRaisesRegex(ValueError, 'at least one active manager'):
+            fixture.prepare(resolution=receipt)
+        self.assertFalse(fixture.output.exists())
+
+    def test_apk_only_subset_stays_in_actions_and_cli_ignores_absent_manager_outputs(self):
+        variants = ('SukiSU', 'KernelSU-Next')
+        fixture = self.gki(variants, kernels=False)
+        receipt = self.resolution(COMBINED_SELECTION, variants)
+        environment = {'MANAGER_SELECTION': COMBINED_SELECTION, 'MANAGER_RESOLUTION': json.dumps(receipt),
+                       'RELEASE_PLATFORM': 'gki', 'OPERATION': '仅编译管理器安装包',
+                       'MANAGER_BAKASU_EXPECTED_COUNT': '', 'MANAGER_BAKASU_FULL_CATALOG': ''}
+        for variant, row in fixture.inputs.items():
+            prefix = 'MANAGER_' + selected.SUFFIXES[variant] + '_'
+            environment.update({prefix + 'APK_FILENAME': row['apk_filename'],
+                prefix + 'METADATA': json.dumps(row['metadata']) if row['metadata'] else '',
+                prefix + 'EXPECTED_COUNT': '0', prefix + 'FULL_CATALOG': 'true'})
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (mock.patch.dict(os.environ, environment), redirect_stdout(stdout), redirect_stderr(stderr)):
+            self.assertEqual(set(variants), set(selected.environment_inputs(COMBINED_SELECTION, receipt)))
+            status = selected.main(['--input', str(fixture.source), '--output', str(fixture.output)])
+        self.assertEqual(0, status, stderr.getvalue())
+        result = json.loads(stdout.getvalue())
+        self.assertFalse(result['publish'])
+        self.assertEqual(list(variants), result['managers'])
+        fixture.assert_original_assets()
+
+    def test_oplus_can_publish_when_the_first_requested_manager_has_no_stable_release(self):
+        for selection, variants in ((COMBINED_SELECTION, ('BakaSU', 'KernelSU-Next')),
+                                    (SECOND_SELECTION, ('KernelSU',))):
+            with self.subTest(selection=selection):
+                fixture = self.oplus(selection, variants)
+                receipt = self.resolution(selection, variants, reference=fixture.fixture.ksu_ref)
+                result = fixture.prepare(resolution=receipt)
+                self.assertTrue(result['publish'])
+                self.assertEqual(list(variants), result['managers'])
+                self.assertEqual(len(variants), result['kernels'])
+                self.assertEqual({name: hashlib.sha256(raw).hexdigest() for name, raw in fixture.originals.items()},
+                                 checksums(fixture.output / 'assets/SHA256SUMS.txt'))
+                for row in receipt['skipped_managers']:
+                    self.assertIn('- ' + row['variant'] + '：官方尚未发布正式版。',
+                                  (fixture.output / 'release.md').read_text(encoding='utf-8'))
+
+    def test_oplus_subset_still_requires_all_prepared_kernels(self):
+        variants = ('BakaSU', 'KernelSU-Next')
+        fixture = self.oplus(COMBINED_SELECTION, variants)
+        receipt = self.resolution(COMBINED_SELECTION, variants, reference=fixture.fixture.ksu_ref)
+        fixture.inputs[variants[0]]['expected_count'] = 2
+        with self.assertRaises(ValueError):
+            fixture.prepare(resolution=receipt)
+        self.assertFalse(fixture.output.exists())
 
 
 if __name__ == '__main__':

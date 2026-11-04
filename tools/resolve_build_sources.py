@@ -36,6 +36,10 @@ class SourceResolutionError(RuntimeError):
     """A source could not be selected safely and reproducibly."""
 
 
+class NoStableRelease(SourceResolutionError):
+    """The official repository explicitly has no published stable release."""
+
+
 def validate_ref(value: str, *, empty: bool = False) -> str:
     """Accept conventional public branch/tag names and full commit hashes."""
     if empty and value == "":
@@ -194,9 +198,18 @@ def official_selection(repository: str, tier: str, custom_ref: str) -> tuple[str
         return selected['head_sha'].lower(), branch
     if tier == 'Stable(标准)':
         release = github_json(repository, '/releases/latest', missing=True)
-        tag = release.get('tag_name') if release else None
+        if release is None:
+            # A missing latest-release endpoint can also mean an unavailable
+            # repository. Only a readable, identified official repository can
+            # be classified as having no stable release.
+            identity = github_json(repository)
+            full_name = identity.get('full_name') if isinstance(identity, dict) else None
+            if not isinstance(full_name, str) or full_name.casefold() != repository.casefold():
+                raise SourceResolutionError('正式版查询无法确认官方仓库身份')
+            raise NoStableRelease('Official Stable has no published release; 官方尚未发布正式版，请选择“最新版”。候选版不会作为正式版。')
+        tag = release.get('tag_name')
         if not isinstance(tag, str):
-            raise SourceResolutionError('Official Stable has no published release; 官方尚未发布正式版，请选择“最新版”。候选版不会作为正式版。')
+            raise SourceResolutionError('Official Stable did not return a valid published release tag')
         if release.get('draft') is not False or release.get('prerelease') is not False:
             raise SourceResolutionError('Official Stable requires a published non-prerelease release; 正式版不接受草稿或预发行版。')
         validate_ref(tag)

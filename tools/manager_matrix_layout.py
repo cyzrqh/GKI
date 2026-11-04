@@ -8,8 +8,12 @@ import os
 from manager_variants import selected_managers
 
 
-def expand(matrix: dict, selection: str) -> list[dict]:
-    variants = selected_managers(selection)
+def expand(matrix: dict, selection: str, resolution: dict | None = None) -> list[dict]:
+    if resolution is None:
+        variants = selected_managers(selection)
+    else:
+        from resolve_manager_selection import active_managers
+        variants = active_managers(selection, resolution)
     if not isinstance(matrix, dict) or set(matrix) != {'include'} or not isinstance(matrix['include'], list):
         raise ValueError('Expected a verified include-only build matrix')
     rows = matrix['include']
@@ -18,9 +22,9 @@ def expand(matrix: dict, selection: str) -> list[dict]:
     return [{**row, 'variant': variant} for variant in variants for row in rows]
 
 
-def layout(kernel: dict, ddk: dict, selection: str) -> dict:
-    targets = expand(kernel, selection)
-    modules = expand(ddk, selection)
+def layout(kernel: dict, ddk: dict, selection: str, resolution: dict | None = None) -> dict:
+    targets = expand(kernel, selection, resolution)
+    modules = expand(ddk, selection, resolution)
     if not modules or len(modules) > 256 or len(targets) > 512:
         raise ValueError('Selected build matrix exceeds the reviewed job limits')
     # Empty fallback matrices are never executed: their job-level gates run
@@ -37,7 +41,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.parse_args()
     result = layout(json.loads(os.environ['KERNEL_MATRIX'] or '{"include":[]}'),
-                    json.loads(os.environ['DDK_MATRIX']), os.environ['MANAGER_SELECTION'])
+                    json.loads(os.environ['DDK_MATRIX']), os.environ['MANAGER_SELECTION'],
+                    json.loads(os.environ['MANAGER_RESOLUTION']) if os.environ.get('MANAGER_RESOLUTION') else None)
     with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as output:
         for key, value in result.items():
             output.write(key + '=' + (value if isinstance(value, str) else json.dumps(value, separators=(',', ':'))) + '\n')

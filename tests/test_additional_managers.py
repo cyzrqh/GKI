@@ -142,7 +142,8 @@ class CombinedWorkflowTests(unittest.TestCase):
             self.assertIsNone(worker)
             self.assertEqual({'workflow_dispatch'}, set(document['on']))
             kernel = 'build-oplus-kernel' if oplus else 'build-kernel'
-            self.assertEqual(6, len(document['jobs']))
+            self.assertEqual(7, len(document['jobs']))
+            self.assertIn('select-managers', document['jobs'])
             self.assertNotIn('build-checksums', document['jobs'])
             self.assertFalse(any('combo-' in key for key in document['jobs']))
             for variant in MANAGERS:
@@ -217,6 +218,9 @@ class CombinedWorkflowTests(unittest.TestCase):
                 actual = job['steps']
                 if name == 'prepare-matrix':
                     actual = actual[:-1]
+                    source = next(step for step in expected if step.get('id') == 'sources')
+                    source['env']['MANAGER_RESOLUTION'] = '${{ needs.select-managers.outputs.resolution }}'
+                    source['run'] = 'python3 tools/resolve_manager_selection.py --source-for "$KSU_VARIANT"'
                 if name == 'build-oplus-kernel':
                     profile = next(s for s in expected if 'OPLUS_PROFILE' in s.get('env', {}))
                     profile['run'] = profile['run'].replace(

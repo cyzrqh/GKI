@@ -16,9 +16,10 @@ import zipfile
 from embedded_build_metadata import (KERNEL_MEMBER, metadata_json, read_manager_apk,
                                      read_member, official_receipt_from_environment)
 from kernel_order import natural_key
-from manager_variants import selected_managers, valid_manager_apk_filename
+from manager_variants import valid_manager_apk_filename
 from prepare_release import prepare as prepare_gki, digest, regular, release_title
 from release_notes import asset_names
+from resolve_manager_selection import active_managers, validate_receipt
 
 
 SUFFIXES = {'SukiSU': 'SUKISU', 'BakaSU': 'BAKASU', 'KernelSU-Next': 'KERNELSU_NEXT',
@@ -46,10 +47,14 @@ def manager_environment(variant: str, metadata: dict | None):
                 os.environ[key] = value
 
 
-def manager_options(selection: str, inputs: dict) -> dict:
-    variants = selected_managers(selection)
+def manager_options(selection: str, inputs: dict, resolution=None) -> dict:
+    variants = active_managers(selection, resolution)
+    if not variants:
+        raise ValueError('A release requires at least one active manager')
     if not isinstance(inputs, dict) or any(variant not in inputs for variant in variants):
         raise ValueError('Missing selected manager producer outputs')
+    if resolution is not None and set(inputs) != set(variants):
+        raise ValueError('Producer outputs must match the active managers exactly')
     result = {}
     for variant in variants:
         row = inputs[variant]
@@ -165,10 +170,12 @@ def checksums(directory: Path) -> dict[str, str]:
 
 
 def prepare(source: Path, output: Path, *, selection: str, platform: str, operation: str,
-            manager_inputs: dict, oplus_matrix: dict | None = None) -> dict:
+            manager_inputs: dict, oplus_matrix: dict | None = None, resolution=None) -> dict:
     if platform not in ('gki', 'oplus') or operation not in OPERATIONS:
         raise ValueError('Expected a supported release platform and operation')
-    options = manager_options(selection, manager_inputs)
+    if resolution is not None:
+        resolution = validate_receipt(resolution, selection=selection)
+    options = manager_options(selection, manager_inputs, resolution)
     source, output = Path(source), Path(output)
     if output.is_symlink() or output.exists() and (not output.is_dir() or any(output.iterdir())):
         raise ValueError('Release output must be new or empty; existing files are preserved')
@@ -199,6 +206,11 @@ def prepare(source: Path, output: Path, *, selection: str, platform: str, operat
                 verify_producer(manager)
                 if manager['ksu_variant'] != variant:
                     raise ValueError('Selected APK belongs to another manager: ' + variant)
+                if resolution is not None:
+                    fixed = resolution['sources'][variant]
+                    if (manager['ksu_ref'] != fixed['ksu_ref']
+                            or manager['ksu_branch'] != fixed['effective_ksu_branch']):
+                        raise ValueError('Selected APK differs from the fixed official source or channel: ' + variant)
                 if platform == 'gki':
                     result = prepare_gki(inputs, report,
                         expected_kernel_count=row['expected_count'] if operation == '编译内核' else 0,
@@ -252,6 +264,13 @@ def prepare(source: Path, output: Path, *, selection: str, platform: str, operat
                             for line in notes.splitlines()), '']
             (ready / 'release.md').write_text('\n'.join(sections), encoding='utf-8', newline='\n')
             (ready / 'title.txt').write_text(title, encoding='utf-8', newline='\n')
+        if resolution is not None and resolution['skipped_managers']:
+            # Preserve the normal report/title and original checksums; add only
+            # the explicit selection result to the human-readable notes.
+            with (ready / 'release.md').open('a', encoding='utf-8', newline='\n') as stream:
+                stream.write('\n\n## 本次跳过的管理器\n\n')
+                for row in resolution['skipped_managers']:
+                    stream.write('- ' + row['variant'] + '：' + row['reason'] + '。\n')
         if output.is_symlink() or output.exists() and (not output.is_dir() or any(output.iterdir())):
             raise ValueError('Release output changed during verification; existing files are preserved')
         if output.exists():
@@ -260,9 +279,9 @@ def prepare(source: Path, output: Path, *, selection: str, platform: str, operat
     return {'publish': publish, 'assets': len(merged), 'kernels': total_kernels, 'managers': list(options)}
 
 
-def environment_inputs(selection: str) -> dict:
+def environment_inputs(selection: str, resolution=None) -> dict:
     result = {}
-    for variant in selected_managers(selection):
+    for variant in active_managers(selection, resolution):
         prefix = 'MANAGER_' + SUFFIXES[variant] + '_'
         count, full = os.environ.get(prefix + 'EXPECTED_COUNT', ''), os.environ.get(prefix + 'FULL_CATALOG', '')
         if not re.fullmatch(r'0|[1-9][0-9]{0,5}', count) or full not in ('true', 'false'):
@@ -283,12 +302,15 @@ def main(argv=None) -> int:
         selection = os.environ.get('MANAGER_SELECTION', '')
         platform = os.environ.get('RELEASE_PLATFORM', '')
         matrix = os.environ.get('OPLUS_MATRIX', '')
+        resolution = os.environ.get('MANAGER_RESOLUTION') or None
+        if resolution is not None:
+            resolution = validate_receipt(resolution, selection=selection)
         if platform == 'oplus':
             from oplus_catalog import strict_json
             matrix = strict_json(matrix.encode('utf-8'))
         result = prepare(args.input, args.output, selection=selection, platform=platform,
-                         operation=os.environ.get('OPERATION', ''), manager_inputs=environment_inputs(selection),
-                         oplus_matrix=matrix if platform == 'oplus' else None)
+                         operation=os.environ.get('OPERATION', ''), manager_inputs=environment_inputs(selection, resolution),
+                         oplus_matrix=matrix if platform == 'oplus' else None, resolution=resolution)
         if os.environ.get('GITHUB_OUTPUT'):
             with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
                 for name in ('publish', 'assets', 'kernels'):

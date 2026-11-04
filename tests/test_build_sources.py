@@ -112,10 +112,13 @@ class BuildSourceTests(unittest.TestCase):
                             {'tag_name': 'v4.2.1'},
                             {'tag_name': 'v4.2.1', 'draft': 0, 'prerelease': 0}):
                 with self.subTest(variant=variant, release=release), \
-                        patch.object(sources, 'github_json', return_value=release) as api, \
+                        patch.object(sources, 'github_json', side_effect=[release,
+                            {'full_name': sources.REPOSITORIES[variant]}]) as api, \
                         self.assertRaisesRegex(sources.SourceResolutionError, '正式版'):
                     self.resolve(variant=variant, tier='正式版')
-                api.assert_called_once_with(sources.REPOSITORIES[variant], '/releases/latest', missing=True)
+                self.assertEqual(api.call_args_list[0].args,
+                                 (sources.REPOSITORIES[variant], '/releases/latest'))
+                self.assertEqual(api.call_count, 2 if release is None else 1)
 
     def test_sukisu_latest_alias_uses_default_branch_when_dev_is_absent(self):
         for branch in ('main', 'next'):
@@ -266,7 +269,8 @@ class BuildSourceTests(unittest.TestCase):
 
     def test_missing_stable_release_fails_without_silent_tier_change(self):
         for variant in sources.REPOSITORIES:
-            with self.subTest(variant=variant), patch.object(sources, 'github_json', return_value=None):
+            with self.subTest(variant=variant), patch.object(sources, 'github_json',
+                    side_effect=[None, {'full_name': sources.REPOSITORIES[variant]}]):
                 with self.assertRaisesRegex(sources.SourceResolutionError, 'no published release'):
                     self.resolve(variant=variant, tier='Stable(标准)')
 

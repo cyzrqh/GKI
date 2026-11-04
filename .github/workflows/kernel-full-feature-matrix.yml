@@ -159,11 +159,39 @@ run-name: ${{ inputs.operation == '仅编译管理器安装包' && format('仅�
 permissions:
   contents: read
 jobs:
+  select-managers:
+    name: 选择可构建的管理器
+    if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      active_managers: ${{ steps.selection.outputs.active_managers }}
+      active_count: ${{ steps.selection.outputs.active_count }}
+      resolution: ${{ steps.selection.outputs.resolution }}
+    steps:
+    - name: 检出 gki
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 固定正式版或最新版，跳过未发布正式版的组合成员
+      id: selection
+      env:
+        KSU_TIER: ${{ inputs.kernelsu_branch }}
+        CUSTOM_REF: ${{ vars.KSU_CUSTOM_REF }}
+        ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        GH_TOKEN: ${{ github.token }}
+        MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+      run: |-
+        python3 tools/resolve_manager_selection.py --selection "$MANAGER_SELECTION" --tier "$KSU_TIER" \
+          --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
   prepare-matrix:
     name: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant == 'KowSU + KernelSU
       + FinaSU') && format('准备源码与构建目标 · {0}', matrix.variant) || '选择内核版本与补丁月份' }}
     runs-on: ubuntu-24.04
-    if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包')
+    if: needs.select-managers.result == 'success' && needs.select-managers.outputs.active_count != '0' && (github.event_name
+      == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包'))
     env:
       KSU_VARIANT: ${{ matrix.variant }}
       GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
@@ -355,9 +383,8 @@ jobs:
         CUSTOM_REF: ${{ vars.KSU_CUSTOM_REF }}
         ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         GH_TOKEN: ${{ github.token }}
-      run: |
-        python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \
-          --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
+        MANAGER_RESOLUTION: ${{ needs.select-managers.outputs.resolution }}
+      run: python3 tools/resolve_manager_selection.py --source-for "$KSU_VARIANT"
     - name: 读取固定签名的公开证书
       id: certificate
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((matrix.variant
@@ -493,13 +520,14 @@ jobs:
         KERNEL_MATRIX: ${{ steps.matrix.outputs.matrix }}
         DDK_MATRIX: ${{ steps.lkm-matrix.outputs.matrix }}
         MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+        MANAGER_RESOLUTION: ${{ needs.select-managers.outputs.resolution }}
       run: python3 tools/manager_matrix_layout.py
+    needs:
+    - select-managers
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || inputs.kernelsu_variant == 'KowSU + KernelSU + FinaSU' && '["KowSU","KernelSU","FinaSU"]' || format('["{0}"]',
-          inputs.kernelsu_variant)) }}
+        variant: ${{ fromJSON(needs.select-managers.outputs.active_managers) }}
   build-sukisu-lkm:
     name: ${{ matrix.variant }} 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
@@ -778,7 +806,8 @@ jobs:
         PY
   build-sukisu-manager:
     name: 编译配套 ${{ matrix.variant }} 管理器 APK
-    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-lkm.result == 'success'
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.select-managers.result == 'success'
+      && needs.select-managers.outputs.active_count != '0' && needs.build-sukisu-lkm.result == 'success'
     env:
       KSU_VARIANT: ${{ matrix.variant }}
       GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
@@ -786,6 +815,7 @@ jobs:
     needs:
     - prepare-matrix
     - build-sukisu-lkm
+    - select-managers
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -1893,9 +1923,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || inputs.kernelsu_variant == 'KowSU + KernelSU + FinaSU' && '["KowSU","KernelSU","FinaSU"]' || format('["{0}"]',
-          inputs.kernelsu_variant)) }}
+        variant: ${{ fromJSON(needs.select-managers.outputs.active_managers) }}
   build-kernel:
     name: ${{ matrix.kernel_version }}.${{ matrix.sub_level }}-${{ matrix.android_version }}-${{ matrix.os_patch_level }}-${{
       matrix.variant }}
@@ -7616,14 +7644,16 @@ jobs:
   publish-release:
     name: 核验与发行
     needs:
+    - select-managers
     - prepare-matrix
     - build-sukisu-manager
     - build-kernel
     - build-kernel-overflow
-    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'
-      && (inputs.operation == '仅编译管理器安装包' || (needs.build-kernel.result == 'success' && ((needs.prepare-matrix.outputs.overflow_count
-      == '0' && needs.build-kernel-overflow.result == 'skipped') || (needs.prepare-matrix.outputs.overflow_count != '0' &&
-      needs.build-kernel-overflow.result == 'success'))))
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.select-managers.result == 'success'
+      && needs.select-managers.outputs.active_count != '0' && needs.build-sukisu-manager.result == 'success' && (inputs.operation
+      == '仅编译管理器安装包' || (needs.build-kernel.result == 'success' && ((needs.prepare-matrix.outputs.overflow_count == '0' &&
+      needs.build-kernel-overflow.result == 'skipped') || (needs.prepare-matrix.outputs.overflow_count != '0' && needs.build-kernel-overflow.result
+      == 'success'))))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -7652,6 +7682,7 @@ jobs:
       id: selected-release
       env:
         MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+        MANAGER_RESOLUTION: ${{ needs.select-managers.outputs.resolution }}
         RELEASE_PLATFORM: gki
         OPERATION: ${{ inputs.operation }}
         MANAGER_SUKISU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['sukisu_apk_filename'] }}

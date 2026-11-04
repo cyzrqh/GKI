@@ -94,11 +94,39 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_bra
 permissions:
   contents: read
 jobs:
+  select-managers:
+    name: 选择可构建的管理器
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    outputs:
+      active_managers: ${{ steps.selection.outputs.active_managers }}
+      active_count: ${{ steps.selection.outputs.active_count }}
+      resolution: ${{ steps.selection.outputs.resolution }}
+    steps:
+    - name: 检出 gki
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 固定正式版或最新版，跳过未发布正式版的组合成员
+      id: selection
+      env:
+        KSU_TIER: ${{ inputs.kernelsu_branch }}
+        CUSTOM_REF: ''
+        ENABLE_SUSFS: ${{ inputs.enable_susfs }}
+        GH_TOKEN: ${{ github.token }}
+        MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+      run: |-
+        python3 tools/resolve_manager_selection.py --selection "$MANAGER_SELECTION" --tier "$KSU_TIER" \
+          --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
   prepare-matrix:
     name: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant == 'KowSU + KernelSU
       + FinaSU') && format('准备源码与构建目标 · {0}', matrix.variant) || '选择内核版本与补丁月份' }}
     runs-on: ubuntu-24.04
-    if: github.event_name == 'workflow_dispatch'
+    if: needs.select-managers.result == 'success' && needs.select-managers.outputs.active_count != '0' && (github.event_name
+      == 'workflow_dispatch')
     env:
       KSU_VARIANT: ${{ matrix.variant }}
       GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
@@ -274,9 +302,8 @@ jobs:
         CUSTOM_REF: ''
         ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         GH_TOKEN: ${{ github.token }}
-      run: |
-        python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" \
-          --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"
+        MANAGER_RESOLUTION: ${{ needs.select-managers.outputs.resolution }}
+      run: python3 tools/resolve_manager_selection.py --source-for "$KSU_VARIANT"
     - name: 读取固定签名的公开证书
       id: certificate
       if: github.event_name == 'workflow_dispatch' && (true || false) && ((matrix.variant == 'SukiSU' || matrix.variant ==
@@ -412,13 +439,14 @@ jobs:
         KERNEL_MATRIX: ${{ steps.matrix.outputs.matrix }}
         DDK_MATRIX: ${{ steps.lkm-matrix.outputs.matrix }}
         MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+        MANAGER_RESOLUTION: ${{ needs.select-managers.outputs.resolution }}
       run: python3 tools/manager_matrix_layout.py
+    needs:
+    - select-managers
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || inputs.kernelsu_variant == 'KowSU + KernelSU + FinaSU' && '["KowSU","KernelSU","FinaSU"]' || format('["{0}"]',
-          inputs.kernelsu_variant)) }}
+        variant: ${{ fromJSON(needs.select-managers.outputs.active_managers) }}
   build-sukisu-lkm:
     name: ${{ matrix.variant }} 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
@@ -697,7 +725,8 @@ jobs:
         PY
   build-sukisu-manager:
     name: 编译配套 ${{ matrix.variant }} 管理器 APK
-    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-lkm.result == 'success'
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.select-managers.result == 'success'
+      && needs.select-managers.outputs.active_count != '0' && needs.build-sukisu-lkm.result == 'success'
     env:
       KSU_VARIANT: ${{ matrix.variant }}
       GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
@@ -705,6 +734,7 @@ jobs:
     needs:
     - prepare-matrix
     - build-sukisu-lkm
+    - select-managers
     runs-on: ubuntu-24.04
     timeout-minutes: 60
     permissions:
@@ -1812,9 +1842,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || inputs.kernelsu_variant == 'KowSU + KernelSU + FinaSU' && '["KowSU","KernelSU","FinaSU"]' || format('["{0}"]',
-          inputs.kernelsu_variant)) }}
+        variant: ${{ fromJSON(needs.select-managers.outputs.active_managers) }}
   build-oplus-kernel:
     name: ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel
       }} · ${{ matrix.variant }}
@@ -2050,14 +2078,15 @@ jobs:
   verify-oplus-assets:
     name: 核验与发行
     needs:
+    - select-managers
     - prepare-matrix
     - build-sukisu-manager
     - build-oplus-kernel
     - build-oplus-kernel-overflow
-    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'
-      && (needs.build-oplus-kernel.result == 'success' && ((needs.prepare-matrix.outputs.overflow_count == '0' && needs.build-oplus-kernel-overflow.result
-      == 'skipped') || (needs.prepare-matrix.outputs.overflow_count != '0' && needs.build-oplus-kernel-overflow.result ==
-      'success')))
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.select-managers.result == 'success'
+      && needs.select-managers.outputs.active_count != '0' && needs.build-sukisu-manager.result == 'success' && (needs.build-oplus-kernel.result
+      == 'success' && ((needs.prepare-matrix.outputs.overflow_count == '0' && needs.build-oplus-kernel-overflow.result ==
+      'skipped') || (needs.prepare-matrix.outputs.overflow_count != '0' && needs.build-oplus-kernel-overflow.result == 'success')))
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
@@ -2086,6 +2115,7 @@ jobs:
       id: selected-release
       env:
         MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+        MANAGER_RESOLUTION: ${{ needs.select-managers.outputs.resolution }}
         RELEASE_PLATFORM: oplus
         OPERATION: 编译内核
         MANAGER_SUKISU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['sukisu_apk_filename'] }}
@@ -2112,8 +2142,8 @@ jobs:
         MANAGER_FINASU_METADATA: ${{ needs.build-sukisu-manager.outputs['finasu_manager_metadata'] }}
         MANAGER_FINASU_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['finasu_count'] || '0' }}
         MANAGER_FINASU_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['finasu_full_catalog'] || 'false' }}
-        OPLUS_MATRIX: ${{ needs.prepare-matrix.outputs[format('{0}_matrix', fromJSON('{"SukiSU":"sukisu","BakaSU":"bakasu","KernelSU-Next":"kernelsu-next","KernelSU":"kernelsu","KowSU":"kowsu","FinaSU":"finasu","SukiSU
-          + BakaSU + KernelSU-Next":"sukisu","KowSU + KernelSU + FinaSU":"kowsu"}')[inputs.kernelsu_variant])] }}
+        OPLUS_MATRIX: ${{ needs.prepare-matrix.outputs[format('{0}_matrix', fromJSON('{"SukiSU":"sukisu","BakaSU":"bakasu","KernelSU-Next":"kernelsu-next","KernelSU":"kernelsu","KowSU":"kowsu","FinaSU":"finasu"}')[fromJSON(needs.select-managers.outputs.active_managers)[0]])]
+          }}
       run: python3 tools/prepare_selected_release.py --input release-input --output release-publish
     - name: 上传原文件校验清单
       uses: actions/upload-artifact@v7

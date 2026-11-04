@@ -1,8 +1,19 @@
 import copy
 import unittest
 
-from manager_matrix_layout import layout
+from manager_matrix_layout import expand, layout
 from manager_variants import MANAGERS, COMBINED_GROUPS
+from resolve_build_sources import REPOSITORIES, source_result
+
+
+def receipt(selection, active):
+    requested = COMBINED_GROUPS[selection]
+    return {'schema_version': 1, 'selection': selection, 'tier': '正式版',
+            'active_managers': active,
+            'skipped_managers': [{'variant': name, 'reason': '官方尚未发布正式版'}
+                                 for name in requested if name not in active],
+            'sources': {name: source_result('a' * 40, REPOSITORIES[name], 'v1.0', 'Stable(标准)')
+                        for name in active}}
 
 
 class ManagerMatrixLayoutTests(unittest.TestCase):
@@ -46,6 +57,34 @@ class ManagerMatrixLayoutTests(unittest.TestCase):
                 self.assertEqual({'include': [{}]}, result['kernel_overflow'])
                 self.assertEqual(8 * len(variants), len(result['ddk_build_matrix']['include']))
                 self.assertEqual(set(variants), {row['variant'] for row in result['ddk_build_matrix']['include']})
+
+    def test_missing_formal_releases_filter_both_kernel_and_native_module_rows(self):
+        for selection, requested in COMBINED_GROUPS.items():
+            for active in (list(requested[1:]), list(requested[:1]), list(requested[-1:])):
+                with self.subTest(selection=selection, active=active):
+                    result = layout(self.kernel, self.ddk, selection, receipt(selection, active))
+                    self.assertEqual(97 * len(active), len(result['kernel_primary']['include']))
+                    self.assertEqual('0', result['overflow_count'])
+                    self.assertEqual(8 * len(active), len(result['ddk_build_matrix']['include']))
+                    self.assertEqual(set(active), {row['variant'] for row in result['kernel_primary']['include']})
+                    self.assertEqual(set(active), {row['variant'] for row in result['ddk_build_matrix']['include']})
+
+    def test_all_unavailable_managers_produce_no_expanded_work(self):
+        for selection in COMBINED_GROUPS:
+            self.assertEqual([], expand(self.kernel, selection, receipt(selection, [])))
+            self.assertEqual([], expand(self.ddk, selection, receipt(selection, [])))
+
+    def test_selection_receipt_cannot_silently_omit_or_inject_a_manager(self):
+        selection = next(iter(COMBINED_GROUPS))
+        variants = list(COMBINED_GROUPS[selection])
+        malformed = receipt(selection, variants[1:])
+        malformed['skipped_managers'] = []
+        with self.assertRaises(ValueError):
+            layout(self.kernel, self.ddk, selection, malformed)
+        unrelated = receipt(selection, variants)
+        unrelated['active_managers'].append('KowSU')
+        with self.assertRaises(ValueError):
+            layout(self.kernel, self.ddk, selection, unrelated)
 
     def test_route_injection_unknown_manager_and_oversized_matrices_are_rejected(self):
         for matrix, selection in (({'include': [{'variant': 'BakaSU'}]}, 'SukiSU'),

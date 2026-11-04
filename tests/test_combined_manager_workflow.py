@@ -13,11 +13,12 @@ from manager_variants import COMBINED_GROUPS, MANAGERS
 from oplus_workflow import create_workflow as create_oplus_workflow
 
 
-def gate_allows(condition, *, results, overflow_count='0', operation='编译内核', cancelled=False):
+def gate_allows(condition, *, results, overflow_count='0', operation='编译内核', cancelled=False, active_count='3'):
     """Evaluate only the status/input expressions used by the publication job."""
     condition = re.sub(r'needs\.([A-Za-z0-9-]+)\.result',
                        lambda match: repr(results[match[1]]), condition)
     for before, after in (
+            ('needs.select-managers.outputs.active_count', repr(active_count)),
             ('needs.prepare-matrix.outputs.overflow_count', repr(overflow_count)),
             ('inputs.operation', repr(operation)),
             ('github.event_name', repr('workflow_dispatch')),
@@ -39,9 +40,11 @@ def strings_in(value):
             yield from strings_in(child)
 
 
-def selection_value(expression, selection):
+def selection_value(expression, selection, active=None):
     expression = expression.removeprefix('${{').removesuffix('}}').strip()
     expression = expression.replace('inputs.kernelsu_variant', repr(selection))
+    active = list(COMBINED_GROUPS.get(selection, (selection,))) if active is None else active
+    expression = expression.replace('needs.select-managers.outputs.active_managers', repr(json.dumps(active)))
     expression = expression.replace('&&', ' and ').replace('||', ' or ')
     return eval(expression, {'__builtins__': {}, 'fromJSON': json.loads,
         'format': lambda template, *values: template.format(*values)}, {})
@@ -64,7 +67,7 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
         for oplus, _, publisher in self.publishers():
             kernel = 'build-oplus-kernel' if oplus else 'build-kernel'
             overflow = kernel + '-overflow'
-            self.assertEqual({'prepare-matrix', 'build-sukisu-manager', kernel, overflow},
+            self.assertEqual({'select-managers', 'prepare-matrix', 'build-sukisu-manager', kernel, overflow},
                              set(publisher['needs']))
             ready = {name: 'success' for name in publisher['needs']}
             self.assertTrue(gate_allows(publisher['if'], results=ready, overflow_count='1'))
@@ -75,6 +78,8 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
                             results={**ready, name: result}, overflow_count='1'))
             self.assertFalse(gate_allows(publisher['if'], results=ready,
                                         overflow_count='1', cancelled=True))
+            self.assertFalse(gate_allows(publisher['if'], results=ready,
+                                        overflow_count='1', active_count='0'))
             # An absent overflow batch is the only expected skipped kernel job.
             self.assertTrue(gate_allows(publisher['if'],
                                        results={**ready, overflow: 'skipped'}, overflow_count='0'))
@@ -84,10 +89,10 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
 
     def test_gki_apk_only_verifies_selected_managers_without_requiring_kernel_jobs(self):
         _, _, publisher = next(self.publishers())
-        results = {'prepare-matrix': 'success', 'build-sukisu-manager': 'success',
+        results = {'select-managers': 'success', 'prepare-matrix': 'success', 'build-sukisu-manager': 'success',
                    'build-kernel': 'skipped', 'build-kernel-overflow': 'skipped'}
         self.assertTrue(gate_allows(publisher['if'], results=results, operation='仅编译管理器安装包'))
-        for dependency in ('prepare-matrix', 'build-sukisu-manager'):
+        for dependency in ('select-managers', 'prepare-matrix', 'build-sukisu-manager'):
             self.assertFalse(gate_allows(publisher['if'], results={**results, dependency: 'failure'},
                                         operation='仅编译管理器安装包'))
 
@@ -102,6 +107,34 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
                             selection_value(job['strategy']['matrix']['variant'], selection))
                         self.assertEqual('true' if selection in COMBINED_GROUPS else 'false',
                             selection_value(job['env']['GKI_COMBINED_WORKER'], selection))
+
+    def test_unreleased_members_never_enter_prepare_or_apk_matrices(self):
+        for oplus, workflow, _ in self.publishers():
+            for selection, requested in COMBINED_GROUPS.items():
+                for active in (list(requested[1:]), [requested[-1]], []):
+                    for name in ('prepare-matrix', 'build-sukisu-manager'):
+                        with self.subTest(oplus=oplus, selection=selection, active=active, job=name):
+                            job = workflow['jobs'][name]
+                            self.assertIn('select-managers', job['needs'])
+                            self.assertEqual(active, selection_value(job['strategy']['matrix']['variant'], selection, active))
+                            self.assertIn("needs.select-managers.outputs.active_count != '0'", job['if'])
+
+    def test_selection_freezes_once_and_prepare_reuses_its_immutable_sources(self):
+        for oplus, workflow, _ in self.publishers():
+            selector = workflow['jobs']['select-managers']
+            self.assertEqual({'contents': 'read'}, selector['permissions'])
+            self.assertNotIn('strategy', selector)
+            step = next(step for step in selector['steps'] if step.get('id') == 'selection')
+            self.assertIn('tools/resolve_manager_selection.py --selection', step['run'])
+            self.assertEqual('${{ inputs.kernelsu_variant }}', step['env']['MANAGER_SELECTION'])
+            self.assertEqual('' if oplus else '${{ vars.KSU_CUSTOM_REF }}', step['env']['CUSTOM_REF'])
+            prepare = workflow['jobs']['prepare-matrix']
+            source = next(step for step in prepare['steps'] if step.get('id') == 'sources')
+            self.assertEqual('python3 tools/resolve_manager_selection.py --source-for "$KSU_VARIANT"', source['run'])
+            self.assertEqual('${{ needs.select-managers.outputs.resolution }}', source['env']['MANAGER_RESOLUTION'])
+            layout = next(step for step in prepare['steps'] if step.get('id') == 'selected-layout')
+            self.assertEqual(source['env']['MANAGER_RESOLUTION'], layout['env']['MANAGER_RESOLUTION'])
+            self.assertNotIn('tools/resolve_build_sources.py', source['run'])
 
     def test_one_raw_download_and_one_validation_receive_every_selected_producer_identity(self):
         for oplus, _, publisher in self.publishers():
@@ -129,6 +162,7 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
                 environment = {**publisher.get('env', {}), **verifier.get('env', {})}
                 # Passing the menu selection unchanged keeps single-manager builds compatible.
                 self.assertEqual('${{ inputs.kernelsu_variant }}', environment['MANAGER_SELECTION'])
+                self.assertEqual('${{ needs.select-managers.outputs.resolution }}', environment['MANAGER_RESOLUTION'])
                 self.assertEqual('oplus' if oplus else 'gki', environment['RELEASE_PLATFORM'])
                 self.assertEqual('编译内核' if oplus else '${{ inputs.operation }}', environment['OPERATION'])
                 for variant in MANAGERS:
@@ -174,12 +208,13 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
         self.assertEqual('{0}_matrix', match['template'])
         declared = {key.lower() for key in workflow['jobs']['prepare-matrix']['outputs']}
         for selection in (*MANAGERS, *COMBINED_GROUPS):
-            with self.subTest(selection=selection):
-                variant = selection_value(match['selector'], selection)
-                output = match['template'].format(variant)
-                expected = COMBINED_GROUPS.get(selection, (selection,))[0].lower()
-                self.assertEqual(expected + '_matrix', output)
-                self.assertTrue(output in declared, 'Missing prepared OPlus matrix: ' + output)
+            requested = list(COMBINED_GROUPS.get(selection, (selection,)))
+            for active in (requested, requested[-1:]):
+                with self.subTest(selection=selection, active=active):
+                    variant = selection_value(match['selector'], selection, active)
+                    output = match['template'].format(variant)
+                    self.assertEqual(active[0].lower() + '_matrix', output)
+                    self.assertTrue(output in declared, 'Missing prepared OPlus matrix: ' + output)
 
     def test_unified_checksums_upload_before_the_only_tag_release_and_cleanup(self):
         for oplus, workflow, publisher in self.publishers():

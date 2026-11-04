@@ -10,7 +10,11 @@ ADDITIONAL_MANAGERS = ('KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU')
 MANAGERS = LOCAL_MANAGERS + ADDITIONAL_MANAGERS
 COMBINED_SELECTION = 'SukiSU + BakaSU + KernelSU-Next'
 COMBINED_MANAGERS = ('SukiSU', 'BakaSU', 'KernelSU-Next')
-MANAGER_SELECTIONS = MANAGERS + (COMBINED_SELECTION,)
+COMBINED_GROUPS = {
+    COMBINED_SELECTION: COMBINED_MANAGERS,
+    'KowSU + KernelSU + FinaSU': ('KowSU', 'KernelSU', 'FinaSU'),
+}
+MANAGER_SELECTIONS = MANAGERS + tuple(COMBINED_GROUPS)
 # Actual Gradle application IDs, not Kotlin namespaces. BakaSU retains its
 # upstream ReSukiSU ID; its current Kotlin namespace is org.bakasu.bakasu.
 _PROFILES = {
@@ -43,8 +47,8 @@ def selected_variant(variant: str | None = None) -> str:
 
 def selected_managers(selection: str) -> tuple[str, ...]:
     """Expand the menu once; every build still receives exactly one manager."""
-    if selection == COMBINED_SELECTION:
-        return COMBINED_MANAGERS
+    if isinstance(selection, str) and selection in COMBINED_GROUPS:
+        return COMBINED_GROUPS[selection]
     manager_profile(selection)
     return (selection,)
 

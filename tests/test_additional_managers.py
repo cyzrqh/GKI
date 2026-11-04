@@ -142,7 +142,8 @@ class CombinedWorkflowTests(unittest.TestCase):
             self.assertIsNone(worker)
             self.assertEqual({'workflow_dispatch'}, set(document['on']))
             kernel = 'build-oplus-kernel' if oplus else 'build-kernel'
-            self.assertEqual(7, len(document['jobs']))
+            self.assertEqual(6, len(document['jobs']))
+            self.assertNotIn('build-checksums', document['jobs'])
             self.assertFalse(any('combo-' in key for key in document['jobs']))
             for variant in MANAGERS:
                 self.assertIn(variant + '_ksu_ref', document['jobs']['prepare-matrix']['outputs'])
@@ -154,8 +155,9 @@ class CombinedWorkflowTests(unittest.TestCase):
             self.assertIn("needs." + kernel + ".result == 'success'", publisher['if'])
             self.assertIn("needs." + kernel + "-overflow.result == 'success'", publisher['if'])
             download = next(s for s in publisher['steps'] if s.get('uses') == 'actions/download-artifact@v8')
-            self.assertIn('matrix.variant', download['with']['pattern'])
-            self.assertEqual(1, download['with']['pattern'].count('${{'))
+            self.assertNotIn('strategy', publisher)
+            self.assertEqual('{*.apk,*-AnyKernel3.zip,*-boot*.img}', download['with']['pattern'])
+            self.assertNotIn('matrix.variant', json.dumps(publisher))
             if not oplus:
                 for key in (kernel, kernel + '-overflow'):
                     self.assertEqual("${{ fromJSON(format('{0}', inputs.max_parallel)) }}",

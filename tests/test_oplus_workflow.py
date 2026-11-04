@@ -288,6 +288,34 @@ class OplusWorkflowTests(unittest.TestCase):
         with mock.patch.dict(os.environ, {**env, 'OPLUS_INPUTS': json.dumps(inputs)}), self.assertRaises(ValueError):
             exec(compile(heredoc(workflow.PROFILE_INPUTS), '<workflow rejects extra menu>', 'exec'), {})
 
+    def test_profile_heredoc_routes_only_members_of_the_selected_combined_group(self):
+        from manager_variants import COMBINED_GROUPS, MANAGERS
+        profile = copy.deepcopy(catalog.load_profiles()[0])
+        profile['kernel_ref'] = profile.pop('verified_kernel_ref')
+        profile['source_committed_at'] = '2026-10-27T00:00:00Z'
+        defaults = {name: field['default'] for name, field in workflow.INPUTS.items()}
+        body = compile(heredoc(workflow.PROFILE_INPUTS), '<workflow combined inputs>', 'exec')
+        for selection, variants in COMBINED_GROUPS.items():
+            inputs = {**defaults, 'kernelsu_variant': selection}
+            environment = {'RUNNER_TEMP': str(self.directory), 'OPLUS_PROFILE': json.dumps(profile),
+                           'OPLUS_INPUTS': json.dumps(inputs), 'GKI_COMBINED_WORKER': 'true'}
+            for variant in variants:
+                with self.subTest(selection=selection, variant=variant), mock.patch.dict(
+                        os.environ, {**environment, 'KSU_VARIANT': variant}):
+                    exec(body, {})
+                    frozen = json.loads(self.directory.joinpath('oplus-inputs.json').read_text(encoding='utf-8'))
+                    self.assertEqual({**inputs, 'kernelsu_variant': variant}, frozen)
+                    self.assertEqual(profile, json.loads(self.directory.joinpath('oplus-profile.json').read_text(encoding='utf-8')))
+            before = self.directory.joinpath('oplus-inputs.json').read_bytes()
+            invalid_workers = [(variant, 'true') for variant in MANAGERS if variant not in variants]
+            invalid_workers.append((variants[0], 'false'))
+            for variant, worker in invalid_workers:
+                with self.subTest(selection=selection, variant=variant, worker=worker), mock.patch.dict(
+                        os.environ, {**environment, 'KSU_VARIANT': variant, 'GKI_COMBINED_WORKER': worker}), \
+                        self.assertRaisesRegex(SystemExit, 'Unexpected combined OPlus manager selection'):
+                    exec(body, {})
+                self.assertEqual(before, self.directory.joinpath('oplus-inputs.json').read_bytes())
+
     def test_cli_phase_argument_paths_reach_real_parsers_in_native_order(self):
         profile = copy.deepcopy(catalog.load_profiles()[0])
         profile['kernel_ref'] = profile.pop('verified_kernel_ref')

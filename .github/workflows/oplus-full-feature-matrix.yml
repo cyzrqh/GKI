@@ -17,6 +17,7 @@ run-name: 欧加真 · ${{ inputs.kernelsu_variant }} · ${{ inputs.kernelsu_bra
         - KowSU
         - FinaSU
         - SukiSU + BakaSU + KernelSU-Next
+        - KowSU + KernelSU + FinaSU
         default: SukiSU
       kernelsu_branch:
         description: 版本
@@ -94,13 +95,14 @@ permissions:
   contents: read
 jobs:
   prepare-matrix:
-    name: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && format('准备源码与构建目标 · {0}', matrix.variant) ||
-      '选择内核版本与补丁月份' }}
+    name: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant == 'KowSU + KernelSU
+      + FinaSU') && format('准备源码与构建目标 · {0}', matrix.variant) || '选择内核版本与补丁月份' }}
     runs-on: ubuntu-24.04
     if: github.event_name == 'workflow_dispatch'
     env:
       KSU_VARIANT: ${{ matrix.variant }}
-      GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
+      GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
+        'KowSU + KernelSU + FinaSU') && 'true' || 'false' }}
     permissions:
       contents: read
       actions: write
@@ -415,7 +417,8 @@ jobs:
       fail-fast: false
       matrix:
         variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || format('["{0}"]', inputs.kernelsu_variant)) }}
+          || inputs.kernelsu_variant == 'KowSU + KernelSU + FinaSU' && '["KowSU","KernelSU","FinaSU"]' || format('["{0}"]',
+          inputs.kernelsu_variant)) }}
   build-sukisu-lkm:
     name: ${{ matrix.variant }} 原生模块 / ${{ matrix.kmi }}
     needs: prepare-matrix
@@ -425,7 +428,8 @@ jobs:
       contents: read
     env:
       KSU_VARIANT: ${{ matrix.variant }}
-      GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
+      GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
+        'KowSU + KernelSU + FinaSU') && 'true' || 'false' }}
     timeout-minutes: 30
     defaults:
       run:
@@ -696,7 +700,8 @@ jobs:
     if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-lkm.result == 'success'
     env:
       KSU_VARIANT: ${{ matrix.variant }}
-      GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
+      GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
+        'KowSU + KernelSU + FinaSU') && 'true' || 'false' }}
     needs:
     - prepare-matrix
     - build-sukisu-lkm
@@ -1808,7 +1813,8 @@ jobs:
       fail-fast: false
       matrix:
         variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || format('["{0}"]', inputs.kernelsu_variant)) }}
+          || inputs.kernelsu_variant == 'KowSU + KernelSU + FinaSU' && '["KowSU","KernelSU","FinaSU"]' || format('["{0}"]',
+          inputs.kernelsu_variant)) }}
   build-oplus-kernel:
     name: ${{ matrix.platform == 'gki' && '通用 GKI' || startsWith(matrix.platform, 'mt') && '天玑' || '骁龙' }} · ${{ matrix.kernel
       }} · ${{ matrix.variant }}
@@ -1841,7 +1847,8 @@ jobs:
       CCACHE_COMPRESS: 'true'
       CCACHE_NOHARDLINK: 'true'
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
-      GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
+      GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
+        'KowSU + KernelSU + FinaSU') && 'true' || 'false' }}
     steps: &id001
     - name: 检出独立构建工具
       uses: actions/checkout@v6
@@ -1866,10 +1873,11 @@ jobs:
         profile_fields.pop('variant')
         profile = profile_identity(profile_fields)
         inputs = strict_json(os.environ['OPLUS_INPUTS'].encode())
-        from manager_variants import COMBINED_SELECTION, COMBINED_MANAGERS
-        if inputs.get('kernelsu_variant') == COMBINED_SELECTION:
+        from manager_variants import COMBINED_GROUPS
+        selection = inputs.get('kernelsu_variant')
+        if isinstance(selection, str) and selection in COMBINED_GROUPS:
             variant = os.environ.get('KSU_VARIANT')
-            if os.environ.get('GKI_COMBINED_WORKER') != 'true' or variant not in COMBINED_MANAGERS:
+            if os.environ.get('GKI_COMBINED_WORKER') != 'true' or variant not in COMBINED_GROUPS[selection]:
                 raise SystemExit('Unexpected combined OPlus manager selection')
             inputs['kernelsu_variant'] = variant
         native_inputs(inputs, profile)
@@ -2042,17 +2050,18 @@ jobs:
         path: ${{ env.CCACHE_DIR }}
         key: ${{ steps.oplus-ccache.outputs.cache-primary-key }}
   verify-oplus-assets:
-    name: 核验与发行 · ${{ matrix.variant }}
-    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'
-      && (needs.build-oplus-kernel.result == 'success' && (needs.build-oplus-kernel-overflow.result == 'success' || needs.build-oplus-kernel-overflow.result
-      == 'skipped'))
+    name: 核验与发行
     needs:
     - prepare-matrix
     - build-sukisu-manager
     - build-oplus-kernel
     - build-oplus-kernel-overflow
+    if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'
+      && (needs.build-oplus-kernel.result == 'success' && ((needs.prepare-matrix.outputs.overflow_count == '0' && needs.build-oplus-kernel-overflow.result
+      == 'skipped') || (needs.prepare-matrix.outputs.overflow_count != '0' && needs.build-oplus-kernel-overflow.result ==
+      'success')))
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
       actions: write
@@ -2060,74 +2069,85 @@ jobs:
       group: ${{ github.repository }}-published-release-tags
       cancel-in-progress: false
       queue: max
-    env:
-      KSU_VARIANT: ${{ matrix.variant }}
-      GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
-      GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
     steps:
-    - name: 检出本次原生校验工具
+    - name: 检出发布工具
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: 准备构建配置与 APK 签名验证依赖
+    - name: 准备发行内容与签名验证依赖
       run: python3 -c 'import yaml, cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check
         PyYAML cryptography
-    - name: 下载本次原文件 APK 与全部平台 AK3
+    - name: 收集本次原文件 APK 与内核
       uses: actions/download-artifact@v8
       with:
-        pattern: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && format('{{{1},Oplus-*-{0}-AnyKernel3.zip}}',
-          matrix.variant, needs.build-sukisu-manager.outputs[format('{0}_apk_filename', matrix.variant)]) || format('{{{0},Oplus-*-AnyKernel3.zip}}',
-          needs.build-sukisu-manager.outputs[format('{0}_apk_filename', matrix.variant)]) }}
-        path: oplus-input
+        pattern: '{*.apk,*-AnyKernel3.zip,*-boot*.img}'
+        path: release-input
         merge-multiple: false
         skip-decompress: true
-    - name: 逐件核对官方源、真实签名、完整矩阵与实际配置
-      id: assets
+    - name: 逐管理器核验并汇总发行文件
+      id: selected-release
       env:
-        OPLUS_MATRIX: ${{ needs.prepare-matrix.outputs[format('{0}_matrix', matrix.variant)] }}
-      run: |
-        set -euo pipefail
-        python3 tools/oplus_assets.py collect --input oplus-input --output oplus-report \
-          --matrix "$OPLUS_MATRIX" --variants "$KSU_VARIANT"
-        python3 - <<'PY'
-        import pathlib,shutil,sys
-        sys.path.insert(0,'tools')
-        from transfer_ksu_snapshot import native_assets
-        source = pathlib.Path('oplus-input')
-        output = pathlib.Path('oplus-publish/assets')
-        output.mkdir(parents=True)
-        for path in source.rglob('*'):
-            if path.is_symlink():
-                raise SystemExit('Refusing linked original assets')
-            if path.is_file():
-                shutil.copyfile(path, output/path.name)
-        shutil.copyfile('oplus-report/SHA256SUMS.txt', output/'SHA256SUMS.txt')
-        native_assets(output.resolve())
-        PY
+        MANAGER_SELECTION: ${{ inputs.kernelsu_variant }}
+        RELEASE_PLATFORM: oplus
+        OPERATION: 编译内核
+        MANAGER_SUKISU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['sukisu_apk_filename'] }}
+        MANAGER_SUKISU_METADATA: ${{ needs.build-sukisu-manager.outputs['sukisu_manager_metadata'] }}
+        MANAGER_SUKISU_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['sukisu_count'] || '0' }}
+        MANAGER_SUKISU_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['sukisu_full_catalog'] || 'false' }}
+        MANAGER_BAKASU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['bakasu_apk_filename'] }}
+        MANAGER_BAKASU_METADATA: ${{ needs.build-sukisu-manager.outputs['bakasu_manager_metadata'] }}
+        MANAGER_BAKASU_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['bakasu_count'] || '0' }}
+        MANAGER_BAKASU_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['bakasu_full_catalog'] || 'false' }}
+        MANAGER_KERNELSU_NEXT_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['kernelsu-next_apk_filename'] }}
+        MANAGER_KERNELSU_NEXT_METADATA: ${{ needs.build-sukisu-manager.outputs['kernelsu-next_manager_metadata'] }}
+        MANAGER_KERNELSU_NEXT_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['kernelsu-next_count'] || '0' }}
+        MANAGER_KERNELSU_NEXT_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['kernelsu-next_full_catalog'] || 'false' }}
+        MANAGER_KERNELSU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['kernelsu_apk_filename'] }}
+        MANAGER_KERNELSU_METADATA: ${{ needs.build-sukisu-manager.outputs['kernelsu_manager_metadata'] }}
+        MANAGER_KERNELSU_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['kernelsu_count'] || '0' }}
+        MANAGER_KERNELSU_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['kernelsu_full_catalog'] || 'false' }}
+        MANAGER_KOWSU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['kowsu_apk_filename'] }}
+        MANAGER_KOWSU_METADATA: ${{ needs.build-sukisu-manager.outputs['kowsu_manager_metadata'] }}
+        MANAGER_KOWSU_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['kowsu_count'] || '0' }}
+        MANAGER_KOWSU_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['kowsu_full_catalog'] || 'false' }}
+        MANAGER_FINASU_APK_FILENAME: ${{ needs.build-sukisu-manager.outputs['finasu_apk_filename'] }}
+        MANAGER_FINASU_METADATA: ${{ needs.build-sukisu-manager.outputs['finasu_manager_metadata'] }}
+        MANAGER_FINASU_EXPECTED_COUNT: ${{ needs.prepare-matrix.outputs['finasu_count'] || '0' }}
+        MANAGER_FINASU_FULL_CATALOG: ${{ needs.prepare-matrix.outputs['finasu_full_catalog'] || 'false' }}
+        OPLUS_MATRIX: ${{ needs.prepare-matrix.outputs[format('{0}_matrix', fromJSON('{"SukiSU":"sukisu","BakaSU":"bakasu","KernelSU-Next":"kernelsu-next","KernelSU":"kernelsu","KowSU":"kowsu","FinaSU":"finasu","SukiSU
+          + BakaSU + KernelSU-Next":"sukisu","KowSU + KernelSU + FinaSU":"kowsu"}')[inputs.kernelsu_variant])] }}
+      run: python3 tools/prepare_selected_release.py --input release-input --output release-publish
+    - name: 上传原文件校验清单
+      uses: actions/upload-artifact@v7
+      with:
+        path: release-publish/assets/SHA256SUMS.txt
+        archive: false
+        if-no-files-found: error
+        overwrite: true
     - name: 分配递增发行标签并绑定本次构建
       id: release-tag
-      if: success() && needs.prepare-matrix.outputs[format('{0}_full_catalog', matrix.variant)] == 'true'
+      if: steps.selected-release.outputs.publish == 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
-      run: python3 tools/release_tags.py allocate --notes oplus-report/summary.md
+      run: python3 tools/release_tags.py allocate --notes release-publish/release.md
     - name: 发布独立安装包和刷机包
       id: release
-      if: success() && needs.prepare-matrix.outputs[format('{0}_full_catalog', matrix.variant)] == 'true'
+      if: steps.selected-release.outputs.publish == 'true'
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
         RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
         RELEASE_EXISTS: ${{ steps.release-tag.outputs.release_exists }}
       run: |
         set -euo pipefail
-        title="$(cat oplus-report/title.txt)"
+        title="$(cat release-publish/title.txt)"
         if [ "$RELEASE_EXISTS" != true ]; then
         gh release create "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
-          --draft --title "$title" --notes-file oplus-report/summary.md
+          --draft --title "$title" --notes-file release-publish/release.md
         fi
-        assets=(oplus-publish/assets/*)
+        assets=(release-publish/assets/*)
         gh release upload "$RELEASE_TAG" "${assets[@]}" --clobber --repo "$GITHUB_REPOSITORY"
         gh release edit "$RELEASE_TAG" --draft=false --latest --title "$title" \
-          --notes-file oplus-report/summary.md --repo "$GITHUB_REPOSITORY"
+          --notes-file release-publish/release.md --repo "$GITHUB_REPOSITORY"
         url="https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG"
         printf 'release_tag=%s\n' "$RELEASE_TAG" >> "$GITHUB_OUTPUT"
         printf 'release_url=%s\n' "$url" >> "$GITHUB_OUTPUT"
@@ -2138,33 +2158,26 @@ jobs:
         GH_TOKEN: ${{ github.token }}
         RELEASE_TAG: ${{ steps.release.outputs.release_tag }}
       run: python3 tools/cleanup_build_artifacts.py --run-id "$GITHUB_RUN_ID" --release-tag "$RELEASE_TAG"
-    - name: 显示统一的详细构建配置
-      if: always() && !cancelled() && steps.assets.outcome == 'success'
-      run: cat oplus-report/summary.md >> "$GITHUB_STEP_SUMMARY"
-    - name: 读取已核验文件的校验值
-      id: selected-checksums
+    - name: 显示构建配置与发行结果
+      if: always() && !cancelled()
       env:
-        CHECKSUM_FILE: oplus-report/SHA256SUMS.txt
+        PREPARED: ${{ steps.selected-release.outcome }}
+        PUBLISH: ${{ steps.selected-release.outputs.publish }}
+        RELEASE_RESULT: ${{ steps.release.outcome }}
       run: |
-        python3 - <<'PY'
-        import json,os,pathlib
-        lines=pathlib.Path(os.environ['CHECKSUM_FILE']).read_text(encoding='utf-8').splitlines()
-        with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
-            output.write('checksums='+json.dumps(lines,separators=(',',':'))+'\n')
-        PY
-    strategy:
-      fail-fast: false
-      matrix:
-        variant: ${{ fromJSON(inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || format('["{0}"]', inputs.kernelsu_variant)) }}
-    outputs:
-      SukiSU_checksums: ${{ matrix.variant == 'SukiSU' && (steps.selected-checksums.outputs.checksums) || '' }}
-      BakaSU_checksums: ${{ matrix.variant == 'BakaSU' && (steps.selected-checksums.outputs.checksums) || '' }}
-      KernelSU-Next_checksums: ${{ matrix.variant == 'KernelSU-Next' && (steps.selected-checksums.outputs.checksums) || ''
-        }}
-      KernelSU_checksums: ${{ matrix.variant == 'KernelSU' && (steps.selected-checksums.outputs.checksums) || '' }}
-      KowSU_checksums: ${{ matrix.variant == 'KowSU' && (steps.selected-checksums.outputs.checksums) || '' }}
-      FinaSU_checksums: ${{ matrix.variant == 'FinaSU' && (steps.selected-checksums.outputs.checksums) || '' }}
+        if [ "$PREPARED" = success ]; then
+          if [ "$RELEASE_RESULT" = success ]; then
+            echo '所选管理器的完整内核目录全部成功，已统一发布 Release。' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "$PUBLISH" != true ]; then
+            echo '本次构建范围不满足完整目录发行条件，原文件和校验清单在 Actions 下载。' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '文件核验已完成，发行步骤未完成，请查看对应日志。' >> "$GITHUB_STEP_SUMMARY"
+          fi
+          printf '\n' >> "$GITHUB_STEP_SUMMARY"
+          cat release-publish/release.md >> "$GITHUB_STEP_SUMMARY"
+        else
+          echo '构建产物核验未完成，请查看对应日志。' >> "$GITHUB_STEP_SUMMARY"
+        fi
   build-oplus-kernel-overflow:
     name: 扩展内核批次（仅联合全量超过 256 个目标时执行）
     if: always() && !cancelled() && needs.prepare-matrix.result == 'success' && needs.build-sukisu-manager.result == 'success'
@@ -2197,40 +2210,6 @@ jobs:
       CCACHE_COMPRESS: 'true'
       CCACHE_NOHARDLINK: 'true'
       GKI_MANAGER_METADATA: ${{ needs.build-sukisu-manager.outputs[format('{0}_manager_metadata', matrix.variant)] }}
-      GKI_COMBINED_WORKER: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && 'true' || 'false' }}
+      GKI_COMBINED_WORKER: ${{ (inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' || inputs.kernelsu_variant ==
+        'KowSU + KernelSU + FinaSU') && 'true' || 'false' }}
     steps: *id001
-  build-checksums:
-    name: 汇总已成功构建文件的校验清单
-    needs: verify-oplus-assets
-    if: always() && !cancelled() && needs.verify-oplus-assets.result == 'success'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-    steps:
-    - name: 合并所选管理器的校验清单
-      env:
-        MANAGERS: ${{ inputs.kernelsu_variant == 'SukiSU + BakaSU + KernelSU-Next' && '["SukiSU","BakaSU","KernelSU-Next"]'
-          || format('["{0}"]', inputs.kernelsu_variant) }}
-        CHECKSUMS: ${{ toJSON(needs.verify-oplus-assets.outputs) }}
-      run: |
-        python3 - <<'PY'
-        import json,os,pathlib,re
-        rows={}
-        outputs=json.loads(os.environ['CHECKSUMS'])
-        for variant in json.loads(os.environ['MANAGERS']):
-            lines=json.loads(outputs[variant+'_checksums'])
-            if not isinstance(lines,list) or not lines: raise SystemExit('Missing verified checksums')
-            for line in lines:
-                match=re.fullmatch(r'([0-9a-f]{64})  ([A-Za-z0-9][A-Za-z0-9_.+-]+)',line)
-                if not match or match[2] in rows: raise SystemExit('Invalid or duplicate filename')
-                rows[match[2]]=match[1]
-        key=lambda n:[int(p) if p.isdigit() else p for p in re.split(r'(\d+)',n)]
-        pathlib.Path('SHA256SUMS.txt').write_text(''.join(rows[n]+'  '+n+'\n' for n in sorted(rows,key=key)),encoding='utf-8')
-        PY
-    - name: 上传原文件校验清单
-      uses: actions/upload-artifact@v7
-      with:
-        path: SHA256SUMS.txt
-        archive: false
-        if-no-files-found: error
-        overwrite: true

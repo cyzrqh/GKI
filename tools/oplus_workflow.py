@@ -7,6 +7,7 @@ from pathlib import Path
 from manager_lkm_jobs import (source_cache_restore, source_backup_restore, source_backup_recache,
                               source_cache_verify)
 from workflow_jobs import release_publish_steps
+from manager_variants import MANAGER_SELECTIONS
 from oplus_catalog import ALL_TARGETS
 from oplus_cctv import load_profiles, target_choices, AK3_REPOSITORY, AK3_REF
 
@@ -15,8 +16,7 @@ DISPATCH = "github.event_name == 'workflow_dispatch'"
 KPM_IF = 'inputs.use_kpm'
 INPUTS = {
     'kernelsu_variant': {'description': 'KernelSU 变体', 'required': True, 'type': 'choice',
-                        'options': ['SukiSU', 'BakaSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU',
-                                    'SukiSU + BakaSU + KernelSU-Next'], 'default': 'SukiSU'},
+                        'options': list(MANAGER_SELECTIONS), 'default': 'SukiSU'},
     'kernelsu_branch': {'description': '版本', 'required': True, 'type': 'choice',
                        'options': ['正式版', '最新版'], 'default': '最新版'},
     'build_target': {'description': '编译目标（可单独编译一个平台和内核）', 'required': True,
@@ -61,10 +61,11 @@ from oplus_catalog import strict_json
 from oplus_recipe import native_inputs
 profile = profile_identity(strict_json(os.environ['OPLUS_PROFILE'].encode()))
 inputs = strict_json(os.environ['OPLUS_INPUTS'].encode())
-from manager_variants import COMBINED_SELECTION, COMBINED_MANAGERS
-if inputs.get('kernelsu_variant') == COMBINED_SELECTION:
+from manager_variants import COMBINED_GROUPS
+selection = inputs.get('kernelsu_variant')
+if isinstance(selection, str) and selection in COMBINED_GROUPS:
     variant = os.environ.get('KSU_VARIANT')
-    if os.environ.get('GKI_COMBINED_WORKER') != 'true' or variant not in COMBINED_MANAGERS:
+    if os.environ.get('GKI_COMBINED_WORKER') != 'true' or variant not in COMBINED_GROUPS[selection]:
         raise SystemExit('Unexpected combined OPlus manager selection')
     inputs['kernelsu_variant'] = variant
 native_inputs(inputs, profile)

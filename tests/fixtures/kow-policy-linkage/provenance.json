@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "consumers": [
+    {
+      "kernel": "6.6",
+      "repository": "https://gitlab.com/simonpunk/susfs4ksu",
+      "ref": "bd7d199ac87808001127e8a6d076832e2938cf0d",
+      "path": "kernel_patches/50_add_susfs_in_gki-android15-6.6.patch",
+      "git_blob": "1174d898bb43e9ffe255a410448a71573f68e763",
+      "patch_sha256": "86d51e3c061d9466f6274815aae5072d529b53be94af31c78e98c9a042feaf2a",
+      "fixture": "consumer-6.6.h",
+      "fixture_sha256": "dd3a0120cb38fbad35dcbe74685c1223a3ee5aad4f6d9b8cef44d203b86e2fe6",
+      "extraction": "Unmodified extern declarations added to security/selinux/selinuxfs.c"
+    },
+    {
+      "kernel": "6.12",
+      "repository": "https://gitlab.com/simonpunk/susfs4ksu",
+      "ref": "5e0b2b925865000ca7dce993ecf1d281ee312887",
+      "path": "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch",
+      "git_blob": "f1e2000a5616e9f22e19a5f251534cbe59dedb8e",
+      "patch_sha256": "ddf6730f5addfc9aa310e9655415b114fc1c64a5f4da3da6e5aff92b30262326",
+      "fixture": "consumer-6.12.h",
+      "fixture_sha256": "dd3a0120cb38fbad35dcbe74685c1223a3ee5aad4f6d9b8cef44d203b86e2fe6",
+      "extraction": "Unmodified extern declarations added to security/selinux/selinuxfs.c"
+    }
+  ]
+}

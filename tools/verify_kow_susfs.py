@@ -7,6 +7,57 @@ from validate_susfs_hooks import strip_comments_and_literals
 from ensure_susfs_headers import without_comments
 
 
+def verify_policy_helpers(hide: str) -> None:
+    """Preserve both the modern SUSFS caller ABI and Kow's native SID outputs."""
+    from validate_susfs_hooks import inspect_c_source
+    public = 'security_context_to_sid_with_policy'
+    private = '__' + public
+    short = ('struct selinux_policy *policy, const char *scontext, u32 scontext_len, '
+             'u32 *sid, u32 def_sid, gfp_t gfp_flags')
+    full = short + ', u32 *orig_sid_p, int *orig_rc_p'
+    signatures = {
+        private: ('int', full, True),
+        'security_sid_to_context_with_policy': ('int',
+            'struct selinux_policy *policy, u32 sid, char **scontext, u32 *scontext_len', False),
+        'security_compute_av_user_with_policy': ('void',
+            'struct selinux_policy *policy, u32 ssid, u32 tsid, u16 tclass, struct av_decision *avd', False),
+    }
+    clean = strip_comments_and_literals(hide)
+    _, definitions = inspect_c_source(Path('kernel/feature/selinux_hide.c'), hide,
+                                      symbols=(*signatures, public))
+    compact = lambda value: re.sub(r'\s+', '', value)
+    for symbol, (result, parameters, is_static) in signatures.items():
+        declared = list(re.finditer(r'(?m)^(?P<static>static\s+)?(?P<result>int|void)\s+'
+                                   r'(?P<attribute>__nocfi\s+)?' + re.escape(symbol)
+                                   + r'\s*\((?P<parameters>[^;{}]*)\)\s*(?P<end>[;{])', clean))
+        providers = [item for item in definitions if item.symbol == symbol]
+        if (len(providers) != 1 or providers[0].is_static != is_static or len(declared) != 2
+                or sorted(item['end'] for item in declared) != [';', '{']
+                or any(bool(item['static']) != is_static or item['result'] != result
+                       or compact(item['parameters']) != compact(parameters) for item in declared)):
+            raise ValueError('Kow native policy helper has an incompatible declaration or linkage: ' + symbol)
+        if symbol == 'security_compute_av_user_with_policy':
+            definition = next(item for item in declared if item['end'] == '{')
+            if definition['attribute'] is None:
+                raise ValueError('Kow native policy AV helper must preserve its CFI annotation')
+    condition = '#if defined(CONFIG_KSU_SUSFS) && (LINUX_VERSION_CODE >= KERNEL_VERSION(6, 6, 0))'
+    prototypes = (condition + '\nint ' + public + '(' + short + ');\n#else\nint '
+                  + public + '(' + full + ');\n#endif')
+    forwarded = 'policy, scontext, scontext_len, sid, def_sid, gfp_flags'
+    wrappers = (condition + '\nint ' + public + '(' + short + ')\n{\nreturn ' + private
+                + '(' + forwarded + ', NULL, NULL);\n}\n#else\nint ' + public + '(' + full
+                + ')\n{\nreturn ' + private + '(' + forwarded + ', orig_sid_p, orig_rc_p);\n}\n#endif')
+    raw = compact(without_comments(hide))
+    providers = [item for item in definitions if item.symbol == public]
+    if (len(providers) != 2 or any(item.is_static for item in providers)
+            or raw.count(compact(prototypes)) != 1 or raw.count(compact(wrappers)) != 1):
+        raise ValueError('Kow modern six-argument policy ABI must wrap its original eight-argument implementation')
+    for caller, count in (('my_write_context', 1), ('my_write_access', 2), ('my_setprocattr', 1)):
+        body = strip_comments_and_literals(function_source(hide, caller))
+        if len(re.findall(r'\b' + private + r'\s*\(', body)) != count or re.search(r'\b' + public + r'\s*\(', body):
+            raise ValueError('Kow internal SELinux hook must retain the native SID-output parameters: ' + caller)
+
+
 def verify_selinux_view(hide: str, rules: str) -> None:
     """The old SELinux state API must expose the real pre-KSU policy view."""
     from ensure_official_init_compat import _unconditional_include
@@ -112,7 +163,9 @@ def verify_kow_port(source: Path) -> None:
         raise ValueError('Kow must not call the newer upstream-only SELinux inode initializer')
     if 'kernelsu-objs += extras.o' not in read('Kbuild'):
         raise ValueError('Kow AVC implementation is not linked')
-    verify_selinux_view(read('feature/selinux_hide.c'), read('selinux/rules.c'))
+    hide = read('feature/selinux_hide.c')
+    verify_selinux_view(hide, read('selinux/rules.c'))
+    verify_policy_helpers(hide)
     header = read('supercall/supercall.h')
     for identifier in ('CHANGE_MANAGER_UID', 'GET_SULOG_DUMP_V2', 'CHANGE_KSUVER',
                        'CHANGE_SPOOF_UNAME', 'CHANGE_KSUFLAGS'):

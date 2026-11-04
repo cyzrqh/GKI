@@ -84,9 +84,7 @@ class OplusWorkflowTests(unittest.TestCase):
             self.assertNotIn(removed, text)
         restore = next(step for step in job['steps'] if step.get('id') == 'oplus-ccache')
         self.assertTrue(restore['with']['key'].startswith('oplus-ccache-v1-'))
-        self.assertEqual(job['env']['CCACHE_MAXSIZE'], '50G')
-        self.assertEqual(job['env']['CCACHE_COMPRESS'], 'true')
-        self.assertEqual(job['env']['CCACHE_NOHARDLINK'], 'true')
+        self.assertEqual(job['env']['CCACHE_MAXSIZE'], '3G')
 
     def test_base_gki_pipeline_is_preserved_and_manager_lkm_are_shared(self):
         before = copy.deepcopy(self.base)

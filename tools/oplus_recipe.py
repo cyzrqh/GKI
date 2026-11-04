@@ -387,10 +387,6 @@ def build_step(recipe: dict, profile: dict, values: dict[str, str]) -> Step:
     if removed.count('export CCACHE_COMPILERCHECK="none"') != 1:
         raise RecipeError('Native compiler-cache identity setting changed')
     removed = removed.replace('export CCACHE_COMPILERCHECK="none"', 'export CCACHE_COMPILERCHECK="content"')
-    # Keep the workflow's configured capacity instead of resetting it to the
-    # reference recipe's original local limit during the actual build.
-    removed = re.sub(r'(?m)^([ \t]*)export CCACHE_MAXSIZE="3G"[ \t]*$',
-                     r'\1export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-50G}"', removed)
     if 'gki_defconfig' not in removed or not re.search(r'\bmake\s', removed):
         raise RecipeError('Native make entry changed')
     if profile['kernel_version'] == '6.12' and any(token not in removed for token in

@@ -161,17 +161,6 @@ class OPlusRecipeTests(unittest.TestCase):
             self.assertIn('releases/download/LLVM-Clang', script)
             self.assertIn(') || exit 1', script)
 
-    def test_native_build_preserves_the_workflow_cache_capacity(self):
-        for index in range(len(self.references)):
-            document, _, profile = self.case(index)
-            build = adapter.select_step(document, '构建内核')
-            build['run'] = 'export CCACHE_MAXSIZE="3G"\n' + build['run']
-            script = adapter.plan_phase('build', document, profile, self.inputs())[0].script
-            with self.subTest(reference=profile['recipe_workflow']):
-                self.assertNotIn('export CCACHE_MAXSIZE="3G"', script)
-                self.assertIn('export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-50G}"', script)
-                self.assertIn('export CCACHE_COMPILERCHECK="content"', script)
-
     def test_feature_mapping_disables_hidden_options_and_mtk_proxy(self):
         _, _, profile = self.case(0)
         selected = self.inputs(use_lz4kd=True, use_bbg=True, use_bbr=True, use_proxy_optimization=True)

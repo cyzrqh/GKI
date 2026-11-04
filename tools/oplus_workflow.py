@@ -233,8 +233,7 @@ ccache --set-config=compiler_check=content
                 'SUSFS_SOURCES': '${{ needs.prepare-matrix.outputs.susfs_sources }}',
                 'AK3_REF': AK3_REF,
                 'PATCHES_REF': '${{ needs.prepare-matrix.outputs.patches_ref }}',
-                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '50G',
-                'CCACHE_COMPRESS': 'true', 'CCACHE_NOHARDLINK': 'true'},
+                'CCACHE_DIR': '${{ github.workspace }}/.oplus-ccache', 'CCACHE_MAXSIZE': '3G'},
         'steps': steps,
     }
     return job

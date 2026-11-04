@@ -168,7 +168,7 @@ job:
     CCACHE_NOHASHDIR: 'true'
     CCACHE_NOHARDLINK: 'true'
     CCACHE_COMPRESS: 'true'
-    CCACHE_MAXSIZE: 50G
+    CCACHE_MAXSIZE: 2G
   steps:
   - name: 构建信息摘要
     shell: bash
@@ -554,7 +554,7 @@ job:
       mkdir -p "$CCACHE_DIR"
       mkdir -p ~/.cache/bazel
       ccache --version
-      ccache --max-size "$CCACHE_MAXSIZE"
+      ccache --max-size=2G
       ccache --set-config=compression=true
       ccache --set-config=hard_link=false
       echo "CCACHE_DIR=$CCACHE_DIR" >> "$GITHUB_ENV"

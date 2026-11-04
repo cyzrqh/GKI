@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Allocate atomic r1.x release tags and bind releases to exact Actions runs."""
+"""Allocate atomic rM.0..20 release tags bound to exact Actions runs."""
 from __future__ import annotations
 
 import argparse
@@ -15,7 +15,9 @@ from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 REPOSITORY = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}/[A-Za-z0-9][A-Za-z0-9_.-]{0,99}\Z')
-VERSION_TAG = re.compile(r'r1\.(0|[1-9][0-9]{0,8})\Z')
+VERSION_TAG = re.compile(r'r([1-9][0-9]*)\.(0|[1-9][0-9]*)\Z')
+MAX_MINOR = 20
+VERSIONS_PER_MAJOR = MAX_MINOR + 1
 LEGACY_TAG = re.compile(r'gki-([1-9][0-9]*)-([1-9][0-9]*)\Z')
 MARKER = re.compile(r'<!-- gki-release-run:v1 repository=([A-Za-z0-9][A-Za-z0-9_.-]{0,99}/'
                     r'[A-Za-z0-9][A-Za-z0-9_.-]{0,99}) run_id=([1-9][0-9]*) '
@@ -26,6 +28,22 @@ MAX_RESPONSE = 4 * 1024 * 1024
 MAX_RELEASES = 10000
 RELEASE_PAGE_SIZE = 20
 TRANSIENT_HTTP = {408, 429, 500, 502, 503, 504}
+
+
+def version_index(tag: str) -> int:
+    """Read canonical tags and historical overflowing minors as one sequence."""
+    match = VERSION_TAG.fullmatch(tag) if isinstance(tag, str) else None
+    if match is None:
+        raise ValueError('Expected a positive-major release tag without leading zeros')
+    return (int(match[1]) - 1) * VERSIONS_PER_MAJOR + int(match[2])
+
+
+def version_tag(index: int) -> str:
+    """Format a nonnegative sequence index with exactly 21 tags per major."""
+    if type(index) is not int or index < 0:
+        raise ValueError('Expected a nonnegative integer release index')
+    major, minor = divmod(index, VERSIONS_PER_MAJOR)
+    return f'r{major + 1}.{minor}'
 
 
 def context_identity(context: dict) -> dict:
@@ -118,11 +136,12 @@ class GitHub:
 
     def request(self, resource: str, *, method='GET', data=None):
         if not ((method == 'GET' and data is None and (
-                resource == '/git/matching-refs/tags/r1.'
+                resource == '/git/matching-refs/tags/r'
                 or re.fullmatch(r'/releases\?per_page=20&page=[1-9][0-9]*', resource)))
                 or (method == 'POST' and resource == '/git/refs' and isinstance(data, dict)
                     and set(data) == {'ref', 'sha'} and isinstance(data['ref'], str)
                     and VERSION_TAG.fullmatch(data['ref'].removeprefix('refs/tags/'))
+                    and int(VERSION_TAG.fullmatch(data['ref'].removeprefix('refs/tags/'))[2]) <= MAX_MINOR
                     and data['ref'].startswith('refs/tags/') and isinstance(data['sha'], str)
                     and SHA.fullmatch(data['sha']))):
             raise ValueError('Unsupported release tag API operation')
@@ -198,7 +217,7 @@ def list_releases(api) -> list[dict]:
 
 
 def list_tag_refs(api) -> dict[str, str]:
-    document = api.request('/git/matching-refs/tags/r1.')
+    document = api.request('/git/matching-refs/tags/r')
     if not isinstance(document, list) or len(document) > MAX_RELEASES:
         raise ValueError('Release tag ref listing is invalid or exceeds its limit')
     refs = {}
@@ -223,14 +242,14 @@ def allocate(api, context: dict) -> dict:
     for _attempt in range(5):
         releases, refs = list_releases(api), list_tag_refs(api)
         existing = None
-        minors = [int(VERSION_TAG.fullmatch(tag)[1]) for tag in refs]
+        indices = [version_index(tag) for tag in refs]
         for release in releases:
             tag = release['tag_name']
             if not VERSION_TAG.fullmatch(tag) and not LEGACY_TAG.fullmatch(tag):
                 continue
             identity = release_run_identity(release)
             if VERSION_TAG.fullmatch(tag):
-                minors.append(int(VERSION_TAG.fullmatch(tag)[1]))
+                indices.append(version_index(tag))
             if (identity['run_id'], identity['run_attempt']) != (context['run_id'], context['run_attempt']):
                 continue
             if identity != context:
@@ -242,10 +261,7 @@ def allocate(api, context: dict) -> dict:
             existing = tag
         if existing:
             return {'release_tag': existing, 'release_exists': True}
-        minor = max(minors, default=-1) + 1
-        if minor > 999999999:
-            raise ValueError('Release version sequence exceeds its supported limit')
-        tag = 'r1.' + str(minor)
+        tag = version_tag(max(indices, default=-1) + 1)
         try:
             result = api.request('/git/refs', method='POST', data={'ref': 'refs/tags/' + tag,
                                                                  'sha': context['head_sha']})

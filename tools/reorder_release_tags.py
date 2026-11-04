@@ -1,4 +1,4 @@
-"""Compact owned published r1.x releases without replacing releases or assets.
+"""Compact owned published rM.N releases without replacing releases or assets.
 
 Only unoccupied numbered tag refs may be reassigned. Release IDs, exact
 producer commits, notes, titles and complete asset inventories are preserved.
@@ -15,12 +15,13 @@ from pathlib import Path
 import re
 
 from release_tags import (REPOSITORY, SHA, VERSION_TAG, list_releases, list_tag_refs,
-                          release_run_identity)
+                          release_run_identity, version_index, version_tag)
 from transfer_ksu_snapshot import GitHub as Transport
 
-NUMBER = r'r1\.(?:0|[1-9][0-9]{0,8})'
+NUMBER = VERSION_TAG.pattern.removesuffix(r'\Z')
 PUBLISHERS = ('kernel-full-feature-matrix.yml', 'oplus-full-feature-matrix.yml')
-PUBLISH_JOBS = {'整理产物与校验（全量成功才发行）', '整理原生文件与详细配置（全量成功才发行）'}
+PUBLISH_JOBS = {'整理产物与校验（全量成功才发行）', '整理原生文件与详细配置（全量成功才发行）',
+                '核验与发行'}
 PRESERVED = ('id', 'target_commitish', 'name', 'body', 'draft', 'prerelease', 'published_at', 'immutable')
 
 
@@ -44,7 +45,7 @@ class GitHub:
     def request(self, resource: str, *, method='GET', data=None, missing=False):
         ref = re.fullmatch(r'/git/refs/tags/' + NUMBER, resource)
         release = re.fullmatch(r'/releases/[1-9][0-9]*', resource)
-        read = (resource in ('/git/matching-refs/tags/r1.', '/releases/latest')
+        read = (resource in ('/git/matching-refs/tags/r', '/releases/latest')
                 or re.fullmatch(r'/releases\?per_page=20&page=[1-9][0-9]*', resource)
                 or release or re.fullmatch(r'/git/ref/tags/' + NUMBER, resource)
                 or re.fullmatch(r'/releases/[1-9][0-9]*/assets\?per_page=100&page=[1-9][0-9]*', resource)
@@ -142,7 +143,7 @@ def snapshot(api) -> tuple[list[dict], dict[str, str]]:
     # manually permuted/cyclic labels before changing even one tag.
     owners = {release['tag_name']: release['id'] for release in releases}
     for index, release in enumerate(releases):
-        tag = 'r1.' + str(index)
+        tag = version_tag(index)
         if owners.get(tag) not in (None, release['id']):
             raise ValueError('Chronological release labels are cyclic; automatic compaction stopped')
         owners.pop(release['tag_name'], None)
@@ -169,11 +170,11 @@ def read_ref(api, tag):
 def reorder(api, *, execute=False, current_run_id='', report_path: Path | None = None) -> dict:
     no_active_publisher(api, current_run_id)
     releases, refs = snapshot(api)
-    rows = [{'release_id': release['id'], 'old': release['tag_name'], 'new': 'r1.' + str(index),
+    rows = [{'release_id': release['id'], 'old': release['tag_name'], 'new': version_tag(index),
              'sha': release['target_commitish'], 'name': release.get('name')}
             for index, release in enumerate(releases)]
     wanted = {row['new'] for row in rows}
-    orphan_tags = sorted(set(refs) - wanted, key=lambda tag: int(VERSION_TAG.fullmatch(tag)[1]))
+    orphan_tags = sorted(set(refs) - wanted, key=lambda tag: (version_index(tag), tag))
     result = {'repository': api.repository, 'mode': 'execute' if execute else 'preview',
               'state': 'planned', 'mapping': rows, 'deleted_orphan_tags': [], 'old_refs': refs}
     if execute and not orphan_tags and all(row['old'] == row['new'] for row in rows):

@@ -311,8 +311,8 @@ def reorder_release_workflow():
         'on': {'release': {'types': ['deleted']}, 'workflow_dispatch': {}},
         'permissions': {'contents': 'read'},
         'jobs': {'reorder': {
-            'name': '按发布时间连续重排 r1.x 标签',
-            'if': "github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'r1.'))",
+            'name': '按发布时间重排标签（每到 20 进位）',
+            'if': "github.event_name == 'workflow_dispatch' || (github.event_name == 'release' && startsWith(github.event.release.tag_name, 'r'))",
             'runs-on': 'ubuntu-24.04', 'timeout-minutes': 20,
             'permissions': {'contents': 'write', 'actions': 'read'},
             'concurrency': release_tag_concurrency(),

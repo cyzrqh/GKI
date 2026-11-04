@@ -1,6 +1,7 @@
 """Exercise real pinned CCTV recipes, source selection and installer behaviour."""
 import copy
 import hashlib
+import json
 import os
 from pathlib import Path
 import shutil
@@ -60,6 +61,40 @@ class CctvSchemes(unittest.TestCase):
         with self.assertRaises(ValueError):
             cctv.discover_matrix(target='6.1.141')
         self.assertEqual({'include': self.rows}, cctv.discover_matrix())
+
+    def cli_outputs(self, *arguments):
+        with tempfile.TemporaryDirectory(dir=ROOT.parent / '.gki-upstream-cache', prefix='cctv-cli-') as tmp:
+            directory = Path(tmp)
+            output, summary = directory / 'outputs', directory / 'summary.md'
+            output.write_text('existing=preserved\n', encoding='utf-8')
+            result = subprocess.run([sys.executable, str(ROOT / 'tools/oplus_cctv.py'),
+                '--github-output', '--summary', *arguments], cwd=ROOT, capture_output=True,
+                text=True, encoding='utf-8', errors='replace', timeout=20,
+                env={**os.environ, 'GITHUB_OUTPUT': str(output), 'GITHUB_STEP_SUMMARY': str(summary)})
+            self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+            lines = output.read_text(encoding='utf-8').splitlines()
+            values = dict(line.split('=', 1) for line in lines)
+            self.assertEqual(4, len(lines), 'Each output must be written exactly once')
+            self.assertEqual({'existing', 'matrix', 'count', 'full_catalog'}, set(values))
+            self.assertEqual('preserved', values['existing'])
+            return values, summary.read_text(encoding='utf-8')
+
+    def test_real_cli_exports_full_native_matrix_count_and_full_catalog_gate(self):
+        values, summary = self.cli_outputs()
+        self.assertEqual({'include': self.rows}, json.loads(values['matrix']))
+        self.assertEqual('22', values['count'])
+        self.assertEqual('true', values['full_catalog'])
+        for row in self.rows:
+            self.assertIn(cctv.label(row), summary)
+
+    def test_real_cli_exports_count_one_for_each_single_native_target(self):
+        for row in self.rows:
+            with self.subTest(target=row['id']):
+                values, summary = self.cli_outputs('--target', cctv.label(row))
+                self.assertEqual({'include': [row]}, json.loads(values['matrix']))
+                self.assertEqual('1', values['count'])
+                self.assertEqual('false', values['full_catalog'])
+                self.assertIn(cctv.label(row), summary)
 
     def test_every_real_recipe_renders_both_managers_with_enabled_or_disabled_features(self):
         for row in self.rows:

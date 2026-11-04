@@ -26,6 +26,7 @@ from manager_variants import COMBINED_MANAGERS, COMBINED_SELECTION, LOCAL_MANAGE
 from test_additional_managers import manifest
 import test_oplus_assets as oplus_fixture
 import oplus_assets
+import oplus_cctv
 import prepare_release as legacy_gki
 import prepare_selected_release as selected
 
@@ -406,6 +407,68 @@ class SelectedOplusReleaseTests(unittest.TestCase):
                     selected.prepare(self.source, self.output, selection=self.selection, platform='oplus',
                                      operation='编译内核', manager_inputs=options, oplus_matrix=matrix)
                 self.assertFalse(self.output.exists())
+                self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
+
+    def test_producer_cli_count_drives_environment_and_verified_oplus_publication(self):
+        native_matrix = {'include': [self.fixture.profile]}
+        for label, selection, variants in (('combined', self.selection, self.variants),
+                                            ('single', self.variants[0], self.variants[:1])):
+            with self.subTest(selection=selection):
+                environment = {'MANAGER_SELECTION': selection, 'RELEASE_PLATFORM': 'oplus',
+                               'OPERATION': '编译内核'}
+                matrices = []
+                for variant in variants:
+                    producer_output = self.fixture.directory / (label + '-' + variant + '-producer-outputs')
+                    with (mock.patch.object(oplus_cctv, 'discover_matrix', return_value=native_matrix) as discover,
+                          mock.patch.object(sys, 'argv', ['oplus_cctv.py', '--github-output']),
+                          mock.patch.dict(os.environ, {'GITHUB_OUTPUT': str(producer_output)})):
+                        self.assertEqual(0, oplus_cctv.main())
+                    discover.assert_called_once_with(target=oplus_cctv.catalog.ALL_TARGETS)
+                    outputs = dict(line.split('=', 1) for line in
+                                   producer_output.read_text(encoding='utf-8').splitlines())
+                    matrix = json.loads(outputs['matrix'])
+                    matrices.append(matrix)
+                    # Read the real producer's output: the old CLI omitted count,
+                    # and the workflow fallback then passed zero to every manager.
+                    self.assertEqual(len(matrix['include']), int(outputs['count']))
+                    if len(variants) > 1:
+                        self.assertNotEqual(len(matrix['include']) * len(variants), int(outputs['count']))
+                    row = self.inputs[variant]
+                    prefix = 'MANAGER_' + selected.SUFFIXES[variant] + '_'
+                    environment.update({prefix + 'APK_FILENAME': row['apk_filename'],
+                        prefix + 'METADATA': json.dumps(row['metadata']) if row['metadata'] else '',
+                        prefix + 'EXPECTED_COUNT': outputs['count'],
+                        prefix + 'FULL_CATALOG': outputs['full_catalog']})
+                self.assertTrue(all(matrix == native_matrix for matrix in matrices))
+                environment['OPLUS_MATRIX'] = json.dumps(matrices[0])
+                source = self.source
+                if len(variants) == 1:
+                    source = self.fixture.directory / 'single-contract-input'
+                    source.mkdir()
+                    variant = variants[0]
+                    for name in (self.inputs[variant]['apk_filename'], self.kernels[variant].name):
+                        shutil.copyfile(self.source / name, source / name)
+                original = {path.name: path.read_bytes() for path in source.iterdir()}
+                output = self.fixture.directory / (label + '-contract-publish')
+                github_output = self.fixture.directory / (label + '-wrapper-outputs')
+                environment['GITHUB_OUTPUT'] = str(github_output)
+                stdout, stderr = io.StringIO(), io.StringIO()
+                with (mock.patch.dict(os.environ, environment), redirect_stdout(stdout), redirect_stderr(stderr)):
+                    prepared = selected.environment_inputs(selection)
+                    self.assertEqual(set(variants), set(prepared))
+                    self.assertEqual({len(native_matrix['include'])},
+                                     {row['expected_count'] for row in prepared.values()})
+                    status = selected.main(['--input', str(source), '--output', str(output)])
+                self.assertEqual(0, status, stderr.getvalue() + stdout.getvalue())
+                total_kernels = len(native_matrix['include']) * len(variants)
+                self.assertEqual({'publish': 'true', 'assets': str(total_kernels + len(variants)),
+                                  'kernels': str(total_kernels)}, dict(line.split('=', 1) for line in
+                                    github_output.read_text(encoding='utf-8').splitlines()))
+                self.assertEqual(list(variants), json.loads(stdout.getvalue())['managers'])
+                self.assertEqual(original, {path.name: path.read_bytes() for path in
+                    (output / 'assets').iterdir() if path.name != 'SHA256SUMS.txt'})
+                self.assertEqual({name: hashlib.sha256(raw).hexdigest() for name, raw in original.items()},
+                                 checksums(output / 'assets/SHA256SUMS.txt'))
                 self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
 
 

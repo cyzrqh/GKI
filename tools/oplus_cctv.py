@@ -226,6 +226,7 @@ def main():
     if args.github_output:
         with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as stream:
             stream.write('matrix=' + json.dumps(matrix, ensure_ascii=False, separators=(',', ':')) + '\n')
+            stream.write('count=' + str(len(matrix['include'])) + '\n')
             stream.write('full_catalog=' + str(args.target == catalog.ALL_TARGETS).lower() + '\n')
     if args.summary:
         with open(os.environ['GITHUB_STEP_SUMMARY'], 'a', encoding='utf-8') as stream:

@@ -4,7 +4,7 @@ name: 检查并同步官方更新
 run-name: ${{ inputs.operation || '检查上游并提醒' }}
 'on':
   schedule:
-  - cron: 0 4 * * *
+  - cron: 0 4,16 * * *
   workflow_dispatch:
     inputs:
       operation:

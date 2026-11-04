@@ -90,9 +90,12 @@ def integrate_susfs(root: Path, dependency: Path, variant: str) -> None:
             if check.returncode == 0:
                 if not reverse:
                     from additional_manager_kpm import with_susfs
-                    with_susfs(source, variant, lambda: subprocess.run(
-                        ['git', '-C', str(source), 'apply', '--recount', str(patch.resolve())],
-                        check=True, capture_output=True, timeout=30))
+                    def apply_direct():
+                        subprocess.run(['git', '-C', str(source), 'apply', '--recount', str(patch.resolve())],
+                                       check=True, capture_output=True, timeout=30)
+                        verify_native_preinit_cleanup(source)
+                    with_susfs(source, variant, apply_direct)
+                verify_native_preinit_cleanup(source)
                 return
         name = 'official-susfs23' if (source / 'kernel/preinit/preinit.c').is_file() else 'official-susfs23-stable'
         from additional_manager_kpm import with_susfs
@@ -104,6 +107,22 @@ def integrate_susfs(root: Path, dependency: Path, variant: str) -> None:
                else ('susfs', 'ksu_handle_execveat', 'ksu_handle_input_handle_event'))
     if not all(symbol in combined for symbol in symbols):
         raise ValueError('Selected manager lacks the required native SUSFS implementation')
+    if variant in ('KernelSU', 'KernelSU-Next', 'KowSU'):
+        verify_native_preinit_cleanup(source)
+
+
+def verify_native_preinit_cleanup(source: Path) -> None:
+    """Retain the native close syscall on both reviewed preinit cleanup paths."""
+    preinit = source / 'kernel/preinit/preinit.c'
+    if not preinit.exists() and not preinit.is_symlink():
+        return  # Older stable sources retain their own preinit lifecycle.
+    util = source / 'kernel/include/util.h'
+    for path in (preinit, util):
+        if (path.is_symlink() or not path.is_file() or path.stat().st_size > 262144
+                or not path.resolve().is_relative_to(source.resolve())):
+            raise ValueError('Missing or unsupported native preinit cleanup source: ' + str(path))
+    from apply_susfs23 import verify_preinit_fd_cleanup
+    verify_preinit_fd_cleanup(preinit.read_text(encoding='utf-8'), util.read_text(encoding='utf-8'))
 
 
 def verify_legacy_next_lifecycle(source: Path) -> None:
@@ -222,6 +241,7 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
     if hashlib.sha256(patch.read_bytes()).hexdigest() != inventory['patch_sha256']:
         raise ValueError('Next SUSFS port differs from its reviewed digest')
     def verify():
+        verify_native_preinit_cleanup(source)
         if name == 'next-susfs23-stable':
             verify_legacy_next_lifecycle(source)
         elif name == 'kow-susfs23':
@@ -271,6 +291,7 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
                              + (conflicts or 'patch application failed'))
         if call(checked, 'ls-files', '--unmerged').stdout.strip():
             raise ValueError('Official SUSFS port still contains unresolved source conflicts')
+        verify_native_preinit_cleanup(checked)
         verify_native_policy_generation(checked)
         prepared = Path(temporary) / 'rebased.patch'
         prepared.write_bytes(call(checked, 'diff', '--binary', '--full-index', 'HEAD', '--', 'kernel').stdout)

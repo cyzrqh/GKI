@@ -589,6 +589,46 @@ class SkippedStableReleaseTests(unittest.TestCase):
                     self.assertNotIn(row['variant'], title)
                     self.assertIn('- ' + row['variant'] + '：官方尚未发布正式版。', notes)
 
+    def test_latest_groups_publish_only_distinct_sources_on_gki_and_oplus(self):
+        from resolve_build_sources import source_result
+        from resolve_manager_selection import LATEST_STABLE_REASON
+        for platform in ('gki', 'oplus'):
+            for group in (COMBINED_SELECTION, SECOND_SELECTION):
+                requested = selected_managers(group)
+                variants = requested[1:]
+                with self.subTest(platform=platform, selection=group):
+                    if platform == 'gki':
+                        fixture = SelectedGkiReleaseTests()
+                        fixture.setUp()
+                        self.addCleanup(fixture.doCleanups)
+                        fixture.populate(variants, branch='Latest(最新)')
+                        reference = 'b' * 40
+                    else:
+                        fixture = SelectedOplusReleaseTests()
+                        fixture.selection, fixture.variants, fixture.branch = group, variants, 'Latest(最新)'
+                        fixture.setUp()
+                        self.addCleanup(fixture.doCleanups)
+                        reference = fixture.fixture.ksu_ref
+                    skipped = requested[0]
+                    receipt = {'schema_version': 1, 'selection': group, 'tier': '最新版',
+                        'active_managers': list(variants),
+                        'skipped_managers': [{'variant': skipped, 'reason': LATEST_STABLE_REASON,
+                            'latest_source': source_result('d' * 40, manager_profile(skipped)['repository'],
+                                                           'main', 'Latest(最新)'),
+                            'stable_source': source_result('d' * 40, manager_profile(skipped)['repository'],
+                                                           'v4.2.0', 'Stable(标准)')}],
+                        'sources': {variant: source_result(reference, manager_profile(variant)['repository'],
+                                                           'main', 'Latest(最新)') for variant in variants}}
+                    result = fixture.prepare(selection=group, resolution=receipt)
+                    self.assertTrue(result['publish'])
+                    self.assertEqual(list(variants), result['managers'])
+                    self.assertEqual(len(variants), result['kernels'])
+                    self.assertNotIn(skipped, (fixture.output / 'title.txt').read_text(encoding='utf-8'))
+                    self.assertIn('- ' + skipped + '：' + LATEST_STABLE_REASON + '。',
+                                  (fixture.output / 'release.md').read_text(encoding='utf-8'))
+                    self.assertEqual({name: hashlib.sha256(raw).hexdigest() for name, raw in fixture.originals.items()},
+                                     checksums(fixture.output / 'assets/SHA256SUMS.txt'))
+
     def test_only_one_available_manager_keeps_its_normal_report_title_and_checksums(self):
         variants = ('KernelSU-Next',)
         fixture = self.gki(variants)

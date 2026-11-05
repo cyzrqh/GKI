@@ -67,7 +67,7 @@ def selected_manager_job(original_prepare):
         'outputs': {key: expression('steps.selection.outputs.' + key)
                     for key in ('active_managers', 'active_count', 'resolution')},
         'steps': [copy.deepcopy(checkout), {
-            'name': '固定正式版或最新版，跳过未发布正式版的组合成员', 'id': 'selection',
+            'name': '固定官方版本并筛选参与构建的管理器', 'id': 'selection',
             'env': environment,
             'run': 'python3 tools/resolve_manager_selection.py --selection "$MANAGER_SELECTION" --tier "$KSU_TIER" \\\n'
                    '  --custom-ref "$CUSTOM_REF" --susfs "$ENABLE_SUSFS"',

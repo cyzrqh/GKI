@@ -119,6 +119,23 @@ class CombinedReleaseWorkflowTests(unittest.TestCase):
                             self.assertEqual(active, selection_value(job['strategy']['matrix']['variant'], selection, active))
                             self.assertIn("needs.select-managers.outputs.active_count != '0'", job['if'])
 
+    def test_latest_duplicates_reuse_the_active_manager_gate_for_every_workflow(self):
+        from test_manager_matrix_layout import receipt
+        from resolve_manager_selection import active_managers
+        for oplus, workflow, publisher in self.publishers():
+            for selection, requested in COMBINED_GROUPS.items():
+                for active in ([name for name in requested if name != requested[1]], []):
+                    resolution = receipt(selection, active, '最新版')
+                    selected = list(active_managers(selection, resolution))
+                    for name in ('prepare-matrix', 'build-sukisu-manager'):
+                        with self.subTest(oplus=oplus, selection=selection, active=active, job=name):
+                            job = workflow['jobs'][name]
+                            self.assertEqual(selected, selection_value(job['strategy']['matrix']['variant'], selection, selected))
+                            self.assertIn("needs.select-managers.outputs.active_count != '0'", job['if'])
+                    results = {name: 'success' for name in publisher['needs']}
+                    self.assertEqual(bool(selected), gate_allows(publisher['if'], results=results,
+                        overflow_count='1', active_count=str(len(selected))))
+
     def test_selection_freezes_once_and_prepare_reuses_its_immutable_sources(self):
         for oplus, workflow, _ in self.publishers():
             selector = workflow['jobs']['select-managers']

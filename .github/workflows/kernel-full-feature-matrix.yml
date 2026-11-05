@@ -175,7 +175,7 @@ jobs:
       uses: actions/checkout@v6
       with:
         persist-credentials: false
-    - name: 固定正式版或最新版，跳过未发布正式版的组合成员
+    - name: 固定官方版本并筛选参与构建的管理器
       id: selection
       env:
         KSU_TIER: ${{ inputs.kernelsu_branch }}

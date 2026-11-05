@@ -1,4 +1,4 @@
-"""Freeze selected sources, skipping only missing stable releases in a group."""
+"""Freeze group sources, skipping absent stable or identical latest releases."""
 from __future__ import annotations
 
 import argparse
@@ -13,6 +13,7 @@ from resolve_build_sources import (NoStableRelease, REPOSITORIES, SHA, TIERS, TI
 
 ROOT = Path(__file__).resolve().parents[1]
 SKIP_REASON = '官方尚未发布正式版'
+LATEST_STABLE_REASON = '最新版与正式版源码相同'
 SOURCE_FIELDS = {'ksu_ref', 'ksu_repo', 'ksu_short', 'ksu_source_branch', 'effective_ksu_branch'}
 FIELDS = {'schema_version', 'selection', 'tier', 'active_managers', 'skipped_managers', 'sources'}
 
@@ -30,6 +31,17 @@ def _unique_object(pairs):
             raise ValueError('Duplicate manager selection field')
         result[key] = value
     return result
+
+
+def _validate_source(source, variant, tier):
+    if (not isinstance(source, dict) or set(source) != SOURCE_FIELDS
+            or not isinstance(source['ksu_ref'], str) or not SHA.fullmatch(source['ksu_ref'])
+            or source['ksu_ref'] != source['ksu_ref'].lower()
+            or source['ksu_short'] != source['ksu_ref'][:7]
+            or source['ksu_repo'] != REPOSITORIES[variant]
+            or source['effective_ksu_branch'] != tier):
+        raise ValueError('Invalid fixed official source for selected manager: ' + variant)
+    validate_ref(source['ksu_source_branch'], empty=tier == 'Custom(自定义)')
 
 
 def validate_receipt(document, selection=None):
@@ -50,24 +62,26 @@ def validate_receipt(document, selection=None):
         raise ValueError('Active managers must be an ordered subset of the requested managers')
     omitted = [name for name in requested if name not in active]
     if not isinstance(skipped, list) or len(skipped) != len(omitted):
-        raise ValueError('Every omitted manager requires an explicit missing-release reason')
-    if omitted and (len(requested) < 2 or tier != 'Stable(标准)'):
-        raise ValueError('Only combined stable builds can skip an unavailable official release')
+        raise ValueError('Every omitted manager requires an explicit release-selection reason')
+    if omitted and (len(requested) < 2 or tier not in ('Stable(标准)', 'Latest(最新)')):
+        raise ValueError('Only combined stable/latest builds can skip a manager')
     for name, row in zip(omitted, skipped):
-        if row != {'variant': name, 'reason': SKIP_REASON}:
-            raise ValueError('Unexpected skipped-manager identity or reason')
+        if tier == 'Stable(标准)':
+            if row != {'variant': name, 'reason': SKIP_REASON}:
+                raise ValueError('Unexpected skipped-manager identity or reason')
+        else:
+            if (not isinstance(row, dict)
+                    or set(row) != {'variant', 'reason', 'latest_source', 'stable_source'}
+                    or row['variant'] != name or row['reason'] != LATEST_STABLE_REASON):
+                raise ValueError('Identical latest/stable skip requires both fixed official sources')
+            _validate_source(row['latest_source'], name, 'Latest(最新)')
+            _validate_source(row['stable_source'], name, 'Stable(标准)')
+            if row['latest_source']['ksu_ref'] != row['stable_source']['ksu_ref']:
+                raise ValueError('Latest and stable must resolve to the same official commit before skipping')
     if not isinstance(sources, dict) or set(sources) != set(active):
         raise ValueError('Fixed source records do not match the active managers')
     for name in active:
-        source = sources[name]
-        if (not isinstance(source, dict) or set(source) != SOURCE_FIELDS
-                or not isinstance(source['ksu_ref'], str) or not SHA.fullmatch(source['ksu_ref'])
-                or source['ksu_ref'] != source['ksu_ref'].lower()
-                or source['ksu_short'] != source['ksu_ref'][:7]
-                or source['ksu_repo'] != REPOSITORIES[name]
-                or source['effective_ksu_branch'] != tier):
-            raise ValueError('Invalid fixed official source for selected manager: ' + name)
-        validate_ref(source['ksu_source_branch'], empty=tier == 'Custom(自定义)')
+        _validate_source(sources[name], name, tier)
     return document
 
 
@@ -89,6 +103,15 @@ def resolve_selection(selection, tier, custom_ref='', susfs=False):
                 raise
             skipped.append({'variant': variant, 'reason': SKIP_REASON})
             continue
+        if len(requested) > 1 and channel == 'Latest(最新)':
+            try:
+                stable = resolve_sources(ROOT, variant, 'Stable(标准)', '', susfs)
+            except NoStableRelease:
+                stable = None  # No formal counterpart: keep building latest.
+            if stable is not None and source['ksu_ref'] == stable['ksu_ref']:
+                skipped.append({'variant': variant, 'reason': LATEST_STABLE_REASON,
+                                'latest_source': source, 'stable_source': stable})
+                continue
         active.append(variant)
         sources[variant] = source
     return validate_receipt({'schema_version': 1, 'selection': selection, 'tier': tier,
@@ -108,7 +131,9 @@ def selection_summary(receipt):
     for row in receipt['skipped_managers']:
         lines.append('- 跳过 ' + row['variant'] + '：' + row['reason'] + '。')
     if not receipt['active_managers']:
-        lines += ['', '所选管理器均未发布正式版，本次不编译、不发行。']
+        message = ('所选管理器的最新版均与正式版相同' if effective_tier(receipt['tier']) == 'Latest(最新)'
+                   else '所选管理器均未发布正式版')
+        lines += ['', message + '，本次不编译、不发行。']
     return '\n'.join(lines) + '\n'
 
 

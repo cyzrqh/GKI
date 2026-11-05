@@ -4,15 +4,21 @@ import unittest
 from manager_matrix_layout import expand, layout
 from manager_variants import MANAGERS, COMBINED_GROUPS
 from resolve_build_sources import REPOSITORIES, source_result
+import resolve_manager_selection as selected_sources
 
 
-def receipt(selection, active):
+def receipt(selection, active, tier='正式版'):
     requested = COMBINED_GROUPS[selection]
-    return {'schema_version': 1, 'selection': selection, 'tier': '正式版',
+    latest = tier == '最新版'
+    return {'schema_version': 1, 'selection': selection, 'tier': tier,
             'active_managers': active,
-            'skipped_managers': [{'variant': name, 'reason': '官方尚未发布正式版'}
+            'skipped_managers': [({'variant': name, 'reason': selected_sources.LATEST_STABLE_REASON,
+                                  'latest_source': source_result('a' * 40, REPOSITORIES[name], 'main', 'Latest(最新)'),
+                                  'stable_source': source_result('a' * 40, REPOSITORIES[name], 'v1.0', 'Stable(标准)')}
+                                  if latest else {'variant': name, 'reason': '官方尚未发布正式版'})
                                  for name in requested if name not in active],
-            'sources': {name: source_result('a' * 40, REPOSITORIES[name], 'v1.0', 'Stable(标准)')
+            'sources': {name: source_result('b' * 40, REPOSITORIES[name], 'main', 'Latest(最新)') if latest
+                        else source_result('a' * 40, REPOSITORIES[name], 'v1.0', 'Stable(标准)')
                         for name in active}}
 
 
@@ -73,6 +79,31 @@ class ManagerMatrixLayoutTests(unittest.TestCase):
         for selection in COMBINED_GROUPS:
             self.assertEqual([], expand(self.kernel, selection, receipt(selection, [])))
             self.assertEqual([], expand(self.ddk, selection, receipt(selection, [])))
+
+    def test_latest_sha_duplicates_filter_every_position_from_kernel_and_module_rows(self):
+        for selection, requested in COMBINED_GROUPS.items():
+            for skipped in requested:
+                active = [name for name in requested if name != skipped]
+                with self.subTest(selection=selection, skipped=skipped):
+                    result = layout(self.kernel, self.ddk, selection, receipt(selection, active, '最新版'))
+                    self.assertEqual(194, len(result['kernel_primary']['include']))
+                    self.assertEqual('0', result['overflow_count'])
+                    self.assertEqual(16, len(result['ddk_build_matrix']['include']))
+                    self.assertEqual(set(active), {row['variant'] for row in result['kernel_primary']['include']})
+                    self.assertEqual(set(active), {row['variant'] for row in result['ddk_build_matrix']['include']})
+
+    def test_all_latest_shas_matching_formal_produce_no_expanded_work(self):
+        for selection in COMBINED_GROUPS:
+            resolution = receipt(selection, [], '最新版')
+            self.assertEqual([], expand(self.kernel, selection, resolution))
+            self.assertEqual([], expand(self.ddk, selection, resolution))
+
+    def test_forged_latest_comparison_cannot_remove_kernel_or_native_module_rows(self):
+        for selection, requested in COMBINED_GROUPS.items():
+            resolution = receipt(selection, list(requested[1:]), '最新版')
+            resolution['skipped_managers'][0]['stable_source'].update(ksu_ref='c' * 40, ksu_short='c' * 7)
+            with self.subTest(selection=selection), self.assertRaises(ValueError):
+                layout(self.kernel, self.ddk, selection, resolution)
 
     def test_selection_receipt_cannot_silently_omit_or_inject_a_manager(self):
         selection = next(iter(COMBINED_GROUPS))

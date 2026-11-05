@@ -38,6 +38,9 @@ jobs:
         ref: ${{ github.event.repository.default_branch }}
         fetch-depth: 0
         persist-credentials: false
+    - name: 准备本次来源校验记录
+      run: |
+        printf 'GKI_SUSFS_METADATA_CACHE=%s/gki-susfs-sync-%s-%s\n' "$RUNNER_TEMP" "$GITHUB_RUN_ID" "$GITHUB_RUN_ATTEMPT" >> "$GITHUB_ENV"
     - name: 清理上一批已结束的更新检查记录
       id: previous-checks
       if: github.event_name == 'schedule' || (github.event_name == 'workflow_dispatch' && inputs.operation == '仅检查并提醒')
@@ -141,11 +144,31 @@ jobs:
         HEADS_MARKER: ${{ steps.probe.outputs.heads_marker }}
         DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: python3 tools/upstream_pr_guard.py --heads-marker "$HEADS_MARKER" --base "$DEFAULT_BRANCH" --github-output "$GITHUB_OUTPUT"
-    - name: 准备独立官方更新
+    - name: 分别准备各来源，失败来源回滚
+      id: prepare-sources
+      if: steps.probe.outputs.has_updates == 'true'
+      env:
+        GH_TOKEN: ${{ github.token }}
+        OFFICIAL_RESULT: ${{ steps.official.outcome }}
+        CATALOG_RESULT: ${{ steps.catalog.outcome }}
+        SUSFS_RESULT: ${{ steps.susfs.outcome }}
+        OPLUS_RESULT: ${{ steps.oplus.outcome }}
+        OFFICIAL_CHANGED: ${{ steps.official.outputs.has_updates }}
+        CATALOG_CHANGED: ${{ steps.catalog.outputs.has_updates }}
+        SUSFS_CHANGED: ${{ steps.susfs.outputs.has_updates }}
+        OPLUS_CHANGED: ${{ steps.oplus.outputs.has_updates }}
+        OFFICIAL_CANDIDATES: ${{ steps.official.outputs.candidates_json }}
+        CATALOG_CANDIDATES: ${{ steps.catalog.outputs.candidates_json }}
+        SUSFS_CANDIDATES: ${{ steps.susfs.outputs.candidates_json }}
+        OPLUS_CANDIDATES: ${{ steps.oplus.outputs.candidates_json }}
+      run: python3 tools/prepare_source_updates.py --root . --report-dir "$RUNNER_TEMP" --github-output "$GITHUB_OUTPUT"
+    - name: 汇总可用更新与待重试来源
       id: update
       if: steps.probe.outputs.has_updates == 'true'
       env:
         GH_TOKEN: ${{ github.token }}
+        PREPARED_CHANGED: ${{ steps.prepare-sources.outputs.has_updates }}
+        PREPARED_PARTIAL: ${{ steps.prepare-sources.outputs.partial_failure }}
         SUSFS_CHANGED: ${{ steps.susfs.outputs.has_updates }}
         OPLUS_CHANGED: ${{ steps.oplus.outputs.has_updates }}
         OFFICIAL_CANDIDATES: ${{ steps.official.outputs.candidates_json }}
@@ -153,24 +176,12 @@ jobs:
         SUSFS_CANDIDATES: ${{ steps.susfs.outputs.candidates_json }}
         OPLUS_CANDIDATES: ${{ steps.oplus.outputs.candidates_json }}
         HEADS_MARKER: ${{ steps.probe.outputs.heads_marker }}
-        OFFICIAL_RESULT: ${{ steps.official.outcome }}
-        CATALOG_RESULT: ${{ steps.catalog.outcome }}
-        SUSFS_RESULT: ${{ steps.susfs.outcome }}
-        OPLUS_RESULT: ${{ steps.oplus.outcome }}
+        OFFICIAL_RESULT: ${{ steps.prepare-sources.outputs.official_result }}
+        CATALOG_RESULT: ${{ steps.prepare-sources.outputs.catalog_result }}
+        SUSFS_RESULT: ${{ steps.prepare-sources.outputs.susfs_result }}
+        OPLUS_RESULT: ${{ steps.prepare-sources.outputs.oplus_result }}
       run: |
         set -euo pipefail
-        if [ "$OFFICIAL_RESULT" = success ]; then
-          python3 tools/check_official_updates.py --prepare --candidates-json "$OFFICIAL_CANDIDATES" --report-dir "$RUNNER_TEMP"
-        fi
-        if [ "$CATALOG_RESULT" = success ]; then
-          python3 tools/update_kernel_catalog.py --apply-candidates-json "$CATALOG_CANDIDATES"
-        fi
-        if [ "$SUSFS_RESULT" = success ] && [ "$SUSFS_CHANGED" = true ]; then
-          python3 tools/update_susfs_sources.py --apply-candidates-json "$SUSFS_CANDIDATES"
-        fi
-        if [ "$OPLUS_RESULT" = success ] && [ "$OPLUS_CHANGED" = true ]; then
-          python3 tools/update_oplus_sources.py --apply-candidates-json "$OPLUS_CANDIDATES"
-        fi
         python3 tools/official_sync_report.py --root . --base-ref HEAD \
           --report-json "$RUNNER_TEMP/official-sync-report.json" \
           --report-markdown "$RUNNER_TEMP/official-sync-report.md" \
@@ -179,7 +190,7 @@ jobs:
           --official-result "$OFFICIAL_RESULT" --catalog-result "$CATALOG_RESULT" \
           --susfs-result "$SUSFS_RESULT" --oplus-result "$OPLUS_RESULT"
         python3 - <<'PY'
-        import json,os,pathlib,sys
+        import hashlib,json,os,pathlib,sys
         sys.path.insert(0, 'tools')
         from official_sync_report import report_preview
         path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'official-update.md'
@@ -193,14 +204,22 @@ jobs:
                   '；欧加真：' + ('检查完成' if oplus_ok else '检查失败，未确认有无更新'))
         if not (official_ok and catalog_ok and susfs_ok and oplus_ok):
             status += '。本次仅提交成功检查部分的候选；失败部分须重试，不能视为全部官方源已检查。'
-        body = ('<!-- gki-upstream-sync:v1 -->\n' + os.environ['HEADS_MARKER'] + '\n\n'
+        marker = os.environ['HEADS_MARKER']
+        if os.environ['PREPARED_PARTIAL'] == 'true':
+            # A partial PR must not masquerade as an already-prepared complete snapshot.
+            # A later successful retry then refreshes that PR with its missing sources.
+            state = [os.environ[name + '_RESULT'] for name in ('OFFICIAL', 'CATALOG', 'SUSFS', 'OPLUS')]
+            digest = hashlib.sha256((marker + json.dumps(state)).encode()).hexdigest()
+            marker = '<!-- gki-official-heads:sha256=' + digest + ' -->'
+        body = ('<!-- gki-upstream-sync:v1 -->\n' + marker + '\n\n'
                 '# 上游来源更新\n\n本 PR 跟踪六种管理器、SUSFS、Android GKI 和当前欧加真方案的对应来源。\n\n'
                 + status + '\n\n'
                 '本 PR 只准备待同步的数据，不会因检查而自动合并。请在 Actions 的“检查并同步官方更新”中选择“同步官方更新”，完成管理器配套验证后再同步。新 APK 和内核仍需另外触发构建。\n\n'
                 + report_preview((path.parent / 'official-sync-report.md').read_text(encoding='utf-8')))
         path.write_text(body,encoding='utf-8')
         with open(os.environ['GITHUB_OUTPUT'],'a') as output:
-            output.write(f'has_updates=true\nbody_path={path}\ntitle=Update official sources and GKI kernel catalog\n')
+            changed = os.environ['PREPARED_CHANGED'] == 'true'
+            output.write(f'has_updates={str(changed).lower()}\nbody_path={path}\ntitle=Update official sources and GKI kernel catalog\n')
         PY
     - name: 缓存管理器版本号的官方 Git 历史
       uses: actions/cache/save@v5
@@ -245,8 +264,8 @@ jobs:
     - name: 验证正式版和测试版配套后执行手动同步
       id: sync
       if: github.event_name == 'workflow_dispatch' && inputs.operation == '同步官方更新' && steps.probe.outputs.has_updates == 'true'
-        && steps.probe.outputs.partial_failure != 'true' && (steps.pr.outputs.pull-request-number != '' || steps.guard.outputs.already_pending
-        == 'true')
+        && steps.probe.outputs.partial_failure != 'true' && steps.prepare-sources.outputs.partial_failure == 'false' && (steps.pr.outputs.pull-request-number
+        != '' || steps.guard.outputs.already_pending == 'true')
       env:
         GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN }}
         CREATED_PR_NUMBER: ${{ steps.pr.outputs.pull-request-number }}
@@ -285,10 +304,10 @@ jobs:
         SYNC_COMMIT: ${{ steps.sync.outputs.merge_commit }}
         HAS_UPDATES: ${{ steps.probe.outputs.has_updates }}
         EXISTING_PR: ${{ steps.guard.outputs.pull_request_url }}
-        OFFICIAL_RESULT: ${{ steps.official.outcome }}
-        CATALOG_RESULT: ${{ steps.catalog.outcome }}
-        SUSFS_RESULT: ${{ steps.susfs.outcome }}
-        OPLUS_RESULT: ${{ steps.oplus.outcome }}
+        OFFICIAL_RESULT: ${{ steps.prepare-sources.outputs.official_result || steps.official.outcome }}
+        CATALOG_RESULT: ${{ steps.prepare-sources.outputs.catalog_result || steps.catalog.outcome }}
+        SUSFS_RESULT: ${{ steps.prepare-sources.outputs.susfs_result || steps.susfs.outcome }}
+        OPLUS_RESULT: ${{ steps.prepare-sources.outputs.oplus_result || steps.oplus.outcome }}
       run: |
         if [ "$SYNC_MERGED" = true ]; then
           printf '你手动触发的官方更新已同步：%s（提交 %s）。本次没有编译。\n' "$PR_URL" "$SYNC_COMMIT" >> "$GITHUB_STEP_SUMMARY"
@@ -309,6 +328,9 @@ jobs:
           printf '\n' >> "$GITHUB_STEP_SUMMARY"
           cat "$RUNNER_TEMP/manager-compatibility.md" >> "$GITHUB_STEP_SUMMARY"
         fi
+        if [ -f "$RUNNER_TEMP/source-preparation.md" ]; then
+          cat "$RUNNER_TEMP/source-preparation.md" >> "$GITHUB_STEP_SUMMARY"
+        fi
         if [ "$OFFICIAL_RESULT" != success ] || [ "$CATALOG_RESULT" != success ] || [ "$SUSFS_RESULT" != success ] || [ "$OPLUS_RESULT" != success ]; then
           printf '\n部分来源检查未完成：管理器/SUSFS=%s，Android GKI=%s，SUSFS构建来源=%s，欧加真=%s。失败部分须重试；不能确认全部来源是否更新。\n' "$OFFICIAL_RESULT" "$CATALOG_RESULT" "$SUSFS_RESULT" "$OPLUS_RESULT" >> "$GITHUB_STEP_SUMMARY"
         fi
@@ -321,7 +343,7 @@ jobs:
       run: python3 tools/remove_successful_cleanup_runs.py --repo "$GITHUB_REPOSITORY" --execute
     - name: 提示未完成的官方检查
       if: always() && !cancelled() && (steps.official.outcome == 'failure' || steps.catalog.outcome == 'failure' || steps.susfs.outcome
-        == 'failure' || steps.oplus.outcome == 'failure')
+        == 'failure' || steps.oplus.outcome == 'failure' || steps.prepare-sources.outputs.partial_failure == 'true')
       run: |
         echo '::error::部分官方源检查失败；请查看失败步骤并重试。仅成功检查部分可以准备待同步数据。'
         exit 1

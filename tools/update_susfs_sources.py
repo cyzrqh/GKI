@@ -7,7 +7,7 @@ approval. No downloaded shell script or PR Python source is executed here.
 from __future__ import annotations
 
 import argparse
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import hashlib
 import json
@@ -19,7 +19,8 @@ from urllib.parse import quote
 import uuid
 
 from check_official_updates import TARGETS, gitlab_head
-from official_susfs_archive import API, MAX_JSON, request_bytes
+from official_susfs_archive import API, MAX_JSON
+from susfs_sync_transport import RunMetadataCache, request_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
 RECEIPT_PATH = 'data/susfs-upstream-candidates.json'
@@ -123,6 +124,11 @@ def verify_receipt_pins(receipt, profile_document, manager_pins_document):
 def observe_metadata(reference, *, fetch=None):
     """Read fixed official metadata; every non-documentation root tree is bound."""
     reference = _sha(reference)
+    cache = RunMetadataCache.from_environment() if fetch is None else None
+    if cache is not None:
+        observation = cache.read(reference)
+        if observation is not None:
+            return observation
     fetch = fetch or request_bytes
     entries, names = [], set()
     for page in range(1, 11):
@@ -153,7 +159,11 @@ def observe_metadata(reference, *, fetch=None):
         raise SusfsUpdateError('Official SUSFS header must declare one version')
     digest = hashlib.sha256(json.dumps(sorted(entries, key=lambda row: row['name']),
                            sort_keys=True, separators=(',', ':')).encode()).hexdigest()
-    return {'ref': reference, 'version': versions[0], 'build_tree_sha256': digest}
+    observation = {'ref': reference, 'version': versions[0], 'build_tree_sha256': digest}
+    if cache is not None:
+        # Store only after all inventory, version and digest checks succeeded.
+        cache.write(reference, observation)
+    return observation
 
 
 def plan(sources, profile_document, manager_pins_document, *, fetch=None):
@@ -162,8 +172,16 @@ def plan(sources, profile_document, manager_pins_document, *, fetch=None):
     sources = {target: _sha(sources[target]) for target in TARGETS}
     pins, version = configured_pins(profile_document, manager_pins_document)
     references = sorted(set(sources.values()) | {value for rows in pins.values() for value in rows.values()})
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        metadata = dict(zip(references, pool.map(lambda value: observe_metadata(value, fetch=fetch), references)))
+    # Stop scheduling the remaining commits after a terminal rate-limit or
+    # metadata failure, instead of draining the whole queued inventory first.
+    pool = ThreadPoolExecutor(max_workers=2)
+    futures = {pool.submit(observe_metadata, value, fetch=fetch): value for value in references}
+    metadata = {}
+    try:
+        for future in as_completed(futures):
+            metadata[futures[future]] = future.result()
+    finally:
+        pool.shutdown(wait=True, cancel_futures=True)
     receipt = {'schema_version': 1, 'source': SOURCE, 'policy': POLICY,
                'candidates': {target: metadata[sources[target]] for target in TARGETS}, 'pins': {}}
     after_profile, after_managers = copy.deepcopy(profile_document), copy.deepcopy(manager_pins_document)

@@ -24,6 +24,7 @@ from snapshot_ksu_source import temporary_directory
 from upstream_pr_guard import (BRANCH, HEADS_MARKER_PATTERN, NoRedirect, GuardError,
                                _owned_pr, validate_base, validate_repository)
 from verify_manager_update import validate_manager_snapshot, ManagerUpdateError
+from manager_variants import MANAGERS
 
 PROFILE = 'build-compatibility.json'
 SUSFS_RECEIPT = 'data/susfs-upstream-candidates.json'
@@ -249,6 +250,29 @@ def validate_candidates(document, expected_baseline):
         raise MergeError('Official candidate changes/acknowledgement do not match their validated source snapshot')
 
 
+def manager_sources_changed(before, after) -> bool:
+    """A SUSFS-only observation is not a change to a selected manager source."""
+    old = validate_snapshot(before['sources']) if before is not None else {}
+    new = validate_snapshot(after['sources'])
+    return any(old.get(name.lower()) != new.get(name.lower()) for name in MANAGERS)
+
+
+def skipped_manager_report(path: Path | None):
+    if path is None:
+        return
+    path = Path(path)
+    markdown = path.with_suffix('.md')
+    for target in (path, markdown):
+        if target.is_symlink() or target.exists() and not target.is_file():
+            raise MergeError('Compatibility report must be a regular output file')
+    reason = '管理器源码与 SUSFS 实际构建引用未变化，本次不重复运行管理器配套验证。'
+    report = {'schema_version': 1, 'status': 'skipped', 'reason': reason, 'rows': []}
+    path.write_text(json.dumps(report, ensure_ascii=False, indent=2) + '\n', encoding='utf-8', newline='\n')
+    markdown.write_text('### 同步配套验证\n\n' + reason
+                        + '\n\n本次仍执行所更新来源的数据、远端引用及合并校验；跳过不代表重新验证通过。'
+                        + '\n本次没有编译 APK 或内核。\n', encoding='utf-8', newline='\n')
+
+
 def sync(repository: str, number: int, base: str, api, *, source_cache: Path | None = None,
          compatibility_report: Path | None = None) -> dict:
     validate_repository(repository)
@@ -305,10 +329,6 @@ def sync(repository: str, number: int, base: str, api, *, source_cache: Path | N
                 (temporary / PROFILE).write_text(json.dumps(profile), encoding='utf-8')
                 expected_baseline = baseline(temporary)
             validate_candidates(new, expected_baseline)
-    # Metadata synchronization is complete only after the selected real source
-    # can receive the same feature ports used by the build preparation job.
-    candidate = document('data/upstream-candidates.json', head)
-    previous = document('data/upstream-candidates.json', current_base, missing=True)
     susfs_files = {PROFILE, MANAGER_PINS, SUSFS_RECEIPT}
     if pr_files.keys() & susfs_files:
         if SUSFS_RECEIPT not in pr_files:
@@ -318,7 +338,8 @@ def sync(repository: str, number: int, base: str, api, *, source_cache: Path | N
             document(SUSFS_RECEIPT, head), document(PROFILE, current_base),
             document(MANAGER_PINS, current_base), new_profile=document(PROFILE, head),
             new_manager_pins=document(MANAGER_PINS, head),
-            expected_sources=candidate['sources'] if 'data/upstream-candidates.json' in pr_files else None)
+            expected_sources=document('data/upstream-candidates.json', head)['sources']
+                             if 'data/upstream-candidates.json' in pr_files else None)
     oplus_files = set(FILES) - {'data/kernels.json', 'data/upstream-candidates.json', *susfs_files}
     if pr_files.keys() & oplus_files:
         if OPLUS_RECEIPT not in pr_files:
@@ -340,9 +361,28 @@ def sync(repository: str, number: int, base: str, api, *, source_cache: Path | N
         validate_oplus_update(before_profiles, after_profiles,
             document(OPLUS_RECEIPT, current_base, missing=True), receipt, old_recipes, new_recipes)
         verify_remote_snapshot(receipt, profiles_document=before_profiles)
-    validate_manager_snapshot(candidate['sources'], cache=source_cache or Path.cwd() / '.gki-manager-compatibility',
-                              report_path=compatibility_report,
-                              before_snapshot=previous['sources'] if previous is not None else None)
+    # Validate only the sources this exact PR changes. Receipt-only SUSFS,
+    # OPlus-only and GKI-catalog-only updates keep their own validators above;
+    # they must not refetch twelve unrelated manager channels.
+    candidate = previous = None
+    managers_changed = False
+    if 'data/upstream-candidates.json' in pr_files:
+        candidate = document('data/upstream-candidates.json', head)
+        previous = document('data/upstream-candidates.json', current_base, missing=True)
+        managers_changed = manager_sources_changed(previous, candidate)
+    pins_changed = False
+    if pr_files.keys() & {PROFILE, MANAGER_PINS}:
+        from update_susfs_sources import configured_pins
+        pins_changed = (configured_pins(document(PROFILE, current_base), document(MANAGER_PINS, current_base))
+                        != configured_pins(document(PROFILE, head), document(MANAGER_PINS, head)))
+    if managers_changed or pins_changed:
+        candidate = candidate or document('data/upstream-candidates.json', head)
+        previous = previous or document('data/upstream-candidates.json', current_base, missing=True)
+        validate_manager_snapshot(candidate['sources'], cache=source_cache or Path.cwd() / '.gki-manager-compatibility',
+                                  report_path=compatibility_report,
+                                  before_snapshot=previous['sources'] if previous is not None else None)
+    else:
+        skipped_manager_report(compatibility_report)
     # Refuse any source/base drift observed during content validation. A PR's
     # base.sha can be its old creation point; the actual branch ref is our base.
     repository_state(api, repository, base)

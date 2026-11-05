@@ -261,14 +261,21 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('tools/auto_merge_official_update.py', sync['run'])
         self.assertIn('--compatibility-report', sync['run'])
         self.assertIn("steps.probe.outputs.partial_failure != 'true'", sync['if'])
+        self.assertIn("steps.prepare-sources.outputs.partial_failure == 'false'", sync['if'])
+        prepared = indexed['prepare-sources'][1]
+        self.assertLess(indexed['prepare-sources'][0], indexed['update'][0])
+        self.assertIn('tools/prepare_source_updates.py', prepared['run'])
+        for source in ('official', 'catalog', 'susfs', 'oplus'):
+            self.assertEqual(prepared['env'][source.upper() + '_CANDIDATES'],
+                             '${{ steps.' + source + '.outputs.candidates_json }}')
         update = indexed['update'][1]
         self.assertEqual(update['env']['OFFICIAL_CANDIDATES'], '${{ steps.official.outputs.candidates_json }}')
         self.assertEqual(update['env']['CATALOG_CANDIDATES'], '${{ steps.catalog.outputs.candidates_json }}')
         self.assertEqual(update['env']['GH_TOKEN'], '${{ github.token }}')
         self.assertIn('--observe-source-changes', update['run'])
         self.assertIn('report_preview', update['run'])
-        self.assertIn('--candidates-json "$OFFICIAL_CANDIDATES"', update['run'])
-        self.assertIn('--apply-candidates-json "$CATALOG_CANDIDATES"', update['run'])
+        self.assertNotIn('--apply-candidates-json', update['run'])
+        self.assertEqual(update['env']['SUSFS_RESULT'], '${{ steps.prepare-sources.outputs.susfs_result }}')
         self.assertNotIn('sync_upstream.py', str(steps))
         self.assertNotIn('xingguangcuican6666', str(steps))
 
@@ -326,18 +333,23 @@ class WorkflowTests(unittest.TestCase):
                 self.assertEqual(expected, bool(eval(expression.strip(), {'__builtins__': {}}, {})))
         for event in ('schedule', 'workflow_dispatch'):
             for operation in ('', '仅检查并提醒', '同步官方更新'):
-                for pending, partial in ((False, False), (True, False), (False, True), (True, True)):
+                for pending, partial, prepared_partial in (
+                        (False, False, False), (True, False, False), (False, True, False), (True, True, False),
+                        (False, False, True), (True, False, True), (False, True, True), (True, True, True)):
                     values = {'github.event_name': repr(event), 'inputs.operation': repr(operation),
                               'steps.probe.outputs.has_updates': repr('true'),
                               'steps.probe.outputs.partial_failure': repr(str(partial).lower()),
+                              'steps.prepare-sources.outputs.partial_failure': repr(str(prepared_partial).lower()),
                               'steps.pr.outputs.pull-request-number': repr('' if pending else '12'),
                               'steps.guard.outputs.already_pending': repr(str(pending).lower())}
                     expression = step['if']
                     for name, value in values.items():
                         expression = expression.replace(name, value)
                     allowed = bool(eval(expression.replace('&&', ' and ').replace('||', ' or '), {'__builtins__': {}}, {}))
-                    with self.subTest(event=event, operation=operation, pending=pending, partial=partial):
-                        self.assertEqual(allowed, event == 'workflow_dispatch' and operation == '同步官方更新' and not partial)
+                    with self.subTest(event=event, operation=operation, pending=pending, partial=partial,
+                                      prepared_partial=prepared_partial):
+                        self.assertEqual(allowed, event == 'workflow_dispatch' and operation == '同步官方更新'
+                                         and not partial and not prepared_partial)
 
     def test_catalog_cache_survives_partial_failures_and_final_status_is_explicit(self):
         steps = self.updater['jobs']['check-upstream']['steps']
@@ -385,8 +397,7 @@ class WorkflowTests(unittest.TestCase):
 
     def test_partial_prepare_body_reports_failed_catalog_without_parsing_empty_json(self):
         step = next(step for step in self.updater['jobs']['check-upstream']['steps'] if step.get('id') == 'update')
-        self.assertIn('if [ "$OFFICIAL_RESULT" = success ]; then', step['run'])
-        self.assertIn('if [ "$CATALOG_RESULT" = success ]; then', step['run'])
+        self.assertNotIn('--apply-candidates-json', step['run'])
         code = step['run'].split("python3 - <<'PY'\n", 1)[1].rsplit('\nPY', 1)[0]
         directory = ROOT / 'tests' / ('.workflow-partial-' + uuid.uuid4().hex)
         directory.mkdir()
@@ -396,6 +407,7 @@ class WorkflowTests(unittest.TestCase):
         environment = {'RUNNER_TEMP': str(directory), 'GITHUB_OUTPUT': str(output),
                        'OFFICIAL_RESULT': 'success', 'CATALOG_RESULT': 'failure',
                        'SUSFS_RESULT': 'success', 'OPLUS_RESULT': 'success',
+                       'PREPARED_CHANGED': 'true', 'PREPARED_PARTIAL': 'true',
                        'HEADS_MARKER': '<!-- gki-official-heads:sha256=' + 'a' * 64 + ' -->',
                        'OFFICIAL_CANDIDATES': '{}', 'CATALOG_CANDIDATES': ''}
         with patch.dict(os.environ, environment):
@@ -405,6 +417,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertIn('不能视为全部官方源已检查', body)
         self.assertIn('SukiSU 提交：aaaa → bbbb', body)
         self.assertIn('不会因检查而自动合并', body)
+        self.assertNotIn(environment['HEADS_MARKER'], body)
+        # A later complete retry uses the original marker, so it cannot mistake
+        # this incomplete PR for an already-prepared complete update.
+        self.assertRegex(body, r'<!-- gki-official-heads:sha256=[0-9a-f]{64} -->')
 
     def test_custom_ksu_ref_remains_available_through_repository_variable(self):
         sources = next(step for step in self.workflow['jobs']['prepare-matrix']['steps'] if step.get('id') == 'sources')

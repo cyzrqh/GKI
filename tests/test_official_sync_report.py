@@ -36,6 +36,39 @@ def record(source):
     return {'schema_version': 1, 'sources': source, 'acknowledged_heads': head_state(source)}
 
 
+def susfs_data(profile, *, selected=BASE, candidate=NEW):
+    from update_susfs_sources import MANAGERS, POLICY, SOURCE
+    profile = copy.deepcopy(profile)
+    profile['sukisu_susfs']['pins'] = {target: selected for target in reports.TARGETS}
+    pins = {'version': 'v2.3.0', 'managers': {name: {'pins': dict(profile['sukisu_susfs']['pins'])}
+                                           for name in MANAGERS[1:]}}
+    current = selected == candidate
+    receipt = {'schema_version': 1, 'source': SOURCE, 'policy': POLICY,
+               'candidates': {target: {'ref': candidate, 'version': 'v2.3.0', 'build_tree_sha256': 'e' * 64}
+                              for target in reports.TARGETS},
+               'pins': {name: {target: {'selected_ref': selected, 'candidate_ref': candidate,
+                                        'selected_build_tree_sha256': ('e' if current else 'd') * 64,
+                                        'status': 'current' if current else 'pending_adaptation',
+                                        'reason': 'selected' if current else 'build-tree-changed'}
+                               for target in reports.TARGETS} for name in MANAGERS}}
+    return profile, pins, receipt
+
+
+def oplus_data():
+    from oplus_catalog import RECIPE_REPOSITORIES
+    manifest = json.loads((ROOT / 'config/oplus-cctv-profiles.json').read_text(encoding='utf-8'))
+    manifest['profiles'] = manifest['profiles'][:1]
+    row = manifest['profiles'][0]
+    receipt = {'schema_version': 1,
+               'recipe_heads': {repository: {'branch': 'main', 'ref': row['recipe_ref']}
+                                for repository in RECIPE_REPOSITORIES},
+               'profiles': [{'id': row['id'], 'source_ref': row['kernel_ref'],
+                             'source_date': row['source_committed_at'], 'source_version': row['kernel'],
+                             'recipe_ref': row['recipe_ref'], 'recipe_sha256': row['recipe_sha256'],
+                             'recipe_status': 'unchanged'}], 'new_recipes': []}
+    return manifest, receipt
+
+
 def entry(kernel='6.1.75', date='2024-05', ref=BASE):
     return {'android_version': 'android14', 'kernel_version': '6.1', 'kernel': kernel,
             'date': date, 'ref': ref, 'revision': 'r1'}
@@ -73,13 +106,13 @@ class OfficialSyncReportTests(unittest.TestCase):
             'pins': {target: '2' * 40 for target in reports.TARGETS}}}
 
     def report(self, *, old=None, new=None, old_catalog=None, new_catalog=None, old_profile=None, new_profile=None, checks=None,
-               versions=None):
+               versions=None, **extra):
         return reports.build_report(self.before if old is None else old, self.after if new is None else new,
                                     self.catalog if old_catalog is None else old_catalog,
                                     self.catalog if new_catalog is None else new_catalog,
                                     self.profile if old_profile is None else old_profile,
                                     self.profile if new_profile is None else new_profile,
-                                    base_ref=BASE, checks=checks, manager_version_observations=versions)
+                                    base_ref=BASE, checks=checks, manager_version_observations=versions, **extra)
 
     def refresh(self):
         self.after['acknowledged_heads'] = head_state(self.after['sources'])
@@ -324,6 +357,119 @@ class OfficialSyncReportTests(unittest.TestCase):
             with self.subTest(ref=ref), self.assertRaises(reports.ReportError):
                 reports.repository_report(ROOT, ref)
 
+    def test_new_check_states_remain_optional_but_unknown_checks_are_rejected(self):
+        report = self.report(checks={'official': 'success', 'catalog': 'success', 'susfs': 'failure', 'oplus': 'skipped'})
+        self.assertIn('| SUSFS 官方源与构建引用 | 未完成（failure）', report['summary_markdown'])
+        self.assertIn('| 欧加真内核与平台配方 | 未完成（skipped）', report['summary_markdown'])
+        self.assertNotIn('不在本次检查范围', report['summary_markdown'])
+        self.assertFalse(report['has_changes'])
+        for checks in ({'official': 'success', 'catalog': 'success', 'other': 'success'},
+                       {'official': 'success', 'catalog': 'success', 'susfs': 'success'}):
+            with self.subTest(checks=checks), self.assertRaises(reports.ReportError):
+                self.report(checks=checks)
+
+    def test_susfs_candidate_only_update_explicitly_preserves_the_actual_build_pins(self):
+        profile, pins, receipt = susfs_data(self.profile)
+        report = self.report(old_profile=profile, new_profile=profile,
+                             checks={'official': 'success', 'catalog': 'success', 'susfs': 'success'},
+                             before_manager_pins=pins, after_manager_pins=pins,
+                             after_susfs_receipt=receipt)
+        self.assertTrue(report['has_changes'])
+        self.assertFalse(report['compatibility']['changed'])
+        section = report['summary_markdown'].split('### SUSFS 官方源与实际构建引用', 1)[1].split('### 构建适配', 1)[0]
+        self.assertIn('待适配；保留适配引用', section)
+        self.assertNotIn('实际构建引用已更新', section)
+        self.assertEqual({BASE}, {row['effective_after'] for row in report['susfs']['pins']})
+        self.assertFalse(report['build_performed'])
+
+    def test_susfs_effective_pin_change_is_separate_from_the_official_candidate(self):
+        old_profile, old_pins, previous = susfs_data(self.profile, candidate=BASE)
+        new_profile, new_pins, current = susfs_data(self.profile, selected=NEW)
+        report = self.report(old_profile=old_profile, new_profile=new_profile,
+                             checks={'official': 'success', 'catalog': 'success', 'susfs': 'success'},
+                             before_manager_pins=old_pins, after_manager_pins=new_pins,
+                             before_susfs_receipt=previous, after_susfs_receipt=current)
+        self.assertEqual(5, len(report['susfs']['candidates']))
+        self.assertEqual(20, len(report['susfs']['pins']))
+        self.assertIn('实际构建引用已更新（构建内容未变）', report['summary_markdown'])
+        current['pins']['KowSU']['android14-6.1']['selected_ref'] = BASE
+        current['pins']['KowSU']['android14-6.1'].update(status='pending_adaptation', reason='build-tree-changed')
+        with self.assertRaisesRegex(ValueError, 'effective compatibility pins'):
+            self.report(old_profile=old_profile, new_profile=new_profile,
+                        checks={'official': 'success', 'catalog': 'success', 'susfs': 'success'},
+                        before_manager_pins=old_pins, after_manager_pins=new_pins,
+                        before_susfs_receipt=previous, after_susfs_receipt=current)
+
+    def test_manual_reviewed_pin_fix_can_refresh_a_stale_before_receipt_without_false_promotion(self):
+        profile, pins, stale = susfs_data(self.profile)
+        repaired, repaired_pins, current = susfs_data(self.profile, selected=NEW)
+        report = self.report(old_profile=repaired, new_profile=repaired,
+                             checks={'official': 'success', 'catalog': 'success', 'susfs': 'success'},
+                             before_manager_pins=repaired_pins, after_manager_pins=repaired_pins,
+                             before_susfs_receipt=stale, after_susfs_receipt=current)
+        self.assertTrue(report['susfs']['previous_receipt_stale'])
+        self.assertIn('实际构建配置为准', report['summary_markdown'])
+        self.assertNotIn('实际构建引用已更新', report['summary_markdown'])
+
+    def test_failed_susfs_probe_does_not_report_a_stale_receipt_as_no_update(self):
+        profile, pins, receipt = susfs_data(self.profile)
+        repaired, repaired_pins, _ = susfs_data(self.profile, selected=NEW)
+        report = self.report(old_profile=repaired, new_profile=repaired,
+                             checks={'official': 'success', 'catalog': 'success', 'susfs': 'failure'},
+                             before_manager_pins=repaired_pins, after_manager_pins=repaired_pins,
+                             before_susfs_receipt=receipt, after_susfs_receipt=receipt)
+        self.assertFalse(report['has_changes'])
+        self.assertIn('不能确认官方有无新更新', report['summary_markdown'])
+        self.assertNotIn('官方候选和实际构建引用均无变化', report['summary_markdown'])
+
+    def test_oplus_changed_source_and_pending_recipe_have_different_outcomes(self):
+        old_config, old_receipt = oplus_data()
+        new_config, new_receipt = copy.deepcopy(old_config), copy.deepcopy(old_receipt)
+        new_config['profiles'][0]['kernel_ref'] = NEW
+        row, active = new_receipt['profiles'][0], new_config['profiles'][0]
+        row.update(source_ref=NEW, recipe_ref=NEW, recipe_status='pending-adaptation')
+        new_receipt['recipe_heads'][active['recipe_repository']]['ref'] = NEW
+        report = self.report(checks={'official': 'success', 'catalog': 'success', 'oplus': 'success'},
+                             before_oplus_receipt=old_receipt, after_oplus_receipt=new_receipt,
+                             before_oplus_profiles=old_config, after_oplus_profiles=new_config)
+        self.assertTrue(report['has_changes'])
+        body = report['summary_markdown']
+        self.assertIn('### 欧加真内核与平台配方', body)
+        self.assertIn('骁龙 · ' + active['kernel'], body)
+        self.assertIn('保留原配方', body)
+        self.assertNotIn('骁龙 · sm8650', body)
+        self.assertNotIn('CCTV', body)
+        self.assertNotIn('不在本次检查范围', body)
+        self.assertNotEqual(self.report()['digest'], report['digest'])
+
+    def test_new_oplus_full_version_is_a_candidate_until_added_to_the_actual_catalog(self):
+        config, receipt = oplus_data()
+        active = config['profiles'][0]
+        receipt['profiles'][0].update(source_ref=NEW, source_version='6.1.999')
+        receipt['new_recipes'] = [{'repository': active['recipe_repository'], 'ref': active['recipe_ref'],
+                                  'path': '.github/workflows/fastbuild_6.1.999.yml',
+                                  'kernel': '6.1.999', 'family': '骁龙'}]
+        report = self.report(checks={'official': 'success', 'catalog': 'success', 'oplus': 'success'},
+                             after_oplus_receipt=receipt, before_oplus_profiles=config, after_oplus_profiles=config)
+        self.assertEqual((1, 1), (report['oplus']['before_count'], report['oplus']['after_count']))
+        self.assertIn('尚未进入构建菜单，不能视为已支持', report['summary_markdown'])
+        self.assertIn('待适配，未替换当前内核', report['summary_markdown'])
+        self.assertNotIn('新增构建目标', report['summary_markdown'])
+
+    def test_failed_or_unchanged_oplus_probe_is_not_claimed_as_a_successful_update(self):
+        config, receipt = oplus_data()
+        for status in ('success', 'failure'):
+            report = self.report(checks={'official': 'success', 'catalog': 'success', 'oplus': status},
+                                 before_oplus_receipt=receipt, after_oplus_receipt=receipt,
+                                 before_oplus_profiles=config, after_oplus_profiles=config)
+            self.assertFalse(report['has_changes'])
+            expected = '均无变化' if status == 'success' else '不能确认欧加真来源有无新更新'
+            self.assertIn(expected, report['summary_markdown'])
+        receipt['profiles'][0]['source_ref'] = NEW
+        with self.assertRaisesRegex(reports.ReportError, 'Unchecked data'):
+            self.report(checks={'official': 'success', 'catalog': 'success', 'oplus': 'failure'},
+                        after_oplus_receipt=receipt, before_oplus_profiles=config, after_oplus_profiles=config)
+
 
 class OfficialSyncReportGitTests(unittest.TestCase):
     def setUp(self):
@@ -384,6 +530,36 @@ class OfficialSyncReportGitTests(unittest.TestCase):
         self.assertEqual(data['summary_markdown'],markdown.read_text('utf-8'))
         self.assertIn('report_digest='+data['digest'],output.read_text('utf-8'))
         self.assertEqual('false',dict(line.split('=',1) for line in output.read_text('utf-8').splitlines())['report_has_changes'])
+
+    def test_cli_binds_both_new_receipts_to_real_before_and_after_build_configuration(self):
+        profile, pins, susfs = susfs_data(self.profile)
+        config, oplus = oplus_data()
+        self.write(reports.FILES[2], profile)
+        self.write(reports.EXTRA_FILES['manager_pins'], pins)
+        self.write(reports.EXTRA_FILES['oplus_profiles'], config)
+        self.git('add', '.')
+        self.git('commit', '-qm', 'Real fixed build pins before independent source checks')
+        baseline = self.git('rev-parse', 'HEAD').strip()
+        self.write(reports.EXTRA_FILES['susfs_receipt'], susfs)
+        self.write(reports.EXTRA_FILES['oplus_receipt'], oplus)
+        inputs = [self.root / path for path in (*reports.FILES, *reports.EXTRA_FILES.values())]
+        before = {path: path.read_bytes() for path in inputs}
+        output, markdown = self.root / 'report.json', self.root / 'report.md'
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            result = reports.main(['--root', str(self.root), '--base-ref', baseline,
+                                   '--report-json', str(output), '--report-markdown', str(markdown),
+                                   '--susfs-result', 'success', '--oplus-result', 'success'])
+        self.assertEqual(0, result)
+        report = json.loads(output.read_text(encoding='utf-8'))
+        self.assertEqual({'official': 'success', 'catalog': 'success', 'susfs': 'success', 'oplus': 'success'},
+                         report['checks'])
+        self.assertTrue(report['susfs']['first_observation'])
+        self.assertTrue(report['oplus']['first_observation'])
+        self.assertFalse(report['compatibility']['changed'])
+        self.assertEqual(before, {path: path.read_bytes() for path in inputs})
+        self.assertIn('待适配；保留适配引用', report['summary_markdown'])
+        self.assertNotIn('不在本次检查范围', report['summary_markdown'])
+        self.assertFalse(report['build_performed'])
 
     def test_cli_opt_in_observes_only_the_fixed_before_and_after_snapshots(self):
         self.after['sources']['sukisu']['development']['head'] = NEW

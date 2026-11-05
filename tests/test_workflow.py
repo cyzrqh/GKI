@@ -252,7 +252,10 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(pr['with']['token'], '${{ secrets.UPSTREAM_SYNC_TOKEN }}')
         self.assertNotIn('tools/', pr['with']['add-paths'])
         self.assertNotIn('tests/', pr['with']['add-paths'])
-        self.assertEqual(pr['with']['add-paths'], 'data/kernels.json\ndata/upstream-candidates.json\n')
+        self.assertEqual(set(pr['with']['add-paths'].splitlines()), {
+            'data/kernels.json', 'data/upstream-candidates.json', 'data/susfs-upstream-candidates.json',
+            'build-compatibility.json', 'config/manager-susfs-pins.json', 'data/oplus-upstream-candidates.json',
+            'config/oplus-cctv-profiles.json', 'third_party/cctv-oplus/recipes/*.yml'})
         sync = indexed['sync'][1]
         self.assertLess(indexed['pr'][0], indexed['sync'][0])
         self.assertIn('tools/auto_merge_official_update.py', sync['run'])
@@ -367,6 +370,9 @@ class WorkflowTests(unittest.TestCase):
             with self.subTest(official=official, catalog=catalog, changed=changed):
                 output = directory / uuid.uuid4().hex
                 environment = {'GITHUB_OUTPUT': str(output), 'OFFICIAL_RESULT': official, 'CATALOG_RESULT': catalog,
+                               'SUSFS_RESULT': 'success', 'OPLUS_RESULT': 'success',
+                               'SUSFS_CHANGED': 'false', 'OPLUS_CHANGED': 'false',
+                               'SUSFS_CANDIDATES': '{}', 'OPLUS_CANDIDATES': '{}',
                                'OFFICIAL_CHANGED': str(changed).lower(), 'CATALOG_CHANGED': str(changed).lower(),
                                'OFFICIAL_CANDIDATES': '{}' if official == 'success' else '',
                                'CATALOG_CANDIDATES': '[]' if catalog == 'success' else ''}
@@ -389,6 +395,7 @@ class WorkflowTests(unittest.TestCase):
         (directory / 'official-sync-report.md').write_text('## 本次变更\n\nSukiSU 提交：aaaa → bbbb\n', encoding='utf-8')
         environment = {'RUNNER_TEMP': str(directory), 'GITHUB_OUTPUT': str(output),
                        'OFFICIAL_RESULT': 'success', 'CATALOG_RESULT': 'failure',
+                       'SUSFS_RESULT': 'success', 'OPLUS_RESULT': 'success',
                        'HEADS_MARKER': '<!-- gki-official-heads:sha256=' + 'a' * 64 + ' -->',
                        'OFFICIAL_CANDIDATES': '{}', 'CATALOG_CANDIDATES': ''}
         with patch.dict(os.environ, environment):

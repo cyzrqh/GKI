@@ -25,8 +25,18 @@ from upstream_pr_guard import (BRANCH, HEADS_MARKER_PATTERN, NoRedirect, GuardEr
                                _owned_pr, validate_base, validate_repository)
 from verify_manager_update import validate_manager_snapshot, ManagerUpdateError
 
-FILES = frozenset(('data/kernels.json', 'data/upstream-candidates.json'))
 PROFILE = 'build-compatibility.json'
+SUSFS_RECEIPT = 'data/susfs-upstream-candidates.json'
+MANAGER_PINS = 'config/manager-susfs-pins.json'
+OPLUS_PROFILES = 'config/oplus-cctv-profiles.json'
+OPLUS_RECEIPT = 'data/oplus-upstream-candidates.json'
+# Paths are derived only from this checked-in adapter's trusted base catalog.
+# No PR-controlled path is ever used to broaden the remote read/write scope.
+from update_oplus_sources import allowed_paths as oplus_allowed_paths, UpdateError as OplusSourceUpdateError
+from update_susfs_sources import SusfsUpdateError
+FILES = frozenset(('data/kernels.json', 'data/upstream-candidates.json',
+                   PROFILE, SUSFS_RECEIPT, MANAGER_PINS,
+                   *oplus_allowed_paths(json.loads((Path(__file__).resolve().parents[1] / OPLUS_PROFILES).read_text(encoding='utf-8')))))
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 MAX_FILE = 512 * 1024
 MAX_RESPONSE = 4 * 1024 * 1024
@@ -75,7 +85,8 @@ class GitHub:
         allowed = (suffix == '' or re.fullmatch(r'/pulls/[1-9][0-9]*(?:/files\?per_page=100&page=[12])?', suffix)
                    or re.fullmatch(r'/git/ref/heads/[A-Za-z0-9_./-]+', suffix)
                    or re.fullmatch(r'/compare/[0-9a-f]{40}\.\.\.[0-9a-f]{40}\?per_page=100&page=1', suffix)
-                   or re.fullmatch(r'/contents/(?:data/kernels\.json|data/upstream-candidates\.json|build-compatibility\.json)\?ref=[0-9a-f]{40}', suffix))
+                   or re.fullmatch(r'/contents/(?:' + '|'.join(re.escape(path) for path in sorted(FILES))
+                                   + r')\?ref=[0-9a-f]{40}', suffix))
         merge = document is not None
         if merge:
             allowed = re.fullmatch(r'/pulls/[1-9][0-9]*/merge', suffix)
@@ -150,7 +161,7 @@ def validate_pr(pr, repository: str, base: str, number: int) -> tuple[str, bool]
 
 def file_map(files) -> dict:
     if not isinstance(files, list) or not 1 <= len(files) <= len(FILES):
-        raise MergeError('The complete update must change only its two permitted data files')
+        raise MergeError('The complete update must stay within the permitted source-data paths')
     result = {}
     for item in files:
         if (not isinstance(item, dict) or item.get('filename') not in FILES
@@ -161,7 +172,7 @@ def file_map(files) -> dict:
     return result
 
 
-def read_file(api, path: str, ref: str, *, expected_blob=None, missing=False):
+def read_bytes(api, path: str, ref: str, *, expected_blob=None, missing=False):
     value = api.request('/contents/' + path + '?ref=' + ref, missing=missing)
     if value is None and missing:
         return None
@@ -169,7 +180,7 @@ def read_file(api, path: str, ref: str, *, expected_blob=None, missing=False):
             or value.get('encoding') != 'base64' or type(value.get('size')) is not int
             or not 0 < value['size'] <= MAX_FILE or not isinstance(value.get('content'), str)
             or len(value['content']) > MAX_FILE * 2):
-        raise MergeError('GitHub Contents did not return a bounded regular JSON file')
+        raise MergeError('GitHub Contents did not return a bounded regular source-data file')
     try:
         raw = base64.b64decode(''.join(value['content'].split()), validate=True)
     except (ValueError, binascii.Error):
@@ -178,7 +189,12 @@ def read_file(api, path: str, ref: str, *, expected_blob=None, missing=False):
     if (len(raw) != value['size'] or actual != full_sha(value.get('sha'))
             or expected_blob is not None and actual != expected_blob):
         raise MergeError('GitHub Contents blob does not match the reviewed commit/file list')
-    return parse_json(raw)
+    return raw
+
+
+def read_file(api, path: str, ref: str, *, expected_blob=None, missing=False):
+    raw = read_bytes(api, path, ref, expected_blob=expected_blob, missing=missing)
+    return None if raw is None else parse_json(raw)
 
 
 def validate_additions(old, new):
@@ -267,13 +283,22 @@ def sync(repository: str, number: int, base: str, api, *, source_cache: Path | N
             or comparison['commits'][-1].get('sha') != head
             or file_map(comparison.get('files')) != pr_files):
         raise MergeError('Current-base/head comparison does not prove the complete allowed update')
+    documents = {}
+    def document(path, ref, *, missing=False):
+        key = path, ref
+        if key not in documents:
+            documents[key] = read_file(api, path, ref, missing=missing,
+                expected_blob=pr_files[path][1] if ref == head and path in pr_files else None)
+        return documents[key]
     for path, (_, blob) in pr_files.items():
-        new = read_file(api, path, head, expected_blob=blob)
+        if path not in ('data/kernels.json', 'data/upstream-candidates.json'):
+            continue  # Dedicated validators below bind every other permitted file.
+        new = document(path, head)
         if path == 'data/kernels.json':
-            old = read_file(api, path, current_base)
+            old = document(path, current_base)
             validate_additions(old, new)
         else:
-            profile = read_file(api, PROFILE, current_base)
+            profile = document(PROFILE, current_base)
             # Reuse the existing profile validator with JSON data only. No PR
             # source is checked out or imported/executed.
             with temporary_directory(Path.cwd(), '.gki-update-profile-') as temporary:
@@ -282,8 +307,39 @@ def sync(repository: str, number: int, base: str, api, *, source_cache: Path | N
             validate_candidates(new, expected_baseline)
     # Metadata synchronization is complete only after the selected real source
     # can receive the same feature ports used by the build preparation job.
-    candidate = read_file(api, 'data/upstream-candidates.json', head)
-    previous = read_file(api, 'data/upstream-candidates.json', current_base, missing=True)
+    candidate = document('data/upstream-candidates.json', head)
+    previous = document('data/upstream-candidates.json', current_base, missing=True)
+    susfs_files = {PROFILE, MANAGER_PINS, SUSFS_RECEIPT}
+    if pr_files.keys() & susfs_files:
+        if SUSFS_RECEIPT not in pr_files:
+            raise MergeError('SUSFS build pins require the matching verified source receipt')
+        from update_susfs_sources import validate_update as validate_susfs_update
+        validate_susfs_update(document(SUSFS_RECEIPT, current_base, missing=True),
+            document(SUSFS_RECEIPT, head), document(PROFILE, current_base),
+            document(MANAGER_PINS, current_base), new_profile=document(PROFILE, head),
+            new_manager_pins=document(MANAGER_PINS, head),
+            expected_sources=candidate['sources'] if 'data/upstream-candidates.json' in pr_files else None)
+    oplus_files = set(FILES) - {'data/kernels.json', 'data/upstream-candidates.json', *susfs_files}
+    if pr_files.keys() & oplus_files:
+        if OPLUS_RECEIPT not in pr_files:
+            raise MergeError('Oplus source/recipe changes require the matching verified source receipt')
+        from update_oplus_sources import (allowed_paths, validate_update as validate_oplus_update,
+                                          verify_remote_snapshot)
+        before_profiles = document(OPLUS_PROFILES, current_base)
+        after_profiles = document(OPLUS_PROFILES, head)
+        if set(pr_files) & oplus_files - set(allowed_paths(before_profiles)):
+            raise MergeError('Oplus recipe paths are outside the fixed base catalog')
+        old_recipes, new_recipes = {}, {}
+        for path in set(allowed_paths(before_profiles)) - {OPLUS_PROFILES, OPLUS_RECEIPT}:
+            old_recipes[path] = read_bytes(api, path, current_base)
+            # The complete current-base/head file inventory proves that recipes
+            # outside pr_files are unchanged. Do not refetch those same blobs.
+            new_recipes[path] = (read_bytes(api, path, head, expected_blob=pr_files[path][1])
+                                 if path in pr_files else old_recipes[path])
+        receipt = document(OPLUS_RECEIPT, head)
+        validate_oplus_update(before_profiles, after_profiles,
+            document(OPLUS_RECEIPT, current_base, missing=True), receipt, old_recipes, new_recipes)
+        verify_remote_snapshot(receipt, profiles_document=before_profiles)
     validate_manager_snapshot(candidate['sources'], cache=source_cache or Path.cwd() / '.gki-manager-compatibility',
                               report_path=compatibility_report,
                               before_snapshot=previous['sources'] if previous is not None else None)
@@ -327,6 +383,10 @@ def main(argv=None) -> int:
     except ManagerUpdateError as error:
         message = str(error).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
         print('::error::' + message, file=sys.stderr)
+        return 1
+    except (SusfsUpdateError, OplusSourceUpdateError) as error:
+        message = str(error).replace('%', '%25').replace('\r', '%0D').replace('\n', '%0A')
+        print('::error::SUSFS／欧加真来源未同步：' + message, file=sys.stderr)
         return 1
     except (MergeError, GuardError, UpdateError, CompatibilityError, SourceResolutionError, OSError, ValueError, UnicodeError):
         # Remote bodies and data never enter errors, and tokens cannot reach logs.

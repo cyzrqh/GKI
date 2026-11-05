@@ -66,7 +66,8 @@ def validate_report(report: dict) -> None:
             or not DIGEST.fullmatch(report['digest']) or type(report.get('has_changes')) is not bool
             or not isinstance(report.get('summary_markdown'), str) or not report['summary_markdown'].strip()
             or any(ord(char) < 32 and char not in '\n\r\t' for char in report['summary_markdown'])
-            or not isinstance(report.get('checks'), dict) or set(report['checks']) != {'official', 'catalog'}
+            or not isinstance(report.get('checks'), dict)
+            or not {'official', 'catalog'} <= set(report['checks']) <= {'official', 'catalog', 'susfs', 'oplus'}
             or any(not isinstance(value, str) or value not in CHECK_STATES for value in report['checks'].values())):
         raise NotificationError('Notification requires a valid official-sync report')
 
@@ -167,7 +168,7 @@ def comment_body(report: dict, repository: str, number: int, state: str, commit:
         lines.extend(['手动同步：打开 **Actions → 检查并同步官方更新 → Run workflow**，将 **operation** 选择为 **同步官方更新**；也可以检查本 PR 的差异后手动合并。', ''])
     else:
         lines.extend([f'合并提交：https://github.com/{repository}/commit/{commit}', ''])
-    lines.extend(['本次仅更新源码观察记录及目录，没有自动编译 APK 或内核。', '', report_preview(report['summary_markdown'].strip()), ''])
+    lines.extend(['本次更新范围和实际构建引用以以下明细为准，没有自动编译 APK 或内核。', '', report_preview(report['summary_markdown'].strip()), ''])
     body = '\n'.join(lines)
     if len(body.encode('utf-8')) > MAX_COMMENT:
         raise NotificationError('Official update detail exceeds the notification comment budget')

@@ -61,6 +61,21 @@ class FakeAPI:
 
 
 class NotificationTests(unittest.TestCase):
+    def test_susfs_and_oplus_statuses_and_pending_adaptations_survive_notification(self):
+        document = report(checks={'official': 'success', 'catalog': 'success',
+                                  'susfs': 'success', 'oplus': 'failure'},
+                          summary_markdown='SUSFS 官方候选已记录，构建引用保留待适配。\n欧加真检查未完成。')
+        api = FakeAPI()
+        result = notices.notify(document, REPO, 12, 'pending', api=api)
+        self.assertTrue(result['notified'])
+        self.assertIn(document['summary_markdown'], api.posts[0][1]['body'])
+        self.assertNotIn('已同步到默认分支', api.posts[0][1]['body'])
+        for checks in ({'official': 'success', 'catalog': 'success', 'oplus': 'ok'},
+                       {'official': 'success', 'catalog': 'success', 'unknown': 'success'},
+                       {'oplus': 'success', 'susfs': 'success'}):
+            with self.subTest(checks=checks), self.assertRaises(notices.NotificationError):
+                notices.validate_report(report(checks=checks))
+
     def test_pending_mentions_owner_and_preserves_full_detailed_report_and_manual_steps(self):
         api = FakeAPI()
         result = notices.notify(report(), REPO, 'https://github.com/owner/gki/pull/12', 'pending', api=api)

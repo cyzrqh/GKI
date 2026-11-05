@@ -158,7 +158,7 @@ class DetailedReportTests(unittest.TestCase):
         self.assertIn('android14-6.1.75-2024-05', body)
         self.assertIn('android14-6.1.75-2024-06', body)
         self.assertIn('https://android.googlesource.com/kernel/common/+/' + OLD, body)
-        self.assertIn('欧加真的平台配方目录不在本次检查范围内', body)
+        self.assertNotIn('欧加真的平台配方目录不在本次检查范围内', body)
 
     def test_raw_commit_titles_are_omitted_and_topics_do_not_change_digest(self):
         report = self.report()

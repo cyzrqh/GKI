@@ -25,9 +25,15 @@ from urllib.parse import quote
 
 ROOT = Path(__file__).resolve().parents[1]
 FILES = ('data/upstream-candidates.json', 'data/kernels.json', 'build-compatibility.json')
+EXTRA_FILES = {'susfs_receipt': 'data/susfs-upstream-candidates.json',
+               'manager_pins': 'config/manager-susfs-pins.json',
+               'oplus_receipt': 'data/oplus-upstream-candidates.json',
+               'oplus_profiles': 'config/oplus-cctv-profiles.json'}
 SHA = re.compile(r'[0-9a-f]{40}\Z')
 MAX_FILE = 512 * 1024
 CHECK_STATES = frozenset(('success', 'failure', 'skipped', 'cancelled', 'unknown'))
+CHECK_LABELS = (('official', '管理器官方源'), ('catalog', 'Android GKI 目录'),
+                ('susfs', 'SUSFS 官方源与构建引用'), ('oplus', '欧加真内核与平台配方'))
 from manager_variants import MANAGERS as BUILD_MANAGERS
 MANAGERS = tuple((name.lower(), name) for name in BUILD_MANAGERS)
 MANAGER_CHANNELS = ('正式版', '测试版')
@@ -158,6 +164,83 @@ def catalog_delta(before: dict, after: dict) -> dict:
                                        key=lambda change: row_key(change['after'] or change['before']))}
 
 
+def susfs_sync_delta(before, after, before_profile, after_profile, before_pins, after_pins, *, checked=True):
+    """Bind observations to the real build configuration, not just a receipt claim."""
+    if before is None and after is None:
+        return None
+    from update_susfs_sources import normalize_receipt, verify_receipt_pins
+    old, new = (normalize_receipt(value) if value is not None else None for value in (before, after))
+    if new is None:
+        raise ReportError('The current SUSFS sync receipt cannot disappear')
+    stale_before = False
+    if old is not None:
+        try:
+            verify_receipt_pins(old, before_profile, before_pins)
+        except ValueError:
+            # A reviewed manual pin repair can precede the next observation.
+            # Describe its real configuration rather than trusting the stale receipt.
+            stale_before = True
+    try:
+        verify_receipt_pins(new, after_profile, after_pins)
+    except ValueError:
+        if checked:
+            raise
+        # An unsuccessful independent probe may preserve an already stale
+        # receipt; it cannot claim any new change or activate another pin.
+    def actual(profile, pins):
+        values = {'SukiSU': profile['sukisu_susfs']['pins']}
+        if pins is not None:
+            values.update({name: row['pins'] for name, row in pins['managers'].items()})
+        return values
+    old_refs, new_refs = actual(before_profile, before_pins), actual(after_profile, after_pins)
+    candidates = [{'target': target, 'before': old['candidates'].get(target) if old else None,
+                   'after': candidate} for target, candidate in sorted(new['candidates'].items())
+                  if old is None or old['candidates'].get(target) != candidate]
+    pins = []
+    for name, targets in sorted(new['pins'].items()):
+        for target, row in sorted(targets.items()):
+            previous = old['pins'].get(name, {}).get(target) if old else None
+            selected_before = old_refs.get(name, {}).get(target)
+            selected_after = new_refs[name][target]
+            if previous != row or selected_before != selected_after:
+                pins.append({'manager': name, 'target': target, 'before': previous, 'after': row,
+                             'effective_before': selected_before, 'effective_after': selected_after})
+    return {'changed': old != new or old_refs != new_refs, 'first_observation': old is None,
+            'previous_receipt_stale': stale_before, 'candidates': candidates, 'pins': pins}
+
+
+def oplus_sync_delta(before, after, before_config, after_config):
+    if before is None and after is None:
+        return None
+    from update_oplus_sources import normalize_receipt, normalize_manifest
+    old, new = (normalize_receipt(value) if value is not None else None for value in (before, after))
+    if new is None:
+        raise ReportError('The current OPlus sync receipt cannot disappear')
+    configurations = [normalize_manifest(value) for value in (before_config, after_config)]
+    old_rows, new_rows = ({row['id']: row for row in document['profiles']} for document in configurations)
+    if {row['id'] for row in new['profiles']} != set(new_rows):
+        raise ReportError('OPlus source observations must cover the complete configured catalog')
+    old_observations = {row['id']: row for row in old['profiles']} if old else {}
+    profiles = []
+    for row in new['profiles']:
+        identity = row['id']
+        if identity not in new_rows:
+            raise ReportError('OPlus source observations must identify a configured build target')
+        previous, active = old_rows.get(identity), new_rows[identity]
+        observed_before = old_observations.get(identity)
+        if (observed_before != row or previous != active):
+            profiles.append({'before': previous, 'after': active,
+                             'observed_before': observed_before, 'observed_after': row})
+    def recipe_key(row):
+        return row['repository'], row['path'], row['kernel'], row['family']
+    previous_recipes = {recipe_key(row): row for row in old['new_recipes']} if old else {}
+    recipes = [{'before': previous_recipes.get(recipe_key(row)), 'after': row}
+               for row in new['new_recipes'] if previous_recipes.get(recipe_key(row)) != row]
+    return {'changed': old != new or configurations[0] != configurations[1],
+            'first_observation': old is None, 'before_count': len(old_rows), 'after_count': len(new_rows),
+            'profiles': profiles, 'new_recipes': recipes}
+
+
 def compatibility_state(document: dict) -> dict:
     profile = document.get('sukisu_susfs') if isinstance(document, dict) else None
     if (not isinstance(profile, dict) or not isinstance(profile.get('version'), str)
@@ -257,11 +340,16 @@ def manager_versions(value: dict | None, before: dict | None, after: dict | None
 
 def build_report(before_candidate, after_candidate, before_catalog, after_catalog,
                  before_profile, after_profile, *, base_ref: str, checks: dict | None = None,
-                 manager_version_observations: dict | None = None) -> dict:
+                 manager_version_observations: dict | None = None,
+                 before_susfs_receipt=None, after_susfs_receipt=None,
+                 before_manager_pins=None, after_manager_pins=None,
+                 before_oplus_receipt=None, after_oplus_receipt=None,
+                 before_oplus_profiles=None, after_oplus_profiles=None) -> dict:
     if not isinstance(base_ref, str) or not SHA.fullmatch(base_ref):
         raise ReportError('Official report requires a fixed base commit')
     checks = checks or {'official': 'success', 'catalog': 'success'}
-    if set(checks) != {'official', 'catalog'} or any(value not in CHECK_STATES for value in checks.values()):
+    if (not {'official', 'catalog'} <= set(checks) <= {name for name, _ in CHECK_LABELS}
+            or any(value not in CHECK_STATES for value in checks.values())):
         raise ReportError('Invalid official report check outcomes')
     sources, observations = source_delta(before_candidate, after_candidate)
     catalog = catalog_delta(before_catalog, after_catalog)
@@ -275,8 +363,21 @@ def build_report(before_candidate, after_candidate, before_catalog, after_catalo
               'manager_version_codes': manager_versions(manager_version_observations,
                                                        source_snapshot(before_candidate), source_snapshot(after_candidate)),
               'build_performed': False}
+    for name, delta in (
+            ('susfs', susfs_sync_delta(before_susfs_receipt, after_susfs_receipt,
+                                      before_profile, after_profile, before_manager_pins, after_manager_pins,
+                                      checked=checks.get('susfs') == 'success')),
+            ('oplus', oplus_sync_delta(before_oplus_receipt, after_oplus_receipt,
+                                      before_oplus_profiles, after_oplus_profiles))):
+        if delta is not None:
+            if checks.get(name, 'unknown') != 'success' and delta['changed']:
+                raise ReportError('Unchecked data cannot be described as synchronized updates')
+            report[name] = delta
+        elif checks.get(name) == 'success':
+            raise ReportError('A completed source check requires its verified receipt')
     report['has_changes'] = bool(sources or any(catalog[key] for key in ('added', 'removed', 'updated'))
-                                 or report['compatibility']['changed'])
+                                 or report['compatibility']['changed']
+                                 or any(report.get(name, {}).get('changed') for name in ('susfs', 'oplus')))
     # The repository base is audit context, not an official-source change.
     # Unrelated code commits must not create duplicate update notifications.
     semantic = {key: value for key, value in report.items() if key != 'base_ref'}
@@ -396,10 +497,118 @@ def render_manager_versions(observations: dict) -> list[str]:
     return lines
 
 
+def source_ref_label(repository: str, reference: str | None, *, gitlab=False) -> str:
+    if reference is None:
+        return '此前未记录'
+    if not isinstance(reference, str) or not SHA.fullmatch(reference):
+        raise ReportError('Source references in the report must be fixed full commit SHAs')
+    host = 'https://gitlab.com/' if gitlab else 'https://github.com/'
+    middle = '/-/commit/' if gitlab else '/commit/'
+    return '[' + code(reference[:12]) + '](' + host + repository + middle + reference + ')'
+
+
+def render_susfs_sync(delta: dict | None, status: str = 'success') -> list[str]:
+    if delta is None:
+        return []
+    lines = ['', '### SUSFS 官方源与实际构建引用', '',
+             '官方候选更新与构建引用分别记录；需要适配的新代码不会被标成已启用。']
+    if status != 'success':
+        return lines + ['', '本次检查未完成；保留上次记录与实际构建引用，不能确认官方有无新更新。']
+    if delta['previous_receipt_stale']:
+        lines.append('此前观察记录未随人工适配变更刷新；以下以本次检查前的实际构建配置为准。')
+    if not delta['changed']:
+        return lines + ['', '官方候选和实际构建引用均无变化。']
+    if delta['candidates']:
+        lines.extend(['', '| 内核分支 | 之前官方候选 | 本次官方候选 |', '| --- | --- | --- |'])
+        for row in delta['candidates']:
+            def label(value):
+                return ('此前未记录' if value is None else code(value['version']) + ' ' +
+                        source_ref_label('simonpunk/susfs4ksu', value['ref'], gitlab=True))
+            lines.append('| ' + code(row['target']) + ' | ' + label(row['before']) + ' | ' + label(row['after']) + ' |')
+    if delta['pins']:
+        lines.extend(['', '| 管理器 | 内核分支 | 实际构建引用 | 处理结果 |', '| --- | --- | --- | --- |'])
+        for row in delta['pins']:
+            state = row['after']
+            changed = row['effective_before'] != row['effective_after']
+            result = ('实际构建引用已更新' if changed else '已采用该官方候选')
+            if (changed and row['before'] is not None
+                    and row['before']['selected_build_tree_sha256'] == state['selected_build_tree_sha256']):
+                result += '（构建内容未变）'
+            if state['status'] == 'pending_adaptation':
+                result = ('官方版本变化，待适配；保留适配引用' if state['reason'] == 'version-changed'
+                          else '构建代码变化，待适配；保留适配引用')
+            before = source_ref_label('simonpunk/susfs4ksu', row['effective_before'], gitlab=True)
+            after = source_ref_label('simonpunk/susfs4ksu', row['effective_after'], gitlab=True)
+            lines.append('| ' + row['manager'] + ' | ' + code(row['target']) + ' | ' +
+                         (before + ' → ' + after if changed else after) + ' | ' + result + ' |')
+    return lines
+
+
+def render_oplus_sync(delta: dict | None, status: str = 'success') -> list[str]:
+    if delta is None:
+        return []
+    from oplus_cctv import label as oplus_label
+    lines = ['', '### 欧加真内核与平台配方', '',
+             f"实际构建目录：{delta['before_count']} → {delta['after_count']}；同一平台的完整内核保持唯一。"]
+    if status != 'success':
+        return lines + ['', '本次检查未完成；保留上次记录与构建目录，不能确认欧加真来源有无新更新。']
+    if delta['first_observation']:
+        lines.append('本次首次纳入检查；首次记录不代表新增支持了这些内核。')
+    if not delta['changed']:
+        return lines + ['', '欧加真来源记录与实际构建目录均无变化。']
+    rows = []
+    for row in delta['profiles']:
+        before, after, candidate = row['before'], row['after'], row['observed_after']
+        actual_changed = before is None or any(before[key] != after[key] for key in (
+            'kernel_ref', 'recipe_ref', 'recipe_sha256'))
+        pending_source = candidate['source_ref'] != after['kernel_ref']
+        pending_recipe = candidate['recipe_status'] == 'pending-adaptation'
+        # Do not fill a first-observation report with unchanged build entries.
+        if delta['first_observation'] and not (actual_changed or pending_source or pending_recipe):
+            continue
+        source = source_ref_label(after['kernel_repo'], after['kernel_ref'])
+        if before and before['kernel_ref'] != after['kernel_ref']:
+            source = source_ref_label(before['kernel_repo'], before['kernel_ref']) + ' → ' + source
+        elif before is None:
+            source = '新增构建目标：' + source
+        else:
+            source = '构建引用未变：' + source
+        if pending_source:
+            source += '；候选 ' + code(candidate['source_version']) + ' ' + source_ref_label(
+                after['kernel_repo'], candidate['source_ref']) + ' 待适配，未替换当前内核'
+        recipe = source_ref_label(after['recipe_repository'], after['recipe_ref'])
+        if pending_recipe:
+            recipe = '保留原配方 ' + recipe + '；候选 ' + source_ref_label(
+                after['recipe_repository'], candidate['recipe_ref']) + ' 待适配'
+        elif before and before['recipe_ref'] != after['recipe_ref']:
+            recipe = source_ref_label(before['recipe_repository'], before['recipe_ref']) + ' → ' + recipe
+            recipe += '（执行配置未变化）'
+        else:
+            recipe = '配方未变：' + recipe
+        rows.append('| ' + code(oplus_label(after)) + ' | ' + source + ' | ' + recipe + ' |')
+    if rows:
+        lines.extend(['', '| 平台 / 完整内核 | 内核源码 | 构建配方 |', '| --- | --- | --- |', *rows])
+    else:
+        lines.extend(['', '当前可构建内核的源码和配方均未变化。'])
+    if delta['new_recipes']:
+        lines.extend(['', '新增或变化的构建方案候选（尚未进入构建菜单，不能视为已支持）：', '',
+                      '| 平台 / 完整内核 | 来源 |', '| --- | --- |'])
+        for item in delta['new_recipes']:
+            row = item['after']
+            url = ('https://github.com/' + row['repository'] + '/blob/' + row['ref'] + '/'
+                   + quote(row['path'], safe='/'))
+            lines.append('| ' + code(row['family'] + ' · ' + row['kernel']) + ' | [构建方案](' + url + ') |')
+    return lines
+
+
 def render_report(report: dict) -> str:
     lines = ['## 本次同步的具体变化', '', '以下比较本次检查前的记录与准备提交的数据，不代表已编译或已通过真机验证。', '',
              '| 来源 | 检查结果 |', '| --- | --- |']
-    for key, label in (('official', '管理器 / SUSFS 官方源'), ('catalog', 'Android GKI 目录')):
+    for key, label in CHECK_LABELS:
+        if key not in report['checks']:
+            continue
+        if key == 'official' and 'susfs' not in report['checks']:
+            label = '管理器 / SUSFS 官方源'
         value = report['checks'][key]
         lines.append('| ' + label + ' | ' + ('完成' if value == 'success' else '未完成（' + value + '），不能确认有无更新') + ' |')
     lines.extend(render_manager_versions(report['manager_version_codes']))
@@ -444,7 +653,11 @@ def render_report(report: dict) -> str:
             lines.append('| ' + target_label(item['before']) + ' | ' + target_label(item['after']) + ' |')
     if catalog['updated']:
         lines.append('\n目录修订号变化本身不代表新增功能；源码差异以相应官方引用为准。')
-    lines.extend(['', '此同步流程检查 Android GKI 官方目录；欧加真的平台配方目录不在本次检查范围内，不能据此判断欧加真是否有更新。'])
+    lines.extend(render_susfs_sync(report.get('susfs'), report['checks'].get('susfs', 'unknown')))
+    lines.extend(render_oplus_sync(report.get('oplus'), report['checks'].get('oplus', 'unknown')))
+    for name, label in (('susfs', 'SUSFS 构建引用'), ('oplus', '欧加真内核与配方')):
+        if name in report['checks'] and name not in report:
+            lines.extend(['', label + '没有取得完整检查数据，不能确认有无更新；本次未修改该部分。'])
     compatibility = report['compatibility']
     lines.extend(['', '### 构建适配与管理器', ''])
     if compatibility['changed']:
@@ -507,6 +720,10 @@ def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None
         raise ReportError('Invalid fixed Git report baseline')
     before = [read_git_document(root, resolved, path, missing=path == FILES[0]) for path in FILES]
     after = [read_worktree_document(root, path, missing=path == FILES[0]) for path in FILES]
+    previous_extra = {name: read_git_document(root, resolved, path, missing=True)
+                      for name, path in EXTRA_FILES.items()}
+    current_extra = {name: read_worktree_document(root, path, missing=True)
+                     for name, path in EXTRA_FILES.items()}
     if observe_manager_versions:
         if manager_version_observations is not None or manager_cache is None:
             raise ReportError('An online manager observation requires only an explicit source cache')
@@ -519,7 +736,9 @@ def repository_report(root: Path, base_ref: str = 'HEAD', *, checks: dict | None
             # fabricate a numeric code nor prevent the verified data sync.
             print('::warning::Native manager version lookup did not complete; numeric versions remain unconfirmed')
     report = build_report(before[0], after[0], before[1], after[1], before[2], after[2], base_ref=resolved, checks=checks,
-                          manager_version_observations=manager_version_observations)
+                          manager_version_observations=manager_version_observations,
+                          **{'before_' + name: value for name, value in previous_extra.items()},
+                          **{'after_' + name: value for name, value in current_extra.items()})
     if observe_source_changes:
         from upstream_change_details import observe_changes
         report['source_commit_details'] = observe_changes(report['source_changes'])
@@ -535,6 +754,8 @@ def main(argv=None) -> int:
     parser.add_argument('--report-markdown', type=Path, required=True)
     parser.add_argument('--official-result', choices=sorted(CHECK_STATES), default='success')
     parser.add_argument('--catalog-result', choices=sorted(CHECK_STATES), default='success')
+    parser.add_argument('--susfs-result', choices=sorted(CHECK_STATES))
+    parser.add_argument('--oplus-result', choices=sorted(CHECK_STATES))
     parser.add_argument('--observe-manager-versions', action='store_true')
     parser.add_argument('--observe-source-changes', action='store_true')
     parser.add_argument('--manager-cache', type=Path)
@@ -542,7 +763,10 @@ def main(argv=None) -> int:
     if args.observe_manager_versions != (args.manager_cache is not None):
         parser.error('--observe-manager-versions and --manager-cache must be used together')
     try:
-        report = repository_report(args.root, args.base_ref, checks={'official': args.official_result, 'catalog': args.catalog_result},
+        checks = {'official': args.official_result, 'catalog': args.catalog_result}
+        checks.update({name: value for name, value in (('susfs', args.susfs_result), ('oplus', args.oplus_result))
+                       if value is not None})
+        report = repository_report(args.root, args.base_ref, checks=checks,
                                    observe_manager_versions=args.observe_manager_versions, manager_cache=args.manager_cache,
                                    observe_source_changes=args.observe_source_changes)
         for path, content in ((args.report_json, json.dumps(report, ensure_ascii=False, sort_keys=True, indent=2) + '\n'),

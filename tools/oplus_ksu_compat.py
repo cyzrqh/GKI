@@ -56,7 +56,7 @@ def git_blob(repository: Path, reference: str, name: str) -> bytes:
                              'cat-file', 'blob', reference + ':' + name],
                             capture_output=True, timeout=30)
     if result.returncode or not 0 < len(result.stdout) <= 1024 * 1024:
-        raise ValueError('Cannot read the frozen SukiSU source blob: ' + name)
+        raise ValueError('Cannot read the frozen manager source blob: ' + name)
     return result.stdout
 
 
@@ -64,34 +64,34 @@ def tracked_header(repository: Path, path: Path, reference: str) -> bytes:
     resolved = path.resolve(strict=True)
     if (not resolved.is_relative_to(repository) or not resolved.is_file()
             or not 0 < resolved.stat().st_size <= 1024 * 1024):
-        raise ValueError('SukiSU include must resolve to its own bounded official source header')
+        raise ValueError('Manager include must resolve to its own bounded official source header')
     name = resolved.relative_to(repository).as_posix()
     official = git_blob(repository, reference, name)
     if official != resolved.read_bytes():
-        raise ValueError('SukiSU source header differs from the frozen official Git blob: ' + name)
+        raise ValueError('Manager source header differs from the frozen official Git blob: ' + name)
     return official
 
 
 def prepare_builtin_includes(root: Path, reference: str, *, variant: str = 'SukiSU') -> bool:
-    if variant not in ('SukiSU', 'KernelSU-Next'):
+    if variant not in ('SukiSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
         raise ValueError('Unsupported manager built-in include-root adaptation')
     if not isinstance(reference, str) or not re.fullmatch(r'[0-9a-f]{40}', reference):
-        raise ValueError('SukiSU includes require a frozen full source SHA')
+        raise ValueError('Manager includes require a frozen full source SHA')
     root = root.resolve(strict=True)
     repository = root / 'KernelSU'
     kernel = repository / 'kernel'
     for path in (repository, repository / '.git', kernel):
         if path.is_symlink() or not path.is_dir() or (hasattr(path, 'is_junction') and path.is_junction()):
-            raise ValueError('SukiSU include root must be its own real frozen checkout')
+            raise ValueError('Manager include root must be its own real frozen checkout')
     link = root / 'common/drivers/kernelsu'
     linked = link.is_symlink()
     junction = hasattr(link, 'is_junction') and link.is_junction()
     if (not (linked or junction) or linked and os.path.isabs(os.readlink(link))
             or link.resolve(strict=True) != kernel):
-        raise ValueError('Built-in SukiSU driver must point to the frozen manager kernel sources')
+        raise ValueError('Built-in manager driver must point to the frozen manager kernel sources')
     path = kernel / 'Kbuild'
     if path.is_symlink() or not path.is_file() or not 0 < path.stat().st_size <= 1024 * 1024:
-        raise ValueError('Expected the real frozen SukiSU Kbuild file')
+        raise ValueError('Expected the real frozen manager Kbuild file')
     before = path.read_bytes()
     text = before.decode('utf-8')
     native = git_blob(repository, reference, 'kernel/Kbuild').decode('utf-8')
@@ -113,6 +113,16 @@ def prepare_builtin_includes(root: Path, reference: str, *, variant: str = 'Suki
             if (re.search(r'(?m)^\s*(?:override\s+)?KSU_KERNEL_DIR\s*[:+?!]?=', remaining)
                     or re.search(r'(?m)^\s*(?:-?include|sinclude)\s', value.split(fallback, 1)[0])):
                 raise ValueError('Review the changed KernelSU-Next include-root assignments or included makefiles')
+    if variant in ('KernelSU', 'KowSU', 'FinaSU'):
+        external = ('ifneq ($(KBUILD_EXTMOD),)\n'
+                    '# 6.18 exports the external module source as srcroot when M/MO are used.\n'
+                    'ifneq ($(srcroot),)\nKSU_KERNEL_DIR := $(srcroot)\nendif\nendif\n')
+        for value in (native, text):
+            remaining = value.replace(external, '', 1).replace(fallback, '', 1).replace(adaptation, '', 1)
+            if (value.count(external) != 1
+                    or re.search(r'(?m)^\s*(?:override\s+)?KSU_KERNEL_DIR\s*[:+?!]?=', remaining)
+                    or re.search(r'(?m)^\s*(?:-?include|sinclude)\s', value.split(fallback, 1)[0])):
+                raise ValueError('Review the changed ' + variant + ' include-root assignments or included makefiles')
     for header in (kernel / 'include/uapi/app_profile.h', kernel / 'include/klog.h'):
         tracked_header(repository, header, reference)
     combined = fallback + adaptation if variant == 'KernelSU-Next' else adaptation + fallback
@@ -124,7 +134,7 @@ def prepare_builtin_includes(root: Path, reference: str, *, variant: str = 'Suki
     temporary = stage(path, changed)
     try:
         if path.read_bytes() != before:
-            raise ValueError('SukiSU Kbuild changed while validating its include-root adaptation')
+            raise ValueError('Manager Kbuild changed while validating its include-root adaptation')
         os.replace(temporary, path)
     finally:
         temporary.unlink(missing_ok=True)

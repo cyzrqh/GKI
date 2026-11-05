@@ -49,6 +49,21 @@ def prepared(root):
 
 @unittest.skipUnless(shutil.which('git'), 'Git is required to apply the real reviewed source patch')
 class KowSusfsTests(unittest.TestCase):
+    def test_real_kow_port_provides_every_legacy_kernel_direct_hook(self):
+        from validate_susfs_hooks import LEGACY_HOOKS, validate_hooks
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / 'KernelSU'
+            source.mkdir()
+            prepared(source)
+            kernel = root / 'common/fs/exec.c'
+            kernel.parent.mkdir(parents=True)
+            kernel.write_text('void caller(void) {\n' + '\n'.join(
+                symbol + '();' for symbol in LEGACY_HOOKS) + '\n}\n')
+            result = validate_hooks(root, variant='KowSU')
+            self.assertEqual(set(LEGACY_HOOKS), set(result.calls))
+            self.assertTrue(result.ok, result.missing)
+
     def test_native_permissions_lifecycle_and_forwarding_survive_real_patch_application(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

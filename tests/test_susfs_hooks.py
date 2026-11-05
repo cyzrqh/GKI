@@ -116,6 +116,29 @@ class SusfsHookTests(unittest.TestCase):
         self.assertTrue(result.ok)
         self.assertEqual(set(hooks.HOOKS), set(result.calls))
 
+    def test_legacy_native_susfs_calls_require_actual_external_definitions(self):
+        symbols = ('ksu_handle_execveat', 'ksu_handle_execveat_sucompat',
+                   'ksu_handle_post_execveat_sucompat', 'ksu_handle_faccessat',
+                   'ksu_handle_input_handle_event', 'ksu_handle_setresuid',
+                   'ksu_handle_stat', 'ksu_handle_sys_read', 'ksu_handle_sys_reboot',
+                   'ksu_handle_vfs_fstat')
+        self.source('common/fs/exec.c', 'void caller(void) {\n' +
+                    '\n'.join(symbol + '();' for symbol in symbols) + '\n}\n')
+        provider = self.source('KernelSU/kernel/native.c',
+                               '\n'.join('int ' + symbol + '(void) { return 0; }' for symbol in symbols))
+        text = provider.read_text(encoding='utf-8')
+        result = hooks.validate_hooks(self.root, variant='KowSU')
+        self.assertTrue(result.ok)
+        self.assertEqual(set(symbols), set(result.calls))
+        # Every legacy leaf is still checked: a prototype or another-file static
+        # definition must stop before compilation rather than count as a provider.
+        for symbol in symbols:
+            for replacement in ('int ' + symbol + '(void);', 'static int ' + symbol + '(void) { return 0; }'):
+                provider.write_text(text.replace('int ' + symbol + '(void) { return 0; }', replacement), encoding='utf-8')
+                with self.subTest(symbol=symbol, replacement=replacement):
+                    self.assertEqual({symbol}, set(hooks.validate_hooks(self.root, variant='KowSU').missing))
+        provider.write_text(text, encoding='utf-8')
+
     def test_v22_local_static_selinux_helpers_satisfy_same_file_calls(self):
         for index, symbol in enumerate(("my_setprocattr", "my_write_context", "my_write_access")):
             self.source(f"common/security/selinux/helper{index}.c",

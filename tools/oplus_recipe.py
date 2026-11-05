@@ -399,8 +399,11 @@ def build_step(recipe: dict, profile: dict, values: dict[str, str]) -> Step:
             raise RecipeError('Native optional environment bootstrap is ambiguous')
         # This Kleaf helper reads optional variables without defaults. Match
         # the original Actions shell while sourcing it, then restore nounset
-        # for the remaining adapter. Keep exports in the current shell.
-        removed = removed.replace(setup, 'set +u\nsource "./_setup_env.sh" || true\nset -u', 1)
+        # for the remaining adapter. This helper defines ROOT_DIR as the current
+        # common directory and joins it with KERNEL_DIR, so use its relative
+        # source path instead of inheriting the manager setup's absolute path.
+        # Keep all resulting toolchain exports in the current shell.
+        removed = removed.replace(setup, 'set +u\nKERNEL_DIR=.\nsource "./_setup_env.sh" || true\nset -u', 1)
         chain = re.compile(r'(?m)^(?P<indent>[ \t]*)(?P<config>make[^\n]+ gki_defconfig) &&\n'
                            r'(?P=indent)export CC="\$\(pwd\)/cc-wrapper" && export LD="\$\(pwd\)/ld-wrapper" &&\n'
                            r'(?P=indent)(?=make[^\n]+ Image)')

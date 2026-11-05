@@ -1,0 +1,38 @@
+{
+  "sources": {
+    "KernelSU": {
+      "repository": "tiann/KernelSU",
+      "commit": "28db74f6f4692e97006ce9ebd8b19b9cc614b5b7",
+      "paths": {
+        "KernelSU-Kbuild": "kernel/Kbuild",
+        "app_profile.h": "uapi/app_profile.h",
+        "klog.h": "kernel/include/klog.h"
+      }
+    },
+    "FinaSU": {
+      "repository": "LyraVoid/FinaSU",
+      "commit": "a839ce2d742f0f1450a3aad20bdc14bc060da840",
+      "paths": {
+        "FinaSU-Kbuild": "kernel/Kbuild",
+        "app_profile.h": "uapi/app_profile.h",
+        "klog.h": "kernel/include/klog.h"
+      }
+    },
+    "KowSU": {
+      "repository": "KOWX712/KernelSU",
+      "commit": "6ecdd69224fe6769e6c8715a4ef2b91602b23362",
+      "paths": {
+        "KowSU-Kbuild": "kernel/Kbuild",
+        "app_profile.h": "uapi/app_profile.h",
+        "klog.h": "kernel/include/klog.h"
+      }
+    }
+  },
+  "sha256": {
+    "app_profile.h": "dffad173122bb7bb183a61b5c24269e3cb36e3d4f22598cd34c0130945bed615",
+    "FinaSU-Kbuild": "406833459eda148122462ccbe5c7d945e38418f08b0546ceb85adb6b2c24673e",
+    "KernelSU-Kbuild": "435e1b72711b6071f732c56ff9f7cb67d32e311b4aa6f80ce65243e3d00112b2",
+    "klog.h": "032b31b94edbb66a133846611378a09d0f3aa2b01cab2671dd2b00198883807c",
+    "KowSU-Kbuild": "292bd20fb9e168f6c144a5069a2962ebdb4ce5dd2e1656dc6f6063639b9cb54c"
+  }
+}

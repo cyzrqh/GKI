@@ -3,6 +3,7 @@ import difflib
 import hashlib
 import os
 from pathlib import Path
+import re
 import shutil
 import stat
 import subprocess
@@ -101,6 +102,46 @@ class OplusCompatibilityTests(unittest.TestCase):
             self.write('fs/proc/task_mmu.c', text)
             with self.subTest(text=text[-80:]), self.assertRaises(ValueError):
                 compat.adapt_susfs_patch(self.common, patch)
+
+    def test_real_legacy_pin_applies_to_both_native_smap_page_helpers_and_preserves_all_rollup_paths(self):
+        fixtures = ROOT / 'tests/fixtures/oplus-susfs612'
+        metadata = __import__('json').loads((fixtures / 'provenance.json').read_text(encoding='utf-8'))
+        for name, digest in metadata['files'].items():
+            self.assertEqual(digest, hashlib.sha256((fixtures / name).read_bytes()).hexdigest())
+        raw = (fixtures / 'legacy-map-hooks.patch').read_bytes()
+        original = (fixtures / 'task-mmu-functions.c').read_text(encoding='utf-8')
+        for helper in ('vma_data_pages', 'vma_pages'):
+            source = original.replace('vma_data_pages(vma)', helper + '(vma)')
+            self.write('fs/proc/task_mmu.c', source)
+            with self.subTest(helper=helper):
+                adapted = compat.adapt_susfs_patch(self.common, raw)
+                self.patch.write_bytes(adapted)
+                for arguments in (['--check'], [], ['--check', '--reverse']):
+                    result = subprocess.run(['git', '-c', 'core.autocrlf=false', '-C', str(self.common),
+                                             'apply', *arguments, str(self.patch)], capture_output=True, text=True)
+                    self.assertEqual(0, result.returncode, result.stderr)
+                changed = (self.common / 'fs/proc/task_mmu.c').read_text(encoding='utf-8')
+                smap = compat.function_text(changed, 'show_smap')
+                rollup = compat.function_text(changed, 'show_smaps_rollup')
+                self.assertIn('if (!' + helper + '(vma))', smap)
+                self.assertEqual(3, rollup.count('if (!vma->vm_file || !SUSFS_IS_INODE_SUS_MAP'))
+                self.assertEqual(3, rollup.count('smap_gather_stats(vma, &mss,'))
+                self.assertEqual(compat.function_text(source, 'show_smaps_rollup'),
+                    re.sub(r'#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n([ \t]*)if \(!vma->vm_file \|\| '
+                           r'!SUSFS_IS_INODE_SUS_MAP\(file_inode\(vma->vm_file\)\)\)\n'
+                           r'#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\1\t', r'\1', rollup))
+                subprocess.run(['git', '-C', str(self.common), 'apply', '--reverse', str(self.patch)],
+                               check=True, capture_output=True)
+                self.assertEqual(source, (self.common / 'fs/proc/task_mmu.c').read_text(encoding='utf-8'))
+
+    def test_changed_legacy_rollup_feature_is_rejected_before_patch_output(self):
+        fixtures = ROOT / 'tests/fixtures/oplus-susfs612'
+        self.write('fs/proc/task_mmu.c', (fixtures / 'task-mmu-functions.c').read_text(encoding='utf-8'))
+        raw = (fixtures / 'legacy-map-hooks.patch').read_bytes()
+        changed = raw.replace(b'+\t\t\t\t\tlast_vma_end = vma->vm_end;',
+                              b'+\t\t\t\t\tdifferent_feature();')
+        with self.assertRaisesRegex(ValueError, 'rollup feature additions'):
+            compat.adapt_susfs_patch(self.common, changed)
 
     def test_rust_bitcode_filters_only_preprocessor_maps_with_real_exact_patch_and_is_idempotent(self):
         source = ('# Every native command and all source flags remain unchanged\n'

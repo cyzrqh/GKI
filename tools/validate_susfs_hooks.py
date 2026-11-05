@@ -20,6 +20,21 @@ HOOKS = (
     "my_write_context",
     "my_write_access",
 )
+LEGACY_HOOKS = (
+    # Reviewed older SUSFS 2.3 branches retain the native direct-hook ABI.
+    # Validate its real providers too; zero modern calls is not a mismatch.
+    "ksu_handle_execveat",
+    "ksu_handle_execveat_sucompat",
+    "ksu_handle_post_execveat_sucompat",
+    "ksu_handle_faccessat",
+    "ksu_handle_input_handle_event",
+    "ksu_handle_setresuid",
+    "ksu_handle_stat",
+    "ksu_handle_sys_read",
+    "ksu_handle_sys_reboot",
+    "ksu_handle_vfs_fstat",
+)
+DIRECT_HOOKS = HOOKS + LEGACY_HOOKS
 HOOK_PATTERN = re.compile(r"\b(" + "|".join(HOOKS) + r")\s*\(")
 SKIP_DIRECTORIES = {".git", ".repo", ".upstream", "__pycache__", "out", "dist"}
 COMPATIBILITY_MESSAGE = "请使用相互兼容的SUSFS和KernelSU版本。"
@@ -309,9 +324,9 @@ def validate_hooks(kernel_root: Path, ksu_dir: Path | None = None, *, variant: s
     definitions: list[Definition] = []
     for path in _c_files(source, (ksu,) if ksu is not None else ()):
         text = path.read_text(encoding="utf-8", errors="replace")
-        if not any(symbol in text for symbol in HOOKS):
+        if not any(symbol in text for symbol in DIRECT_HOOKS):
             continue
-        file_calls, file_definitions = inspect_c_source(path, text)
+        file_calls, file_definitions = inspect_c_source(path, text, symbols=DIRECT_HOOKS)
         definitions.extend(file_definitions)
         for symbol, location in file_calls:
             calls.setdefault(symbol, []).append(location)
@@ -319,7 +334,7 @@ def validate_hooks(kernel_root: Path, ksu_dir: Path | None = None, *, variant: s
         for path in _c_files(ksu):
             text = path.read_text(encoding="utf-8", errors="replace")
             if any(symbol in text for symbol in calls):
-                _, file_definitions = inspect_c_source(path, text)
+                _, file_definitions = inspect_c_source(path, text, symbols=DIRECT_HOOKS)
                 definitions.extend(file_definitions)
         if variant == 'BakaSU' and 'my_setprocattr' in calls:
             alias = bakasu_setprocattr_alias(source, ksu)

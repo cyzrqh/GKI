@@ -1,0 +1,20 @@
+{
+  "license": "GPL-2.0-only",
+  "kernel": {
+    "repository": "cctv18/android_gki_kernel_common",
+    "ref": "58ee67741556c83c523f48518284c4a6b1ef31d6",
+    "path": "fs/proc/task_mmu.c",
+    "source_sha256": "06e19576fe4055373d542dd9f9001160f41f4fc2116cbff3a8c3e02c485b792f",
+    "excerpt": "show_smap and show_smaps_rollup, unchanged"
+  },
+  "susfs": {
+    "repository": "https://gitlab.com/simonpunk/susfs4ksu",
+    "ref": "5e0b2b925865000ca7dce993ecf1d281ee312887",
+    "path": "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch",
+    "excerpt": "task_mmu three show_smap/show_smaps_rollup hunks, unchanged"
+  },
+  "files": {
+    "legacy-map-hooks.patch": "e9841c09de4332ab2cce0598e6f3958cf0b483552ba52b622002f9f6569014bb",
+    "task-mmu-functions.c": "376878b57dfb13b0f0b6130ad7c8b16aa9cc328e32c39f8aeb909f1b5bac1031"
+  }
+}

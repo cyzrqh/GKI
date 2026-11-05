@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import shutil
+import stat
 import subprocess
 import sys
 import unittest
@@ -23,7 +24,19 @@ class OPlusRunnerTests(unittest.TestCase):
             self.skipTest('Bash is required for native runner behavior tests')
         self.directory = ROOT / 'tests' / ('.oplus-runner-' + uuid.uuid4().hex)
         self.directory.mkdir()
-        self.addCleanup(shutil.rmtree, self.directory)
+        self.addCleanup(self.remove_temporary)
+
+    def remove_temporary(self):
+        directory = self.directory.resolve(strict=True)
+        if directory.parent != ROOT / 'tests' or not directory.name.startswith('.oplus-runner-'):
+            raise ValueError('Refusing cleanup outside this runner test directory')
+        def writable(function, name, error):
+            path = Path(name)
+            if not path.resolve(strict=True).is_relative_to(directory):
+                raise ValueError('Runner test cleanup escaped its temporary directory')
+            path.chmod(stat.S_IWRITE)
+            function(name)
+        shutil.rmtree(directory, onexc=writable)
 
     def run_shell(self, script):
         return subprocess.run([self.shell, '-euo', 'pipefail', '-c', 'set +o posix\n' + script], cwd=self.directory,
@@ -49,7 +62,7 @@ class OPlusRunnerTests(unittest.TestCase):
         for row in rows:
             with self.subTest(target=row['id']):
                 script = self.native_script(row)
-                start = script.index('set +u\nsource "./_setup_env.sh"')
+                start = script.index('set +u\nKERNEL_DIR=.\nsource "./_setup_env.sh"')
                 end = script.index('set -u', start) + len('set -u')
                 result = self.run_shell(script[start:end] + '\n'
                     '[[ "$OPLUS_NATIVE_EXPORT" == preserved ]]\n[[ "$-" == *u* ]]\nprintf reached')
@@ -65,6 +78,36 @@ class OPlusRunnerTests(unittest.TestCase):
         result = self.run_shell(stub + script[start:image] + '\nprintf after-build')
         self.assertEqual(23, result.returncode, result.stderr)
         self.assertEqual('make-called\n', result.stdout)
+
+    def test_all_native_setups_resolve_the_current_source_once_and_keep_its_real_epoch(self):
+        # Replay the helper's real Git lookup with a real source repository.
+        # KSU setup exports an absolute KERNEL_DIR; Kleaf joins it with ROOT_DIR.
+        setup = ('export ROOT_DIR=$(readlink -f "$PWD")\n'
+                 'export SOURCE_DATE_EPOCH=$(git -C "${ROOT_DIR}/${KERNEL_DIR}" log -1 --pretty=%ct)\n'
+                 '[[ -n "$SOURCE_DATE_EPOCH" ]] || return 31\n'
+                 'export OPLUS_NATIVE_EXPORT=preserved\n')
+        (self.directory / '_setup_env.sh').write_text(setup, encoding='utf-8', newline='\n')
+        initialized = self.run_shell('git init -q\ngit add _setup_env.sh\n'
+            'git -c user.name=Fixture -c user.email=fixture@example.invalid commit -qm fixture\n')
+        self.assertEqual(0, initialized.returncode, initialized.stderr)
+        broken = self.run_shell('export KERNEL_DIR="$PWD"\nset +u\n'
+                                'source "./_setup_env.sh"\n')
+        self.assertNotEqual(0, broken.returncode)
+        self.assertIn('cannot change to', broken.stderr)
+        for row in oplus_cctv.load_profiles():
+            if row['kernel_version'] != '6.12':
+                continue
+            with self.subTest(target=row['id']):
+                script = self.native_script(row)
+                start = script.index('set +u\nKERNEL_DIR=.\nsource "./_setup_env.sh"')
+                end = script.index('set -u', start) + len('set -u')
+                result = self.run_shell('export KERNEL_DIR="$PWD"\n' + script[start:end] + '\n'
+                    '[[ "$OPLUS_NATIVE_EXPORT" == preserved ]]\n'
+                    '[[ "$SOURCE_DATE_EPOCH" == "$(git log -1 --pretty=%ct)" ]]\n'
+                    '[[ "$KERNEL_DIR" == . ]]\n[[ "$-" == *u* ]]\nprintf reached')
+                self.assertEqual(0, result.returncode, result.stderr)
+                self.assertEqual('reached', result.stdout)
+                self.assertNotIn('cannot change to', result.stderr)
 
     def installer(self, mode):
         stubs = '''

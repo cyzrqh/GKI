@@ -269,7 +269,7 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         prepare_builtin_includes(root, reference)
         if enable_kpm:
             prepare_kpm_members(root, reference)
-    elif variant == 'KernelSU-Next':
+    elif variant in ('KernelSU-Next', 'KernelSU', 'FinaSU', 'KowSU'):
         from oplus_ksu_compat import prepare_builtin_includes
         prepare_builtin_includes(root, reference, variant=variant)
     from oplus_cctv import is_cctv
@@ -322,7 +322,12 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
         complete_priority(root)
         result = validate_hooks(root, variant=variant)
         if not result.calls or not result.ok:
-            raise ValueError('The vendor SUSFS hooks do not match the selected manager implementation')
+            missing = []
+            for symbol, locations in sorted(getattr(result, 'missing', {}).items()):
+                missing.append(symbol + ' (' + ', '.join(
+                    str(location.path) + ':' + str(location.line) for location in locations) + ')')
+            detail = '; '.join(missing) if missing else 'no recognized direct hook calls were found'
+            raise ValueError('The vendor SUSFS hooks do not match the selected manager implementation: ' + detail)
     return root
 
 

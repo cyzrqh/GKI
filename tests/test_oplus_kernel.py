@@ -238,14 +238,16 @@ class OPlusKernelTests(unittest.TestCase):
                     finally:
                         self.profile = original
 
-    def test_include_root_adaptation_covers_sukisu_612_and_all_oplus_next_series(self):
+    def test_include_root_adaptation_covers_sukisu_612_and_all_additional_managers_series(self):
         for version, variant in (('6.1', 'SukiSU'), ('6.6', 'SukiSU'), ('6.12', 'SukiSU'), ('6.12', 'BakaSU'),
-                                  ('6.1', 'KernelSU-Next'), ('6.6', 'KernelSU-Next'), ('6.12', 'KernelSU-Next')):
+                                  *((series, name) for series in ('6.1', '6.6', '6.12')
+                                    for name in ('KernelSU-Next', 'KernelSU', 'FinaSU', 'KowSU'))):
             with self.subTest(version=version, variant=variant):
                 self.finalize_mocks(variant)
                 with mock.patch.object(kernel, 'validate_profile', side_effect=lambda profile: profile), \
                         mock.patch.object(kernel, 'native_inputs'), \
                         mock.patch('additional_manager_integration.configure') as official_trust, \
+                        mock.patch('additional_manager_integration.effective_susfs', return_value=False), \
                         mock.patch('oplus_ksu_compat.prepare_builtin_includes') as includes:
                     old = self.profile
                     self.profile = {**old, 'kernel_version': version}
@@ -253,7 +255,7 @@ class OPlusKernelTests(unittest.TestCase):
                         self.finalize(variant=variant)
                     finally:
                         self.profile = old
-                    if variant == 'KernelSU-Next':
+                    if variant in ('KernelSU-Next', 'KernelSU', 'FinaSU', 'KowSU'):
                         includes.assert_called_once_with(self.root, self.reference, variant=variant)
                         official_trust.assert_called_once_with(self.root, '710', 'e' * 64,
                             kernel.manager_profile(variant)['package'], '41075', variant=variant)
@@ -466,6 +468,15 @@ class OPlusKernelTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'hooks do not match'):
                     self.finalize(inputs=selected)
                 validate.assert_called_once_with(self.root, variant='SukiSU')
+
+    def test_missing_susfs_diagnostic_names_the_real_hook_and_call_site(self):
+        self.finalize_mocks()
+        location = SimpleNamespace(path=self.root / 'common/fs/exec.c', line=42)
+        result = SimpleNamespace(calls=['ksu_handle_execveat'], ok=False,
+                                 missing={'ksu_handle_execveat': (location,)})
+        with mock.patch.object(kernel, 'validate_hooks', return_value=result), \
+                self.assertRaisesRegex(ValueError, r'ksu_handle_execveat .*exec.c:42'):
+            self.finalize(inputs={**self.inputs, 'enable_susfs': True})
 
     def test_bakasu_calls_native_guard_without_replacing_future_resolver_functions(self):
         source = self.ksu / 'infra/symbol_resolver.c'

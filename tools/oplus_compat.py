@@ -171,7 +171,7 @@ def adapt_susfs_patch(common: Path, patch_bytes: bytes) -> bytes:
     # The vendor's newer mmap-lock contention loop gathers both whole VMAs
     # and partial tails. Retain that implementation and exclude hidden file
     # mappings independently at each of its three real gather calls.
-    calls = re.findall(r'(?m)^(\s*)smap_gather_stats\(vma, &mss, (0|last_vma_end)\);$', rollup)
+    calls = re.findall(r'(?m)^([ \t]*)smap_gather_stats\(vma, &mss, (0|last_vma_end)\);$', rollup)
     changed_rollup = None
     if calls:
         if [argument for _indent, argument in calls] != ['0', '0', 'last_vma_end']:
@@ -183,19 +183,32 @@ def adapt_susfs_patch(common: Path, patch_bytes: bytes) -> bytes:
                     + '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' + indent + '\t'
                     + 'smap_gather_stats(vma, &mss, ' + argument + ');')
         changed_rollup = re.sub(r'(?m)^([ \t]*)smap_gather_stats\(vma, &mss, (0|last_vma_end)\);$', guard, rollup)
+    rollup_additions = tuple(''.join(line[1:] for line in hunk.splitlines(keepends=True)[1:]
+                                     if line.startswith('+')) for hunk in hunks[1:]
+                             if 'static int show_smaps_rollup(' in hunk.splitlines()[0])
+    if changed_rollup is not None:
+        modern_additions = (
+            '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
+            '\t\tif (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
+            '\t\t\tgoto bypass_orig_flow;\n'
+            '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\n',
+            '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n'
+            '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n')
+        # Older pinned 2.3 sources put the first guard and label in one hunk,
+        # and the partial-VMA guard in the second. Both reviewed layouts hide
+        # map statistics; bind them to all three native contention-loop paths.
+        legacy_additions = (
+            modern_additions[0].removesuffix('\n') + modern_additions[1],
+            '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
+            '\t\t\t\tif (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))) {\n'
+            '\t\t\t\t\tsmap_gather_stats(vma, &mss, last_vma_end);\n'
+            '\t\t\t\t\tlast_vma_end = vma->vm_end;\n'
+            '\t\t\t\t}\n#else\n#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n')
+        if rollup_additions not in (modern_additions, legacy_additions):
+            raise ValueError('Unknown official SUSFS rollup feature additions')
     skipped_rollup = 0
     for hunk in hunks[1:]:
         if 'static int show_smaps_rollup(' in hunk.splitlines()[0] and changed_rollup is not None:
-            added = ''.join(line[1:] for line in hunk.splitlines(keepends=True)[1:] if line.startswith('+'))
-            expected_additions = (
-                '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n'
-                '\t\tif (vma->vm_file && SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
-                '\t\t\tgoto bypass_orig_flow;\n'
-                '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\n',
-                '#ifdef CONFIG_KSU_SUSFS_SUS_MAP\nbypass_orig_flow:\n'
-                '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n')
-            if skipped_rollup >= 2 or added != expected_additions[skipped_rollup]:
-                raise ValueError('Unknown official SUSFS rollup feature additions')
             skipped_rollup += 1
             continue
         old = ''.join(line[1:] for line in hunk.splitlines(keepends=True)[1:] if line.startswith((' ', '-')))
@@ -203,11 +216,15 @@ def adapt_susfs_patch(common: Path, patch_bytes: bytes) -> bytes:
         if 'static int show_smap(' in hunk.splitlines()[0]:
             function = function_text(after, 'show_smap')
             if old not in function:
-                context = '\tif (!vma_data_pages(vma))\n'
-                if old.count(context) != 1 or new.count(context) != 1:
+                contexts = ('\tif (!vma_data_pages(vma))\n', '\tif (!vma_pages(vma))\n')
+                matches = [(before, native) for before in contexts for native in contexts
+                           if before != native and old.count(before) == new.count(before) == 1
+                           and function.count(native) == 1]
+                if len(matches) != 1:
                     raise ValueError('Unknown official SUSFS show_smap pre-context')
-                old = old.replace(context, '\tif (!vma_pages(vma))\n', 1)
-                new = new.replace(context, '\tif (!vma_pages(vma))\n', 1)
+                before, native = matches[0]
+                old = old.replace(before, native, 1)
+                new = new.replace(before, native, 1)
             if function.count(old) != 1:
                 raise ValueError('Official source differs from both reviewed show_smap contexts')
         if after.count(old) != 1:

@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from datetime import datetime, timezone
+from email.utils import parsedate_to_datetime
 import hashlib
+import http.client
 import json
 import os
 from pathlib import Path
@@ -12,6 +15,7 @@ import shutil
 import stat
 import struct
 import subprocess
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -151,18 +155,43 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
-def download(url: str, size: int) -> bytes:
-    """Public assets only: no credentials, bounded body, explicit HTTPS redirects."""
-    opener = urllib.request.build_opener(_NoRedirect())
+def _asset_url(url: str):
+    parsed = urllib.parse.urlsplit(url)
+    if (parsed.scheme != 'https' or parsed.username or parsed.password
+            or parsed.port not in (None, 443) or parsed.fragment
+            or parsed.hostname not in {'github.com', 'release-assets.githubusercontent.com',
+                                       'objects.githubusercontent.com'}):
+        raise KPMValidationError('KPM asset redirected outside its public HTTPS hosts')
+    return parsed
+
+
+def _asset_retry_delay(value, fallback):
+    if value is None:
+        return fallback
+    if not isinstance(value, str) or len(value) > 128:
+        raise KPMValidationError('Official KPM Retry-After is invalid')
+    if re.fullmatch(r'[0-9]+', value.strip()):
+        seconds = int(value.strip())
+    else:
+        try:
+            instant = parsedate_to_datetime(value)
+            if instant.tzinfo is None:
+                raise ValueError('Missing timezone')
+            seconds = max(0, (instant - datetime.now(timezone.utc)).total_seconds())
+        except (TypeError, ValueError, OverflowError):
+            raise KPMValidationError('Official KPM Retry-After is invalid') from None
+    if seconds > 60:
+        raise KPMValidationError('Official KPM rate limit requires a later retry; fixed asset verification was not bypassed')
+    return max(fallback, seconds)
+
+
+def _download_attempt(url: str, size: int, opener, *, fresh=False) -> bytes:
     for _ in range(4):
-        parsed = urllib.parse.urlsplit(url)
-        if (parsed.scheme != 'https' or parsed.username or parsed.password
-                or parsed.port not in (None, 443) or parsed.fragment
-                or parsed.hostname not in {'github.com', 'release-assets.githubusercontent.com',
-                                           'objects.githubusercontent.com'}):
-            raise KPMValidationError('KPM asset redirected outside its public HTTPS hosts')
-        request = urllib.request.Request(url, headers={'User-Agent': 'gki-official-kpm',
-                                                       'Accept': 'application/octet-stream'})
+        _asset_url(url)
+        headers = {'User-Agent': 'gki-official-kpm', 'Accept': 'application/octet-stream'}
+        if fresh:
+            headers.update({'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
+        request = urllib.request.Request(url, headers=headers)
         try:
             response = opener.open(request, timeout=45)
         except urllib.error.HTTPError as error:
@@ -171,8 +200,7 @@ def download(url: str, size: int) -> bytes:
                 error.close()
                 url = next_url
                 continue
-            error.close()
-            raise KPMValidationError('Unable to download the fixed official KPM asset') from None
+            raise
         with response:
             if response.status != 200:
                 raise KPMValidationError('Unexpected official KPM download response')
@@ -180,10 +208,58 @@ def download(url: str, size: int) -> bytes:
             if length is not None and (not length.isdecimal() or int(length) != size):
                 raise KPMValidationError('Official KPM download has an unexpected size')
             data = response.read(size + 1)
-        if len(data) != size:
+        if len(data) < size:
+            # read(amt) may return an early EOF without raising IncompleteRead,
+            # even when a correct Content-Length was declared. Retry that
+            # interrupted transfer; an oversized or wrong-sized declaration
+            # remains a hard validation failure.
+            raise http.client.IncompleteRead(data, size - len(data))
+        if len(data) > size:
             raise KPMValidationError('Official KPM download is truncated or oversized')
         return data
     raise KPMValidationError('Too many official KPM asset redirects')
+
+
+def download(url: str, size: int) -> bytes:
+    """Retry public transport only; fixed bytes and payload checks remain mandatory.
+
+    A failed CDN request restarts at the locked GitHub release URL. Reusing an
+    old signed redirect could keep returning an expired-token 403/618 forever.
+    Neither tokens, signed URLs, upstream bodies nor tool output are logged.
+    """
+    parsed = _asset_url(url)
+    asset = parsed.path.rsplit('/', 1)[-1]
+    label = asset if asset in ('kpimg', 'kptools-linux') else 'asset'
+    tag = parsed.path.rstrip('/').split('/')[-2] if '/' in parsed.path.rstrip('/') else ''
+    if tag in (TAG, '0.14.0') and label != 'asset':
+        label = tag + '/' + label
+    opener = urllib.request.build_opener(_NoRedirect())
+    for attempt in range(4):
+        reason, retry_after = None, None
+        try:
+            return _download_attempt(url, size, opener, fresh=attempt > 0)
+        except urllib.error.HTTPError as error:
+            code = error.code
+            retry_after = error.headers.get('Retry-After') if error.headers else None
+            error.close()
+            reason = 'HTTP ' + str(code)
+            # 403/618 may be a stale signed public CDN URL. Refresh from the
+            # original lock with cache-control; never retry that signed URL.
+            if code not in (403, 408, 429, 500, 502, 503, 504, 618):
+                raise KPMValidationError(f'Unable to download fixed official KPM {label}: {reason}') from None
+            fallback = (5, 15, 30)[attempt] if code == 429 and attempt < 3 else (2, 5, 10)[min(attempt, 2)]
+        except http.client.IncompleteRead:
+            reason = 'incomplete response'
+            fallback = (2, 5, 10)[min(attempt, 2)]
+        except (urllib.error.URLError, OSError, TimeoutError):
+            reason = 'network/TLS transport failure'
+            fallback = (2, 5, 10)[min(attempt, 2)]
+        if attempt == 3:
+            raise KPMValidationError(f'Unable to download fixed official KPM {label}: {reason} after four attempts') from None
+        delay = _asset_retry_delay(retry_after, fallback)
+        print(f'Official KPM {label} download retry {attempt + 2}/4: {reason}; refreshing original URL after {delay:g}s', flush=True)
+        time.sleep(delay)
+    raise AssertionError('Unreachable fixed official KPM retry state')
 
 
 def validate_payload(data: bytes) -> dict:

@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "sources": {
+    "next-susfs23-stable": {
+      "repository": "KernelSU-Next/KernelSU-Next",
+      "base_ref": "4c706b5938665866ebe16944a481a7b91e3396af",
+      "failed_postimage_blob": "1b34903f4c78451c4c720be476cd6dec4b1e1e21",
+      "fixed_postimage_blob": "ede4667ce1cb6f2c7ff320ddf6cdef3f40c73114"
+    },
+    "official-susfs23-stable": {
+      "repository": "tiann/KernelSU",
+      "base_ref": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
+      "failed_postimage_blob": "1b34903f4c78451c4c720be476cd6dec4b1e1e21",
+      "fixed_postimage_blob": "ede4667ce1cb6f2c7ff320ddf6cdef3f40c73114"
+    }
+  },
+  "providers": {
+    "6.6": {
+      "repository": "simonpunk/susfs4ksu",
+      "ref": "bd7d199ac87808001127e8a6d076832e2938cf0d",
+      "path": "kernel_patches/50_add_susfs_in_gki-android15-6.6.patch",
+      "patch_sha256": "86d51e3c061d9466f6274815aae5072d529b53be94af31c78e98c9a042feaf2a",
+      "fixture_sha256": "eccf5a919b0a494735248d17b5a6475fea8b16dfeec67730bf858fc9379d3b60"
+    },
+    "6.12": {
+      "repository": "simonpunk/susfs4ksu",
+      "ref": "5e0b2b925865000ca7dce993ecf1d281ee312887",
+      "path": "kernel_patches/50_add_susfs_in_gki-android16-6.12.patch",
+      "patch_sha256": "ddf6730f5addfc9aa310e9655415b114fc1c64a5f4da3da6e5aff92b30262326",
+      "fixture_sha256": "eccf5a919b0a494735248d17b5a6475fea8b16dfeec67730bf858fc9379d3b60"
+    }
+  }
+}

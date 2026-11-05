@@ -4,7 +4,7 @@
   "base_ref": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
   "port_repository": "https://gitlab.com/simonpunk/susfs4ksu",
   "port_ref": "5192aa2",
-  "patch_sha256": "ef08f12ea8216235c8170f0d393b533e0e5bb76e8b5ab07978c4dd987bd92873",
+  "patch_sha256": "42c83e67acb1725a7e13729a9541af309e576504f0b112fd3cfa558d0820fce4",
   "objects": {
     "7e337abff786f727772106fb4d0fbc2191a611cf": "13ec0899a8429e2232ce1200a4db2806134b5df2c6f748d82907247e43caf6a4",
     "e5dcc4d3c1e2dec98459d7af27deb880be4e346f": "1e35d05d9415d159710107ac9d08e64af368482a47cccc36673171dc64952990",

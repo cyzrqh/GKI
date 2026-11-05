@@ -162,6 +162,26 @@ def verify_legacy_next_lifecycle(source: Path) -> None:
         raise ValueError('Next native boot callback is missing its Kbuild object or feature lifecycle')
 
 
+def verify_stable_policy_bridge(source: Path) -> None:
+    """Fixed SUSFS 6.6/6.12 provide strong policy wrappers, not optional pointers."""
+    from validate_susfs_hooks import strip_comments_and_literals
+    path = source / 'kernel/feature/selinux_hide.c'
+    if path.is_symlink() or not path.is_file() or path.stat().st_size > 262144:
+        raise ValueError('Stable SUSFS policy bridge requires its real SELinux implementation')
+    code = strip_comments_and_literals(path.read_text(encoding='utf-8'))
+    for symbol in ('security_dump_masked_av_fn', 'context_struct_compute_av_fn'):
+        declarations = re.findall(r'\bextern\s+void\s+' + symbol + r'\s*\([^;{}]+\)\s*;', code)
+        # Exactly one declaration and one unconditional invocation remain.
+        # A nullable callback, a repeated condition, or an omitted call is not
+        # the reviewed direct ABI implemented by the fixed kernel providers.
+        if len(declarations) != 1 or len(re.findall(r'\b' + symbol + r'\b', code)) != 2:
+            raise ValueError('Stable SUSFS policy bridge must use its required direct function without a NULL check: ' + symbol)
+        remaining = code.replace(declarations[0], '', 1)
+        calls = re.findall(r'(?m)^\s*' + symbol + r'\s*\([^;{}]+\)\s*;', remaining)
+        if len(calls) != 1:
+            raise ValueError('Stable SUSFS policy bridge lost its required direct invocation: ' + symbol)
+
+
 def verify_native_policy_generation(source: Path) -> None:
     """Keep the selected upstream's real policy generation and notifications."""
     selected = git(source, 'show', 'HEAD:kernel/selinux/rules.c')
@@ -242,6 +262,8 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
         raise ValueError('Next SUSFS port differs from its reviewed digest')
     def verify():
         verify_native_preinit_cleanup(source)
+        if name in ('next-susfs23-stable', 'official-susfs23-stable'):
+            verify_stable_policy_bridge(source)
         if name == 'next-susfs23-stable':
             verify_legacy_next_lifecycle(source)
         elif name == 'kow-susfs23':

@@ -615,7 +615,7 @@ index 693414198438dac38ac67e39de13a3576169847d..5b00bbb0b78f7b07c7a96ff0730bc1a1
  
  void __init ksu_kernel_umount_init(void)
 diff --git a/kernel/feature/selinux_hide.c b/kernel/feature/selinux_hide.c
-index 459f99f920b7b995e8f3b53d7da931dcbd79f932..1b34903f4c78451c4c720be476cd6dec4b1e1e21 100644
+index 459f99f920b7b995e8f3b53d7da931dcbd79f932..ede4667ce1cb6f2c7ff320ddf6cdef3f40c73114 100644
 --- a/kernel/feature/selinux_hide.c
 +++ b/kernel/feature/selinux_hide.c
 @@ -1,9 +1,5 @@
@@ -765,7 +765,9 @@ index 459f99f920b7b995e8f3b53d7da931dcbd79f932..1b34903f4c78451c4c720be476cd6dec
 -    kfree(canon);
 -    return length;
 -}
--
++DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
++struct page *fake_status = NULL;
+ 
 -static ssize_t my_write_access(struct file *file, char *buf, size_t size)
 -{
 -    // apply to all app uids
@@ -836,9 +838,7 @@ index 459f99f920b7b995e8f3b53d7da931dcbd79f932..1b34903f4c78451c4c720be476cd6dec
 -    tsec = selinux_cred(cred);
 -    return tsec->sid;
 -}
-+DEFINE_STATIC_KEY_FALSE(fake_status_initialize_key);
-+struct page *fake_status = NULL;
- 
+-
 -/*
 - * get the objective security ID of a task
 - */
@@ -1423,7 +1423,17 @@ index 459f99f920b7b995e8f3b53d7da931dcbd79f932..1b34903f4c78451c4c720be476cd6dec
                                                 u32 *scontext_len)
  {
      struct policydb *policydb;
-@@ -1208,7 +755,7 @@ static void context_struct_compute_av(struct policydb *policydb, struct context
+@@ -927,8 +474,7 @@ static void __nocfi type_attribute_bounds_av(struct policydb *policydb, struct c
+     avd->allowed &= ~masked;
+ 
+     /* audit masked permissions */
+-    if (security_dump_masked_av_fn)
+-        security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
++    security_dump_masked_av_fn(policydb, scontext, tcontext, tclass, masked, "bounds");
+ }
+ 
+ /*
+@@ -1208,7 +754,7 @@ static void context_struct_compute_av(struct policydb *policydb, struct context
      type_attribute_bounds_av(policydb, scontext, tcontext, tclass, avd);
  }
  
@@ -1432,7 +1442,19 @@ index 459f99f920b7b995e8f3b53d7da931dcbd79f932..1b34903f4c78451c4c720be476cd6dec
                                                           struct av_decision *avd)
  {
      struct policydb *policydb;
-@@ -1255,3 +802,4 @@ allow:
+@@ -1244,14 +790,11 @@ static void __nocfi security_compute_av_user_with_policy(struct selinux_policy *
+         goto out;
+     }
+ 
+-    if (context_struct_compute_av_fn) {
+-        context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
+-    } else {
+-        context_struct_compute_av(policydb, scontext, tcontext, tclass, avd, NULL);
+-    }
++    context_struct_compute_av_fn(policydb, scontext, tcontext, tclass, avd, NULL);
+ out:
+     return;
+ allow:
      avd->allowed = 0xffffffff;
      goto out;
  }

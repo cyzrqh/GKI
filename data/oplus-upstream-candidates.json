@@ -1,0 +1,218 @@
+{
+  "new_recipes": [],
+  "profiles": [
+    {
+      "id": "sm8650-6.1.57",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "fe4f004c48e8aefbea933a12b9fa8d5a86d7a642674deec6de7635db22ff03f5",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-07-23T23:48:03Z",
+      "source_ref": "9122bcb797bced6334d2f91177734a7b17de55c7",
+      "source_version": "6.1.57"
+    },
+    {
+      "id": "sm8650-6.1.75",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "bc62b4b63fa334a2b769527baede65b433390ab90c966d6cdb7014cc7bbdf3f3",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-07-23T23:56:17Z",
+      "source_ref": "78bbfcf77a69248a356528fe3716d1e394cc7e3c",
+      "source_version": "6.1.75"
+    },
+    {
+      "id": "mt6989-6.1.115",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "a4b9f40a845989f66813792e7b6802756238fd03eb46449bd4e593eb53af90ee",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2025-08-26T10:21:13Z",
+      "source_ref": "48cce41449bedae53d5db50975fefc22eb5b41e9",
+      "source_version": "6.1.115"
+    },
+    {
+      "id": "sm8650-6.1.118",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "57bda79a41bc85635c5094451fe373aa2e412d7bda9ea43907f2651654c64b12",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-02-07T00:23:26Z",
+      "source_ref": "325c324e0c19da05545bc0f491b5c776866d4dde",
+      "source_version": "6.1.118"
+    },
+    {
+      "id": "mt6897-6.1.128",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "1adadf11cfa4c8c47134e752cb974b508c356b6baa5fc14f41696b87d439a560",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2025-09-09T03:49:47Z",
+      "source_ref": "2dcc0ff7ba789c7b851c7fd24d1227ba4af6f5e1",
+      "source_version": "6.1.128"
+    },
+    {
+      "id": "mt6989-6.1.134",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "abe89b452debe3403b5ae9d2145f8381c4b6d067f260c9fb4b2e0befeadd83c4",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-04-20T08:18:45Z",
+      "source_ref": "16bc556523df15b47f47ec4185616f0304c44240",
+      "source_version": "6.1.134"
+    },
+    {
+      "id": "sm8650-6.1.141",
+      "recipe_ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288",
+      "recipe_sha256": "296b95a539f05358cd94eb89471acdb8a3a6162a913f9db12121d7ec13615117",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-07-12T10:39:33Z",
+      "source_ref": "7a244ff186208e81791a0792d5032b63dbad2eda",
+      "source_version": "6.1.141"
+    },
+    {
+      "id": "sm8750-6.6.30",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "cfac6776964c692a99f63cd29c205572d3ffc454f2fff98267c9e53f8e854ce2",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-08-14T17:24:52Z",
+      "source_ref": "3fb07dee0ecf8afef28e6bd15e9ad6b34ecc22c0",
+      "source_version": "6.6.30"
+    },
+    {
+      "id": "mt6991-6.6.50",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "c872abc90d8bb776f142340e7a8cbecad52efdfc85960ab89820ce9f54a8cd35",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2025-10-05T03:42:39Z",
+      "source_ref": "2f1500e509480520fee0010cc78cc7d2e8cece11",
+      "source_version": "6.6.50"
+    },
+    {
+      "id": "sm8750-6.6.56",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "f56ce81a151fdebf227adcff58e202fa23f486268a3c551db08db3fe39904583",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2025-10-29T19:47:27Z",
+      "source_ref": "f8dd8c2b28208bff4a54f8c8ec81d7567c30edfa",
+      "source_version": "6.6.56"
+    },
+    {
+      "id": "sm8750-6.6.57",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "68e742edfc8455af7c5006b5840aceffb726ccddd98dc018b0d31d3a26de1c32",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2025-10-30T09:57:39Z",
+      "source_ref": "214d4ccdf65d144029712878e777764b97e82221",
+      "source_version": "6.6.57"
+    },
+    {
+      "id": "sm8750-6.6.66",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "2ed5c855f229c99ace37a14a42baf1caf6264d4516314c577f7793431934b0da",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2025-10-05T02:27:18Z",
+      "source_ref": "9a56e8288fc62e2047a142114faeb9467447311d",
+      "source_version": "6.6.66"
+    },
+    {
+      "id": "sm8750-6.6.89",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "088fb903e961756ea92d258b373724d851d4a0083bd9231db6e6f87824ed7b49",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-07-11T08:24:28Z",
+      "source_ref": "1fa251814f74c86488de8c765ea24375dfbfc094",
+      "source_version": "6.6.89"
+    },
+    {
+      "id": "mt6991-6.6.89",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "04c49664568cda4bb6fbd95335bc4587fcb7bccc710bd047032340c492e422da",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-04-20T08:11:11Z",
+      "source_ref": "3e997b560aa1e81b11ab40a47ca4eb27628feaf1",
+      "source_version": "6.6.89"
+    },
+    {
+      "id": "sm8750-6.6.118",
+      "recipe_ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36",
+      "recipe_sha256": "829b88611c201491a5870727f287d3aca137a347c0f8e81c7430bbb02aaa88fd",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-08-26T16:57:22Z",
+      "source_ref": "2a4726b11594dd57d0779d2685fad5c81e5ed553",
+      "source_version": "6.6.118"
+    },
+    {
+      "id": "sm8850-6.12.23",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "6cd7f71a65db1205ecbc9a4c7553eb55662526d10f48ebfaecc615d17b699aca",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-06-04T16:02:43Z",
+      "source_ref": "1fdec1073c8fa24282dcbe8395593759c2ce0d17",
+      "source_version": "6.12.23"
+    },
+    {
+      "id": "mt6993-6.12.23",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "521b4e025da1ba1da47d25dd0146dd03676e05eb387645aa860d68790431327b",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-02-06T04:41:50Z",
+      "source_ref": "5e675c36845bc3f9e97de723f2932a92b17dc3dc",
+      "source_version": "6.12.23"
+    },
+    {
+      "id": "gki-6.12.23",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "ba5dd06013871b351b7946c5e226fddc06440167a84e64c27509c83e4b389a3e",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-03-16T20:30:12Z",
+      "source_ref": "9e91eb74a201e8cee839c8db6d642ff9b8408388",
+      "source_version": "6.12.23"
+    },
+    {
+      "id": "sm8845-6.12.38",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "6cb1c6596be9ab3193354303e4740ac58d742b05b34848b4d6d68114196c3b93",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-05-09T02:28:19Z",
+      "source_ref": "db6c5e2ff61cafe1b9087d2ee3e2d1e39a2ed7e9",
+      "source_version": "6.12.38"
+    },
+    {
+      "id": "sm8850-6.12.58",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "3dadd9549c9f9b87e0a55984ec6fd107d495c58baa0d32fb42ce506671d3bbe8",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-07-24T22:27:56Z",
+      "source_ref": "3edd99dd2b1294f5e597c29e7fc08ba5711e4d41",
+      "source_version": "6.12.58"
+    },
+    {
+      "id": "mt6993-6.12.58",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "51a50364337fdcbbb88c01812d8016f29e346a43221dad31b1fb122fa9f2a3e8",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-07-24T22:23:45Z",
+      "source_ref": "a110ff31c8fcb600a0b82d4e72d6966002b17b0a",
+      "source_version": "6.12.58"
+    },
+    {
+      "id": "gki-6.12.69",
+      "recipe_ref": "bde7443b6c00b20c8867b57809f612b197d54646",
+      "recipe_sha256": "cb6e0c48dcc21a450d4ef62a3cb9a164ccf3039ed2d052040eedb3e12d64b7f2",
+      "recipe_status": "execution-equivalent",
+      "source_date": "2026-09-17T04:21:32Z",
+      "source_ref": "58ee67741556c83c523f48518284c4a6b1ef31d6",
+      "source_version": "6.12.69"
+    }
+  ],
+  "recipe_heads": {
+    "cctv18/oppo_oplus_realme_sm8650": {
+      "branch": "main",
+      "ref": "63a88230dfd66052ba100e8fa09e53a8e70e3288"
+    },
+    "cctv18/oppo_oplus_realme_sm8750": {
+      "branch": "main",
+      "ref": "1f68e2c058416a79dcdc5f5052000d8b7d3e7d36"
+    },
+    "cctv18/oppo_oplus_realme_sm8850": {
+      "branch": "main",
+      "ref": "bde7443b6c00b20c8867b57809f612b197d54646"
+    }
+  },
+  "schema_version": 1
+}

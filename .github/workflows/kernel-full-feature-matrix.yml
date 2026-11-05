@@ -7123,6 +7123,8 @@ jobs:
         python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL_ROOT"
     - name: 编译前核实官方 KPM 工具及真实载荷
       if: inputs.use_kpm
+      env:
+        GH_TOKEN: ${{ github.token }}
       run: |
         python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \
           --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \

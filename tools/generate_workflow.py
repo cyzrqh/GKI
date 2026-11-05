@@ -577,6 +577,7 @@ python3 "$GITHUB_WORKSPACE/tools/validate_susfs_hooks.py" --kernel-root "$KERNEL
     kpm = step_named(steps, '应用 KPM 补丁 (SukiSU/BakaSU)')
     steps.insert(steps.index(compile_step), {
         'name': '编译前核实官方 KPM 工具及真实载荷', 'if': kpm['if'],
+        'env': {'GH_TOKEN': '${{ github.token }}'},
         'run': '''python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" prepare \\
   --cache-dir "$RUNNER_TEMP/gki-kpm-official" --github-env "$GITHUB_ENV" \\
   --ksu-source "$KERNEL_ROOT/KernelSU"

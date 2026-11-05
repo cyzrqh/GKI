@@ -185,10 +185,103 @@ def _asset_retry_delay(value, fallback):
     return max(fallback, seconds)
 
 
-def _download_attempt(url: str, size: int, opener, *, fresh=False) -> bytes:
+def _api_headers(accept: str) -> dict[str, str]:
+    headers = {'User-Agent': 'gki-official-kpm', 'Accept': accept,
+               'Cache-Control': 'no-cache', 'X-GitHub-Api-Version': '2022-11-28'}
+    token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN')
+    if token:
+        if any(ord(char) < 32 or ord(char) == 127 for char in token):
+            raise KPMValidationError('Invalid GitHub authentication for official KPM metadata')
+        headers['Authorization'] = 'Bearer ' + token
+    return headers
+
+
+def _fixed_download_lock(url: str, size: int):
+    """Only the two immutable local contracts can authorize an API fallback."""
+    match = re.fullmatch(r'https://github\.com/' + re.escape(REPOSITORY)
+                         + r'/releases/download/(0\.13\.9|0\.14\.0)/(kpimg|kptools-linux)', url)
+    if match is None:
+        return None
+    tag, name = match.groups()
+    release = load_release() if tag == TAG else load_bridge_release()
+    spec = release['assets'][name]
+    # Generic transport callers have no authority to select another asset ID.
+    if spec['url'] != url or spec['size'] != size:
+        return None
+    return release, name
+
+
+def _asset_api_url(release: dict, name: str, opener) -> str:
+    prefix = 'https://api.github.com/repos/' + REPOSITORY
+    tag = release['tag']
+    if tag not in (TAG, '0.14.0') or name not in ('kpimg', 'kptools-linux'):
+        raise KPMValidationError('Unknown fixed official KPM API asset')
+    url = prefix + '/releases/tags/' + tag
+    request = urllib.request.Request(url, headers=_api_headers('application/vnd.github+json'))
+    try:
+        response = opener.open(request, timeout=45)
+    except urllib.error.HTTPError as error:
+        if error.code in (301, 302, 303, 307, 308):
+            error.close()
+            raise KPMValidationError('Official KPM release metadata must not redirect') from None
+        raise
+    with response:
+        if response.status != 200 or response.geturl() != url:
+            raise KPMValidationError('Unexpected official KPM metadata response identity')
+        length = response.headers.get('Content-Length')
+        if length is not None and (not length.isdecimal() or int(length) > 1024 * 1024):
+            raise KPMValidationError('Official KPM metadata has an invalid declared size')
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise KPMValidationError('Official KPM metadata exceeds its size limit')
+    if length is not None and len(raw) < int(length):
+        raise http.client.IncompleteRead(raw, int(length) - len(raw))
+    if length is not None and len(raw) != int(length):
+        raise KPMValidationError('Official KPM metadata differs from its declared size')
+    def unique(pairs):
+        value = {}
+        for key, item in pairs:
+            if key in value:
+                raise KPMValidationError('Duplicate official KPM metadata field')
+            value[key] = item
+        return value
+    try:
+        metadata = json.loads(raw, object_pairs_hook=unique)
+    except (ValueError, UnicodeError):
+        raise KPMValidationError('Official KPM release metadata is not valid JSON') from None
+    if (not isinstance(metadata, dict) or metadata.get('tag_name') != tag
+            or metadata.get('draft') is not False or metadata.get('prerelease') is not False
+            or metadata.get('html_url') != f'https://github.com/{REPOSITORY}/releases/tag/{tag}'
+            or not isinstance(metadata.get('assets'), list) or len(metadata['assets']) > 1000
+            or any(not isinstance(item, dict) for item in metadata['assets'])):
+        raise KPMValidationError('Official KPM API returned an unexpected release identity')
+    assets = [item for item in metadata['assets'] if item.get('name') == name]
+    spec = release['assets'][name]
+    if len(assets) != 1:
+        raise KPMValidationError('Official KPM API did not identify exactly one locked asset')
+    asset = assets[0]
+    identifier = asset.get('id')
+    if (type(identifier) is not int or not 1 <= identifier <= 9223372036854775807
+            or type(asset.get('size')) is not int or asset['size'] != spec['size']
+            or asset.get('state') != 'uploaded' or asset.get('browser_download_url') != spec['url']
+            or asset.get('url') != prefix + '/releases/assets/' + str(identifier)
+            or asset.get('digest') not in (None, 'sha256:' + spec['sha256'])):
+        raise KPMValidationError('Official KPM API asset differs from its immutable size/URL/digest lock')
+    return prefix + '/releases/assets/' + str(identifier)
+
+
+def _download_attempt(url: str, size: int, opener, *, fresh=False, api_entry=None) -> bytes:
+    if api_entry is not None and not re.fullmatch(r'https://api\.github\.com/repos/'
+            + re.escape(REPOSITORY) + r'/releases/assets/[1-9][0-9]{0,18}', api_entry):
+        raise KPMValidationError('Unexpected official KPM asset API destination')
     for _ in range(4):
-        _asset_url(url)
-        headers = {'User-Agent': 'gki-official-kpm', 'Accept': 'application/octet-stream'}
+        # Every hop gets a new Request. The token is used on this one verified
+        # API endpoint only; public GitHub/CDN requests never receive it.
+        if api_entry is not None and url == api_entry:
+            headers = _api_headers('application/octet-stream')
+        else:
+            _asset_url(url)
+            headers = {'User-Agent': 'gki-official-kpm', 'Accept': 'application/octet-stream'}
         if fresh:
             headers.update({'Cache-Control': 'no-cache', 'Pragma': 'no-cache'})
         request = urllib.request.Request(url, headers=headers)
@@ -223,8 +316,9 @@ def _download_attempt(url: str, size: int, opener, *, fresh=False) -> bytes:
 def download(url: str, size: int) -> bytes:
     """Retry public transport only; fixed bytes and payload checks remain mandatory.
 
-    A failed CDN request restarts at the locked GitHub release URL. Reusing an
-    old signed redirect could keep returning an expired-token 403/618 forever.
+    After a public transport failure, use the exact asset ID discovered through
+    the fixed official tag API. A repeatedly failing public release URL must
+    not be the only route. Generic callers keep the original bounded retry.
     Neither tokens, signed URLs, upstream bodies nor tool output are logged.
     """
     parsed = _asset_url(url)
@@ -234,17 +328,22 @@ def download(url: str, size: int) -> bytes:
     if tag in (TAG, '0.14.0') and label != 'asset':
         label = tag + '/' + label
     opener = urllib.request.build_opener(_NoRedirect())
+    locked = _fixed_download_lock(url, size)
     for attempt in range(4):
         reason, retry_after = None, None
+        api_fallback = attempt > 0 and locked is not None
         try:
+            if api_fallback:
+                entry = _asset_api_url(*locked, opener)
+                return _download_attempt(entry, size, opener, fresh=True, api_entry=entry)
             return _download_attempt(url, size, opener, fresh=attempt > 0)
         except urllib.error.HTTPError as error:
             code = error.code
             retry_after = error.headers.get('Retry-After') if error.headers else None
             error.close()
-            reason = 'HTTP ' + str(code)
-            # 403/618 may be a stale signed public CDN URL. Refresh from the
-            # original lock with cache-control; never retry that signed URL.
+            reason = 'HTTP ' + str(code) + (' from official asset API' if api_fallback else '')
+            # A failed public/CDN route switches to the independently verified
+            # fixed asset API when locked; never retry a signed CDN URL.
             if code not in (403, 408, 429, 500, 502, 503, 504, 618):
                 raise KPMValidationError(f'Unable to download fixed official KPM {label}: {reason}') from None
             fallback = (5, 15, 30)[attempt] if code == 429 and attempt < 3 else (2, 5, 10)[min(attempt, 2)]
@@ -257,7 +356,8 @@ def download(url: str, size: int) -> bytes:
         if attempt == 3:
             raise KPMValidationError(f'Unable to download fixed official KPM {label}: {reason} after four attempts') from None
         delay = _asset_retry_delay(retry_after, fallback)
-        print(f'Official KPM {label} download retry {attempt + 2}/4: {reason}; refreshing original URL after {delay:g}s', flush=True)
+        route = 'fixed official asset API' if locked is not None else 'original URL'
+        print(f'Official KPM {label} download retry {attempt + 2}/4: {reason}; refreshing {route} after {delay:g}s', flush=True)
         time.sleep(delay)
     raise AssertionError('Unreachable fixed official KPM retry state')
 

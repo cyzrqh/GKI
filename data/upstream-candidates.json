@@ -27,7 +27,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "b2c1ad00b755afe0db74d889b67a137f56e71fcc",
+      "head": "84c644c7e32f463a6292dc811d79b62ec8253d87",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -43,10 +43,10 @@
       "branch": "dev",
       "head": "075ac81f1dfe58b3f59c665a1b07fda8b975015f"
     },
-    "sukisu_head": "8a5899078301b19cbaaf14782c369a9975b33db5",
+    "sukisu_head": "8ed5bd556fba073d52f4a4d98500b782db6437e6",
     "sukisu_release": {
-      "commit": "0a4c313287b0fc0b4cf95fced30a8dccc2eb913b",
-      "tag": "v4.3.0-r1"
+      "commit": "645ef9860b9b7f900bb5d1b27e224f2c311d39c0",
+      "tag": "v4.3.0-r2"
     },
     "susfs": {
       "android12-5.10": "b0e474642cf77ee797004a454fa441362723d0ba",
@@ -69,18 +69,18 @@
   },
   "changes": [
     {
-      "candidate": "8a5899078301b19cbaaf14782c369a9975b33db5",
+      "candidate": "8ed5bd556fba073d52f4a4d98500b782db6437e6",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
       "ref": "main",
       "source": "SukiSU",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/8a5899078301b19cbaaf14782c369a9975b33db5"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/commit/8ed5bd556fba073d52f4a4d98500b782db6437e6"
     },
     {
-      "candidate": "0a4c313287b0fc0b4cf95fced30a8dccc2eb913b",
+      "candidate": "645ef9860b9b7f900bb5d1b27e224f2c311d39c0",
       "current": "17ff94d9da24d589a9705227fdda39a1c9045698",
-      "ref": "v4.3.0-r1",
+      "ref": "v4.3.0-r2",
       "source": "SukiSU release",
-      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.3.0-r1"
+      "url": "https://github.com/SukiSU-Ultra/SukiSU-Ultra/releases/tag/v4.3.0-r2"
     },
     {
       "candidate": "075ac81f1dfe58b3f59c665a1b07fda8b975015f",
@@ -139,11 +139,11 @@
       "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/68f62fae75ada3959f816841a3c64299383521ed"
     },
     {
-      "candidate": "b2c1ad00b755afe0db74d889b67a137f56e71fcc",
+      "candidate": "84c644c7e32f463a6292dc811d79b62ec8253d87",
       "current": "",
       "ref": "dev",
       "source": "KernelSU-Next",
-      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/b2c1ad00b755afe0db74d889b67a137f56e71fcc"
+      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/84c644c7e32f463a6292dc811d79b62ec8253d87"
     },
     {
       "candidate": "4c706b5938665866ebe16944a481a7b91e3396af",
@@ -217,7 +217,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "b2c1ad00b755afe0db74d889b67a137f56e71fcc",
+      "head": "84c644c7e32f463a6292dc811d79b62ec8253d87",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -235,11 +235,11 @@
         "branch": "dev",
         "head": "075ac81f1dfe58b3f59c665a1b07fda8b975015f"
       },
-      "head": "8a5899078301b19cbaaf14782c369a9975b33db5",
+      "head": "8ed5bd556fba073d52f4a4d98500b782db6437e6",
       "release": {
-        "commit": "0a4c313287b0fc0b4cf95fced30a8dccc2eb913b",
+        "commit": "645ef9860b9b7f900bb5d1b27e224f2c311d39c0",
         "newer_than_baseline": true,
-        "tag": "v4.3.0-r1"
+        "tag": "v4.3.0-r2"
       }
     },
     "susfs": {

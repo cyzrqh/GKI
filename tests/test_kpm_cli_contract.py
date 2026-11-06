@@ -13,7 +13,9 @@ from additional_manager_kpm_ui import render_kpm_templates
 
 
 ROOT = Path(__file__).resolve().parents[1]
-CARGO = os.environ.get('GKI_TEST_CARGO') or shutil.which('cargo')
+# Normal unit checks need no registry/network. Opt into the parser execution
+# with a prepared Cargo/dependency cache, as in the offline host proof.
+CARGO = os.environ.get('GKI_TEST_CARGO')
 
 
 def production_cli() -> str:
@@ -57,7 +59,7 @@ class KpmCliContractTests(unittest.TestCase):
         self.assertIn('KpmCommand::Remove { name }', rust)
         self.assertIn('kpm_store::remove(Path::new(KPM_DIR), &name)?', rust)
 
-    @unittest.skipUnless(CARGO, 'Cargo is required to execute the production Clap parser on the host')
+    @unittest.skipUnless(CARGO, 'Set GKI_TEST_CARGO with cached Clap dependencies for the real host parser check')
     def test_actual_clap_parser_accepts_the_frontend_argv_and_rejects_the_old_spelling(self):
         work = ROOT / 'tests' / ('.kpm-cli-contract-' + uuid.uuid4().hex)
         (work / 'src').mkdir(parents=True)

@@ -255,7 +255,10 @@ class OplusWorkflowTests(unittest.TestCase):
         install = next(step for step in worker['steps'] if step.get('name') == '安装原生编译工具与系统开发依赖')
         self.assertEqual(install['timeout-minutes'], 15)
         self.assertIn('bash tools/install_oplus_dependencies.sh', install['run'])
-        installation = (ROOT / 'tools/install_oplus_dependencies.sh').read_text('utf-8')
+        wrapper = (ROOT / 'tools/install_oplus_dependencies.sh').read_text('utf-8')
+        self.assertIn('install_build_dependencies.sh', wrapper)
+        self.assertIn('oplus', wrapper)
+        installation = (ROOT / 'tools/install_build_dependencies.sh').read_text('utf-8')
         for setting in ('Acquire::http::Timeout=30', 'Acquire::https::Timeout=30', 'Acquire::Retries=1', 'DPkg::Lock::Timeout=45'):
             self.assertIn(setting, installation)
         for package in ('aria2', 'libdw-dev', 'libelf-dev', 'libssl-dev', 'ccache', 'bison', 'flex', 'zstd', 'bc', 'patch', 'unzip'):

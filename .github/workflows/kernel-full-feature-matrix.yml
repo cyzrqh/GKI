@@ -2150,37 +2150,7 @@ jobs:
         fi
     - name: 安装编译依赖
       timeout-minutes: 15
-      run: |
-        disable_broken_chrome_source() {
-          if [ "${{ runner.environment }}" != "github-hosted" ]; then
-            echo "保留自托管 Runner 的 Chrome APT 源"
-            return 0
-          fi
-          local source
-          while IFS= read -r source; do
-            echo "::warning::禁用与构建无关的 Chrome APT 源: $source"
-            sudo rm -f "$source"
-          done < <(sudo grep -RIl 'dl.google.com/linux/chrome' /etc/apt/sources.list.d 2>/dev/null || true)
-        }
-
-        apt_update_retry() {
-          local attempt
-          for attempt in 1 2 3; do
-            if sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 update; then
-              return 0
-            fi
-            echo "::warning::apt-get update 第 ${attempt} 次失败，清理索引后重试。"
-            sudo apt-get clean || true
-            sudo rm -rf /var/lib/apt/lists/*
-            sleep "$attempt"
-          done
-          echo "::error::apt-get update 连续失败。"
-          return 1
-        }
-
-        disable_broken_chrome_source
-        apt_update_retry
-        sudo apt-get -o Acquire::http::Timeout=30 -o Acquire::https::Timeout=30 -o Acquire::Retries=2 -o DPkg::Lock::Timeout=60 install -y ccache python3 python3-cryptography git curl build-essential libssl-dev bison flex libelf-dev dwarves lz4
+      run: bash tools/install_build_dependencies.sh gki
     - name: 配置自托管下载缓存
       env:
         ABK_RUNNER_ENVIRONMENT: ${{ runner.environment }}

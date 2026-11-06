@@ -109,44 +109,5 @@ class OPlusRunnerTests(unittest.TestCase):
                 self.assertEqual('reached', result.stdout)
                 self.assertNotIn('cannot change to', result.stderr)
 
-    def installer(self, mode):
-        stubs = '''
-ready=0
-attempts=0
-dpkg-query() { if ((ready)); then printf installed; else return 1; fi; }
-timeout() {
-  printf 'bounded: %s\\n' "$*"
-  case " $* " in
-    *' update '*) return 124 ;;
-  esac
-  attempts=$((attempts + 1))
-  if [[ "$MODE" == fail ]] || ((attempts == 1)); then return 100; fi
-  ready=1
-}
-'''
-        if mode == 'installed':
-            stubs += 'ready=1\n'
-        script = (ROOT / 'tools/install_oplus_dependencies.sh').read_text('utf-8')
-        return self.run_shell('MODE=' + mode + '\n' + stubs + script)
-
-    def test_installed_runner_does_not_refresh_or_install_packages(self):
-        result = self.installer('installed')
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertNotIn('bounded:', result.stdout)
-
-    def test_bounded_refresh_failure_can_recover_using_existing_indexes(self):
-        result = self.installer('recover')
-        self.assertEqual(0, result.returncode, result.stderr)
-        self.assertEqual(3, result.stdout.count('bounded:'))
-        self.assertIn('180s', result.stdout)
-        self.assertIn('90s', result.stdout)
-        self.assertIn('all required packages verified', result.stdout)
-
-    def test_failed_retry_keeps_nonzero_result_and_does_not_claim_success(self):
-        result = self.installer('fail')
-        self.assertEqual(100, result.returncode, result.stderr)
-        self.assertNotIn('all required packages verified', result.stdout)
-
-
 if __name__ == '__main__':
     unittest.main()

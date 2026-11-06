@@ -199,7 +199,7 @@ def verify_native_policy_generation(source: Path) -> None:
     if expected is None or observed is None or compact(expected[0]) != compact(observed[0]):
         raise ValueError('Native SELinux policy generation and notifications must retain the selected source')
     assignment = r'pol->latest_granting\s*=\s*old_pol->latest_granting\s*\+\s*1\s*;'
-    publication = (assignment + r'\s*rcu_assign_pointer\(selinux_state.policy, pol\);\s*'
+    publication = (assignment + r'[\s\S]*?rcu_assign_pointer\(selinux_state.policy, pol\);\s*'
                    r'synchronize_rcu\(\);\s*ksu_destroy_sepolicy\(old_pol\);\s*'
                    r'reset_avc_cache\(pol->latest_granting\);')
     for pattern in (assignment, publication, r'\breset_avc_cache\(pol->latest_granting\);'):

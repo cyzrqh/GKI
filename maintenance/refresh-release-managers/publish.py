@@ -25,11 +25,13 @@ import zipfile
 
 REPOSITORY = 'cyzrqh/GKI'
 UI_FIX_COMMIT = '0f61220ea4da784e1633069271103e1687524916'
-AUTHORIZED = {'r2.1': 434932408, 'r2.0': 434815478, 'r1.20': 434447315,
+PREVIOUS_UI_HEAD = 'ff9fa76d1cf5fd9783e1b9035ab7100b64f6ee4a'
+PREVIOUS_BUILD_RUN = 42175482438
+APK_COUNT = 20
+AUTHORIZED = {'r2.2': 436153891, 'r2.1': 434932408, 'r2.0': 434815478, 'r1.20': 434447315,
               'r1.19': 433860069, 'r1.18': 433721765, 'r1.17': 433408992,
-              'r1.16': 433406194, 'r1.15': 433389123, 'r1.14': 430418482,
-              'r1.13': 430370990}
-PROTECTED = {'r1.12': 430364781, 'r1.11': 430321556, 'r1.10': 430319830,
+              'r1.16': 433406194, 'r1.15': 433389123, 'r1.14': 430418482}
+PROTECTED = {'r1.13': 430370990, 'r1.12': 430364781, 'r1.11': 430321556, 'r1.10': 430319830,
              'r1.9': 430119554, 'r1.8': 429013953, 'r1.7': 428714162,
              'r1.6': 428265591, 'r1.5': 427931288, 'r1.4': 427467646,
              'r1.3': 425840591, 'r1.2': 424959481, 'r1.1': 424829988,
@@ -123,7 +125,7 @@ def inventory(records):
 
 
 def freeze_plan(releases, replacements, *, latest_release_id, ui_commit=UI_FIX_COMMIT,
-                producer_head_sha=None):
+                producer_head_sha=None, extra_build_run=None):
     """Helper for the caller: freeze raw release snapshots plus authorized rows.
 
     replacements rows require release_id, asset_id, name, old_sha256,
@@ -150,7 +152,17 @@ def freeze_plan(releases, replacements, *, latest_release_id, ui_commit=UI_FIX_C
     require(not grouped, 'Replacement refers to a missing release')
     plan = {'schema_version': 1, 'repository': REPOSITORY, 'ui_commit': ui_commit,
             'producer_head_sha': producer_head_sha, 'latest_release_id': latest_release_id,
+            'extra_build_run': extra_build_run,
             'require_all_apks': True, 'releases': rows, 'protected_releases': protected}
+    plan = normalize_plan(plan)
+    if positive(extra_build_run):
+        for row in plan['releases']:
+            if row['tag_name'] == 'r2.2':
+                for item in row['replacements']:
+                    if item.get('producer_run_id') is None:
+                        item['producer_run_id'] = extra_build_run
+                    if item.get('producer_run_attempt') is None:
+                        item['producer_run_attempt'] = 1
     validate_plan(plan, allow_unbuilt=True)
     return plan
 
@@ -160,6 +172,8 @@ def validate_plan(plan, *, allow_unbuilt=False):
             and plan.get('repository') == REPOSITORY and plan.get('ui_commit') == UI_FIX_COMMIT
             and (allow_unbuilt and plan.get('producer_head_sha') is None
                  or COMMIT.fullmatch(str(plan.get('producer_head_sha', ''))))
+            and (allow_unbuilt and plan.get('extra_build_run') is None
+                 or positive(plan.get('extra_build_run')))
             and positive(plan.get('latest_release_id')) and plan.get('require_all_apks') is True,
             'Expected a frozen cyzrqh/GKI UI refresh plan')
     if 'authorized_release_ids' in plan:
@@ -174,7 +188,7 @@ def validate_plan(plan, *, allow_unbuilt=False):
     protected = plan.get('protected_releases')
     require(isinstance(protected, list) and len(protected) == len(PROTECTED)
             and {row.get('tag_name'): row.get('id') for row in protected} == PROTECTED,
-            'The thirteen older releases require their complete read-only frozen snapshot')
+            'The fourteen older releases require their complete read-only frozen snapshot')
     seen, asset_ids, hashes = set(), set(), {}
     for row in rows:
         require(isinstance(row, dict) and all(key in row for key in FROZEN), 'Incomplete frozen release')
@@ -204,6 +218,20 @@ def validate_plan(plan, *, allow_unbuilt=False):
                     and old['digest'] == 'sha256:' + item['old_sha256']
                     and item['new_sha256'] != item['old_sha256'], 'Invalid exact authorized APK replacement')
             wanted.add(item['asset_id'])
+            if row['tag_name'] == 'r2.2':
+                require(item.get('producer_head_sha') is None,
+                        'New r2.2 APKs must use the explicitly bound current maintenance producer')
+                require((allow_unbuilt and item.get('producer_run_id') is None
+                         or positive(plan.get('extra_build_run')) and item.get('producer_run_id') == plan['extra_build_run'])
+                        and (allow_unbuilt and item.get('producer_run_attempt') is None
+                             or item.get('producer_run_attempt') == 1),
+                        'New r2.2 APKs must bind the explicit extra build run and attempt one')
+            else:
+                require(item.get('producer_head_sha') == PREVIOUS_UI_HEAD,
+                        'Reused APKs require the explicit previously verified ff9fa76 producer')
+                require(item.get('producer_run_id') == PREVIOUS_BUILD_RUN
+                        and item.get('producer_run_attempt') == 1,
+                        'Reused APKs require the fixed verified base run 42175482438 attempt one')
             if item['new_sha256'] is not None:
                 previous = hashes.setdefault(item['old_sha256'], item['new_sha256'])
                 require(previous == item['new_sha256'], 'One original APK cannot map to two new APKs')
@@ -213,6 +241,8 @@ def validate_plan(plan, *, allow_unbuilt=False):
         require(checksum is not None and checksum['name'] == 'SHA256SUMS.txt'
                 and len([a for a in assets if a['name'] == 'SHA256SUMS.txt']) == 1,
                 'Checksum asset is not the frozen exact SHA256SUMS.txt')
+    require(sum(len(row['replacements']) for row in rows) == APK_COUNT,
+            'The authorized batch requires exactly twenty APK replacements')
     for row in protected:
         require(all(key in row for key in FROZEN) and row['draft'] is False and row['immutable'] is False
                 and isinstance(row['body'], str), 'Incomplete protected release snapshot')
@@ -220,6 +250,19 @@ def validate_plan(plan, *, allow_unbuilt=False):
         require(not asset_ids & {asset['id'] for asset in untouched}, 'Protected assets overlap mutation scope')
         asset_ids.update(asset['id'] for asset in untouched)
     return plan
+
+
+def expected_producer(plan, item):
+    fixed = item.get('producer_head_sha')
+    require(fixed in (None, PREVIOUS_UI_HEAD), 'An unapproved fixed APK producer was supplied')
+    return fixed if fixed is not None else plan['producer_head_sha']
+
+
+def expected_producer_run(plan, item):
+    run = PREVIOUS_BUILD_RUN if item.get('producer_head_sha') is not None else plan.get('extra_build_run')
+    require(positive(run) and item.get('producer_run_id') == run and item.get('producer_run_attempt') == 1,
+            'APK producer run/attempt differs from the explicitly authorized build mapping')
+    return run
 
 
 def normalize_plan(plan):
@@ -231,20 +274,34 @@ def normalize_plan(plan):
     for row in plan.get('releases', []):
         for item in row.get('replacements', []):
             item.setdefault('new_sha256', None)
+            item.setdefault('producer_run_id', None if row.get('tag_name') == 'r2.2' else PREVIOUS_BUILD_RUN)
+            item.setdefault('producer_run_attempt', None if row.get('tag_name') == 'r2.2' else 1)
     plan.setdefault('producer_head_sha', None)
+    plan.setdefault('extra_build_run', None)
     return plan
 
 
-def bind_receipts(plan, receipts, producer_head_sha=None):
+def bind_receipts(plan, receipts, producer_head_sha=None, extra_build_run=None):
     """Fill only runtime producer SHA/new APK SHA; frozen old release data stays unchanged."""
     plan = normalize_plan(plan)
     if producer_head_sha is not None:
         require(COMMIT.fullmatch(producer_head_sha), 'Invalid runtime UI producer SHA')
         require(plan.get('producer_head_sha') in (None, producer_head_sha), 'Runtime producer differs from frozen plan')
         plan['producer_head_sha'] = producer_head_sha
+    if extra_build_run is not None:
+        require(re.fullmatch(r'[1-9][0-9]*', str(extra_build_run)), 'Invalid explicit extra build run ID')
+        extra_build_run = int(extra_build_run)
+        require(plan.get('extra_build_run') in (None, extra_build_run), 'Extra build run differs from frozen plan')
+        plan['extra_build_run'] = extra_build_run
     validate_plan(plan, allow_unbuilt=True)
+    require(positive(plan.get('extra_build_run')), 'Provide --extra-build-run for the two new APKs')
     for row in plan['releases']:
         for item in row['replacements']:
+            if row['tag_name'] == 'r2.2':
+                if item.get('producer_run_id') is None:
+                    item['producer_run_id'] = plan['extra_build_run']
+                if item.get('producer_run_attempt') is None:
+                    item['producer_run_attempt'] = 1
             receipt = read_json(regular_file(receipts, item['receipt_file'], MAX_JSON))
             require(receipt.get('old_apk_sha256') == item['old_sha256']
                     and receipt.get('asset_name') == item['name'], 'Receipt differs from frozen original APK')
@@ -252,7 +309,19 @@ def bind_receipts(plan, receipts, producer_head_sha=None):
             require(SHA.fullmatch(str(new_hash)) and item.get('new_sha256') in (None, new_hash),
                     'Receipt differs from frozen new APK hash')
             item['new_sha256'] = new_hash
+            verify_receipt(receipt, item, plan)
     return validate_plan(plan)
+
+
+def capture_current_latest(api, plan):
+    """Freeze this execution's latest pointer without expanding mutation scope."""
+    latest = api.get_latest()
+    require(positive(latest), 'GitHub did not return a valid current latest release ID')
+    result = copy.deepcopy(plan)
+    result.setdefault('original_plan_latest_release_id', plan['latest_release_id'])
+    result['effective_latest_release_id'] = latest
+    result['latest_release_id'] = latest
+    return validate_plan(result)
 
 
 def regular_file(directory, relative, limit=MAX_APK):
@@ -284,9 +353,9 @@ def verify_receipt(receipt, item, plan):
             'The local verifier has not passed every required preservation check')
     producer = receipt.get('producer')
     require(isinstance(producer, dict) and producer.get('repository') == REPOSITORY
-            and producer.get('head_sha') == plan['producer_head_sha']
-            and re.fullmatch(r'[1-9][0-9]*', str(producer.get('run_id', '')))
-            and re.fullmatch(r'[1-9][0-9]*', str(producer.get('run_attempt', ''))),
+            and producer.get('head_sha') == expected_producer(plan, item)
+            and str(producer.get('run_id')) == str(expected_producer_run(plan, item))
+            and str(producer.get('run_attempt')) == '1',
             'Receipt lacks exact UI build provenance')
     require(isinstance(receipt.get('identity'), dict), 'Receipt lacks preserved APK identity')
 
@@ -365,7 +434,9 @@ def updated_body(row, plan, receipt_hashes, producers):
     body = ''.join(pieces)
     marker = ('<!-- gki-manager-ui-refresh:v1 ui_commit=' + plan['ui_commit']
               + ' plan_sha256=' + sha(canonical(plan)) + ' receipts_sha256='
-              + sha(canonical(sorted(receipt_hashes))) + ' producer_head_sha=' + plan['producer_head_sha']
+              + sha(canonical(sorted(receipt_hashes))) + ' publisher_head_sha=' + plan['producer_head_sha']
+              + ' producer_head_shas=' + ','.join(sorted({expected_producer(plan, item)
+                                                          for item in row['replacements']}))
               + ' producer_runs=' + ','.join(sorted(producers))
               + ' apk_count=' + str(len(row['replacements'])) + ' -->')
     body += ('' if not body or body.endswith('\n') else '\n') + '\n' + marker + '\n'
@@ -709,11 +780,15 @@ def main(argv=None):
                         help='Actual maintenance workflow SHA; distinct from fixed 0f61220 UI fix')
     parser.add_argument('--write-bound-plan', type=Path,
                         help='Write exact receipt-bound final plan after successful local checks')
+    parser.add_argument('--capture-current-latest', action='store_true',
+                        help='Explicitly freeze current latest for this locked execution; never expand authorized release IDs')
+    parser.add_argument('--extra-build-run', help='Exact successful run ID for the two new r2.2 APKs; attempt one only')
     args = parser.parse_args(argv)
     try:
         sys.path.insert(0, str(args.tools.resolve(strict=True)))
         source_plan = read_json(args.plan)
         if args.mode == 'plan':
+            require(not args.capture_current_latest, 'Offline plan mode cannot capture online latest metadata')
             plan = validate_plan(normalize_plan(source_plan), allow_unbuilt=True)
             require(args.write_bound_plan is None, 'Receipt-bound output requires verify/dry-run, not the offline scope preview')
             print(json.dumps({'mode': 'plan', 'state': 'planned-not-published', 'repository': REPOSITORY,
@@ -723,7 +798,11 @@ def main(argv=None):
                               'protected_releases': len(plan['protected_releases']),
                               'network_reads': False, 'network_writes': False}, ensure_ascii=False, sort_keys=True))
             return 0
-        plan = bind_receipts(source_plan, args.receipts, args.ui_head)
+        plan = bind_receipts(source_plan, args.receipts, args.ui_head, args.extra_build_run)
+        api = None
+        if args.capture_current_latest:
+            api = GitHub(os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN', ''))
+            plan = capture_current_latest(api, plan)
         prepared = local_preflight(plan, args.built, args.receipts, args.backup)
         if args.write_bound_plan is not None:
             require(args.write_bound_plan.resolve() != args.plan.resolve(), 'Bound plan must not overwrite frozen input')
@@ -733,7 +812,7 @@ def main(argv=None):
                    'releases': len(prepared), 'apk_replacements': sum(len(row['replacements']) for row in plan['releases']),
                    'checksum_replacements': len(prepared), 'network_writes': False}
         if args.mode != 'plan':
-            api = GitHub(os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN', ''))
+            api = api or GitHub(os.environ.get('GITHUB_TOKEN') or os.environ.get('GH_TOKEN', ''))
             if args.mode == 'execute':
                 journal_path = args.journal or args.backup / ('.publisher-' + summary['plan_sha256'][:16] + '.json')
                 result = execute(api, plan, prepared, journal_path)

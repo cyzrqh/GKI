@@ -1,6 +1,28 @@
 {
   "include": [
     {
+      "asset_id": 716102675,
+      "release_id": 436153891,
+      "tag": "r2.2",
+      "name": "KernelSU_Next_v3.4.2_33355-release.apk",
+      "old_sha256": "787cafd026789bcedc832b39b9c7f2707438fab62b1559ba3e731b98f92cfea1",
+      "url": "https://github.com/cyzrqh/GKI/releases/download/r2.2/KernelSU_Next_v3.4.2_33355-release.apk",
+      "ksu_ref": "4c706b5938665866ebe16944a481a7b91e3396af",
+      "variant": "KernelSU-Next",
+      "producer_head_sha": "c9825ff2408e199a940d8ee7d9ebebdfb6c2be53"
+    },
+    {
+      "asset_id": 716102677,
+      "release_id": 436153891,
+      "tag": "r2.2",
+      "name": "SukiSU_v4.3.0-r2_41150-release.apk",
+      "old_sha256": "bf7f40f4822fa46d69acc17b1c2cd95c4e0af072f202dd299c592a9c12801a12",
+      "url": "https://github.com/cyzrqh/GKI/releases/download/r2.2/SukiSU_v4.3.0-r2_41150-release.apk",
+      "ksu_ref": "645ef9860b9b7f900bb5d1b27e224f2c311d39c0",
+      "variant": "SukiSU",
+      "producer_head_sha": "c9825ff2408e199a940d8ee7d9ebebdfb6c2be53"
+    },
+    {
       "asset_id": 712618434,
       "release_id": 434932408,
       "tag": "r2.1",
@@ -196,17 +218,6 @@
       "url": "https://github.com/cyzrqh/GKI/releases/download/r1.14/BakaSU_v4.2.0-rc3_35257-arm64-v8a-release.apk",
       "ksu_ref": "516d3e87fbc986ccefdde2c2765f1700612441a9",
       "variant": "BakaSU",
-      "producer_head_sha": "62b8491ae7af2cf577c4ed732540f4d6c6fcafab"
-    },
-    {
-      "asset_id": 697363969,
-      "release_id": 430370990,
-      "tag": "r1.13",
-      "name": "SukiSU_v4.3.0_41100-release.apk",
-      "old_sha256": "35166b7b50253020ef89e50c4c9be78b721d2f37106a24fada81546a07c8a034",
-      "url": "https://github.com/cyzrqh/GKI/releases/download/r1.13/SukiSU_v4.3.0_41100-release.apk",
-      "ksu_ref": "e67b14e6bbbbd3e67f24df658a01d3e73a64159c",
-      "variant": "SukiSU",
       "producer_head_sha": "62b8491ae7af2cf577c4ed732540f4d6c6fcafab"
     }
   ]

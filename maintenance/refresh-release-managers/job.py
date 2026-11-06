@@ -18,9 +18,14 @@ def main():
     parser.add_argument('operation', choices=('matrix', 'download', 'sign'))
     parser.add_argument('--asset-id', type=int)
     parser.add_argument('--pilot', action='store_true')
+    parser.add_argument('--extra', action='store_true')
     args = parser.parse_args()
     rows = json.loads((HERE / 'matrix.json').read_bytes())['include']
     if args.operation == 'matrix':
+        if args.extra:
+            rows = [row for row in rows if row['release_id'] == 436153891]
+            if len(rows) != 2:
+                raise ValueError('Only the two newly included APKs may be rebuilt')
         if args.pilot:
             chosen = {}
             for row in reversed(rows):

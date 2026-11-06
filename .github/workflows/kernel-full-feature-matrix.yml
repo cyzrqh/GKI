@@ -6,11 +6,11 @@ on:
       mode:
         description: 维护阶段
         type: choice
-        options: [pilot, build, publish]
+        options: [pilot, build, extra, publish]
         default: pilot
         required: true
       build_run:
-        description: 已验证的全部19个APK构建运行
+        description: 已验证的r2.2两个APK补充构建运行
         type: string
         required: false
 permissions:
@@ -38,6 +38,7 @@ jobs:
         run: |
           args=()
           if [ "$MAINTENANCE_MODE" = pilot ]; then args+=(--pilot); fi
+          if [ "$MAINTENANCE_MODE" = extra ]; then args+=(--extra); fi
           python3 maintenance/refresh-release-managers/job.py matrix "${args[@]}"
   build-ui:
     name: ${{ matrix.tag }} · ${{ matrix.variant }} · 界面更新
@@ -97,7 +98,7 @@ jobs:
           if-no-files-found: error
           retention-days: 7
   publish:
-    name: 只替换已验证的19个管理器APK
+    name: 只替换已验证的20个管理器APK
     if: inputs.mode == 'publish'
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -116,22 +117,34 @@ jobs:
           GITHUB_TOKEN: ${{ github.token }}
           BUILD_RUN: ${{ inputs.build_run }}
         run: python3 maintenance/refresh-release-managers/check_build_run.py
-      - uses: actions/download-artifact@v6
+      - name: 下载已验证的基础构建
+        uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: '42175482438'
+          pattern: manager-ui-*
+          merge-multiple: true
+          path: base-artifacts
+      - name: 下载新增发行的补充构建
+        uses: actions/download-artifact@v6
         with:
           github-token: ${{ github.token }}
           run-id: ${{ inputs.build_run }}
           pattern: manager-ui-*
           merge-multiple: true
-          path: rebuilt
+          path: extra-artifacts
       - name: 复核后替换现有发行附件
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build_run }}
         run: |
+          python3 maintenance/refresh-release-managers/collect_artifacts.py
           python3 maintenance/refresh-release-managers/backup_originals.py
           python3 maintenance/refresh-release-managers/publish.py \
             --plan maintenance/refresh-release-managers/frozen-plan.json \
             --built rebuilt --receipts rebuilt --backup "$RUNNER_TEMP/release-backup" \
             --tools tools --ui-head "$GITHUB_SHA" --mode execute \
+            --extra-build-run "$BUILD_RUN" --capture-current-latest \
             --journal "$RUNNER_TEMP/release-backup/transaction.json"
       - name: 保存替换及回滚记录
         if: always()

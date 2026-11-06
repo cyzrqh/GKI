@@ -35,8 +35,8 @@ items = []
 for release in plan['releases']:
     ids = {row['asset_id'] for row in release['replacements']} | {release['checksum_asset_id']}
     items.extend((release, asset) for asset in release['assets'] if asset['id'] in ids)
-if len(items) != 29:
-    raise ValueError('Only the authorized 19 APKs and 10 checksum files may be backed up')
+if len(items) != 30:
+    raise ValueError('Only the authorized 20 APKs and 10 checksum files may be backed up')
 with ThreadPoolExecutor(max_workers=4) as pool:
     list(pool.map(backup, items))
-print('Verified rollback copies of all 29 original attachments.')
+print('Verified rollback copies of all 30 original attachments.')

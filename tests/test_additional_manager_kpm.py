@@ -73,7 +73,7 @@ class AdditionalKpmTests(unittest.TestCase):
         self.assertIn('selectedKpmModuleName(target.readBytes())', screen)
         self.assertIn('text = { Text("KPM 安装") }', screen)
         self.assertIn('"installed", "--json"', screen)
-        self.assertIn('"uninstall", name', screen)
+        self.assertIn('"remove", name', screen)
         self.assertIn('module.file.delete()', screen)
         nav = plan[java + '/ui/screen/BottomBarDestination.kt'].decode()
         self.assertIn('Icons.Outlined.Memory, true)', nav)

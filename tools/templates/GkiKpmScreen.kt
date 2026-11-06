@@ -112,7 +112,7 @@ private fun GkiKpmScreenContent(bottomPadding: Dp) {
         if (!kpmRootOrUnavailable { __KPM_COMMAND_AUTHORIZATION__ }) throw KpmRootUnavailable()
         val shell = kpmRootOrUnavailable { getRootShell() }
         if (!shell.isRoot) throw KpmRootUnavailable()
-        val positional = setOf("load", "install", "unload", "uninstall", "control", "info")
+        val positional = setOf("load", "install", "unload", "remove", "control", "info")
         val literalArgs = if (args.firstOrNull() in positional) listOf(args.first(), "--") + args.drop(1) else args.toList()
         // libsu does not collect output unless explicit buffers are supplied.
         // Keep stderr separate: a diagnostic must never become JSON input.
@@ -344,7 +344,7 @@ private fun GkiKpmScreenContent(bottomPadding: Dp) {
                         if (name in saved) {
                             TextButton(enabled = !busy, onClick = {
                                 operation {
-                                    command("uninstall", name)
+                                    command("remove", name)
                                     refresh()
                                 }
                             }) { Text("取消自动加载并删除已保存模块") }

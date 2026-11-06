@@ -1,0 +1,143 @@
+name: GKI 全属性内核构建矩阵
+run-name: 管理器界面维护 · ${{ inputs.mode }} · 最新10个发行
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: 维护阶段
+        type: choice
+        options: [pilot, build, publish]
+        default: pilot
+        required: true
+      build_run:
+        description: 已验证的全部19个APK构建运行
+        type: string
+        required: false
+permissions:
+  contents: read
+concurrency:
+  group: gki-release-manager-ui-refresh
+  cancel-in-progress: false
+env:
+  PYTHONUTF8: '1'
+  PYTHONPATH: tools
+jobs:
+  plan:
+    name: 固定最新10个发行的管理器
+    if: inputs.mode != 'publish'
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - id: matrix
+        env:
+          MAINTENANCE_MODE: ${{ inputs.mode }}
+        run: |
+          args=()
+          if [ "$MAINTENANCE_MODE" = pilot ]; then args+=(--pilot); fi
+          python3 maintenance/refresh-release-managers/job.py matrix "${args[@]}"
+  build-ui:
+    name: ${{ matrix.tag }} · ${{ matrix.variant }} · 界面更新
+    needs: plan
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: 准备Android界面编译工具
+        run: |
+          set -euo pipefail
+          sdkmanager="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          python3 -c "print('y\n' * 100)" | "$sdkmanager" --licenses >/dev/null
+          "$sdkmanager" 'platforms;android-37.0' 'platforms;android-36' 'build-tools;37.0.0' 'build-tools;36.1.0'
+      - name: 下载并验证原发行APK
+        env:
+          ASSET_ID: ${{ matrix.asset_id }}
+        run: python3 maintenance/refresh-release-managers/job.py download --asset-id "$ASSET_ID"
+      - name: 保留原生组件只重编界面
+        env:
+          ASSET_ID: ${{ matrix.asset_id }}
+          ORIGINAL_APK: ${{ matrix.name }}
+          ORIGINAL_SHA: ${{ matrix.old_sha256 }}
+        run: |
+          python3 maintenance/refresh-release-managers/historical_ui_refresh.py \
+            --original-apk "$GITHUB_WORKSPACE/original/$ASSET_ID/$ORIGINAL_APK" \
+            --expected-sha256 "$ORIGINAL_SHA" --recipe-repository "$GITHUB_WORKSPACE" \
+            --ui-root "$GITHUB_WORKSPACE" --work-dir "$RUNNER_TEMP/ui-refresh" \
+            --output-dir "$RUNNER_TEMP/manager-build"
+      - name: 输出界面编译诊断
+        if: failure()
+        run: |
+          if [ -f "$RUNNER_TEMP/ui-refresh/gradle-ui-only.log" ]; then
+            tail -n 100 "$RUNNER_TEMP/ui-refresh/gradle-ui-only.log"
+          fi
+      - name: 使用原签名并验证版本和原生组件
+        env:
+          ASSET_ID: ${{ matrix.asset_id }}
+          SUKISU_APK_KEYSTORE: ${{ secrets.SUKISU_APK_KEYSTORE }}
+          SUKISU_APK_PASSWORD: ${{ secrets.SUKISU_APK_PASSWORD }}
+        run: python3 maintenance/refresh-release-managers/job.py sign --asset-id "$ASSET_ID"
+      - uses: actions/upload-artifact@v5
+        with:
+          name: manager-ui-${{ matrix.asset_id }}
+          path: result/
+          if-no-files-found: error
+          retention-days: 7
+  publish:
+    name: 只替换已验证的19个管理器APK
+    if: inputs.mode == 'publish'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+      actions: read
+    concurrency:
+      group: ${{ github.repository }}-published-release-tags
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: 核对构建运行及完整产物
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+          BUILD_RUN: ${{ inputs.build_run }}
+        run: python3 maintenance/refresh-release-managers/check_build_run.py
+      - uses: actions/download-artifact@v6
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.build_run }}
+          pattern: manager-ui-*
+          merge-multiple: true
+          path: rebuilt
+      - name: 复核后替换现有发行附件
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 maintenance/refresh-release-managers/backup_originals.py
+          python3 maintenance/refresh-release-managers/publish.py \
+            --plan maintenance/refresh-release-managers/frozen-plan.json \
+            --built rebuilt --receipts rebuilt --backup "$RUNNER_TEMP/release-backup" \
+            --tools tools --ui-head "$GITHUB_SHA" --mode execute \
+            --journal "$RUNNER_TEMP/release-backup/transaction.json"
+      - name: 保存替换及回滚记录
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: manager-ui-refresh-transaction
+          path: ${{ runner.temp }}/release-backup/
+          if-no-files-found: ignore
+          retention-days: 30

@@ -33,7 +33,8 @@ def configure(source: Path):
     path, _, current, _ = read_source(source, SCREEN)
     if current not in (original, WRAPPER):
         raise ValueError('Review changed BakaSU KPM page before replacing its presentation')
-    generated = render_kpm_templates(NAMESPACE, 'bakasu')
+    # BakaSU's native MaterialExpressiveTheme already owns its dynamic/dark palette.
+    generated = render_kpm_templates(NAMESPACE, 'bakasu', theme_api='material3')
     plan = {path: WRAPPER, **{source / JAVA / 'ui/kpm' / name: text for name, text in generated.items()}}
     for target in plan:
         if any(p.is_symlink() for p in (target, *target.parents) if p != source):

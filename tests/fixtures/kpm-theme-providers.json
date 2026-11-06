@@ -1,0 +1,179 @@
+{
+  "schema_version": 1,
+  "note": "Exact native provider excerpts. Full source hashes and fixed commits identify the source; these snippets are not replacement application code. BakaSU has no stable release in the reviewed catalog.",
+  "providers": [
+    {
+      "manager": "KernelSU",
+      "tier": "stable",
+      "repository": "tiann/KernelSU",
+      "commit": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
+      "namespace": "me.weishu.kernelsu",
+      "expected": "miuix-switch",
+      "path": "manager/app/src/main/java/me/weishu/kernelsu/ui/theme/Theme.kt",
+      "source_sha256": "1d781d873354c3c77f9bea0e808c4c2d7165b1505dd2d2517f102f5ed3d6df87",
+      "excerpt_lines": [
+        104,
+        121
+      ],
+      "theme": "fun KernelSUTheme(\n    appSettings: AppSettings = ThemeController.getAppSettings(),\n    uiMode: UiMode = LocalUiMode.current,\n    content: @Composable () -> Unit\n) {\n\n    when (uiMode) {\n        UiMode.Miuix -> MiuixKernelSUTheme(\n            appSettings = appSettings,\n            content = content\n        )\n\n        UiMode.Material -> MaterialKernelSUTheme(\n            appSettings = appSettings,\n            content = content\n        )\n    }\n}\n",
+      "ui_mode": "package me.weishu.kernelsu.ui\n\nimport androidx.compose.runtime.staticCompositionLocalOf\n\nenum class UiMode(val value: String) {\n    Miuix(\"miuix\"),\n    Material(\"material\");\n\n    companion object {\n        fun fromValue(value: String): UiMode = when (value) {\n            Material.value -> Material\n            else -> Miuix\n        }\n\n        val DEFAULT_VALUE = Miuix.value\n    }\n}\n\nval LocalUiMode = staticCompositionLocalOf { UiMode.Miuix }\n"
+    },
+    {
+      "manager": "KernelSU",
+      "tier": "latest",
+      "repository": "tiann/KernelSU",
+      "commit": "28db74f6f4692e97006ce9ebd8b19b9cc614b5b7",
+      "namespace": "me.weishu.kernelsu",
+      "expected": "miuix-switch",
+      "path": "manager/app/src/main/java/me/weishu/kernelsu/ui/theme/Theme.kt",
+      "source_sha256": "1d781d873354c3c77f9bea0e808c4c2d7165b1505dd2d2517f102f5ed3d6df87",
+      "excerpt_lines": [
+        104,
+        121
+      ],
+      "theme": "fun KernelSUTheme(\n    appSettings: AppSettings = ThemeController.getAppSettings(),\n    uiMode: UiMode = LocalUiMode.current,\n    content: @Composable () -> Unit\n) {\n\n    when (uiMode) {\n        UiMode.Miuix -> MiuixKernelSUTheme(\n            appSettings = appSettings,\n            content = content\n        )\n\n        UiMode.Material -> MaterialKernelSUTheme(\n            appSettings = appSettings,\n            content = content\n        )\n    }\n}\n",
+      "ui_mode": "package me.weishu.kernelsu.ui\n\nimport androidx.compose.runtime.staticCompositionLocalOf\n\nenum class UiMode(val value: String) {\n    Miuix(\"miuix\"),\n    Material(\"material\");\n\n    companion object {\n        fun fromValue(value: String): UiMode = when (value) {\n            Material.value -> Material\n            else -> Miuix\n        }\n\n        val DEFAULT_VALUE = Miuix.value\n    }\n}\n\nval LocalUiMode = staticCompositionLocalOf { UiMode.Miuix }\n"
+    },
+    {
+      "manager": "KowSU",
+      "tier": "latest",
+      "repository": "KOWX712/KernelSU",
+      "commit": "6ecdd69224fe6769e6c8715a4ef2b91602b23362",
+      "namespace": "me.weishu.kernelsu",
+      "expected": "miuix-switch",
+      "path": "manager/app/src/main/java/me/weishu/kernelsu/ui/theme/Theme.kt",
+      "source_sha256": "09a06a52a549b35d9fb1b3d9d9f1b5bf302863f0d704ec35441b7d329117178a",
+      "excerpt_lines": [
+        115,
+        139
+      ],
+      "theme": "fun KernelSUTheme(\n    appSettings: AppSettings = ThemeController.getAppSettings(),\n    uiMode: UiMode = LocalUiMode.current,\n    content: @Composable () -> Unit\n) {\n    CompositionLocalProvider(\n        LocalColorMode provides appSettings.colorMode.value,\n        LocalEnableOfficialLauncher provides appSettings.enableOfficialLauncher,\n        LocalClassicUi provides appSettings.classicUi,\n        LocalShowSwitchIcon provides appSettings.showSwitchIcon,\n        LocalScrollAnimation provides appSettings.scrollAnimation,\n    ) {\n        when (uiMode) {\n            UiMode.Miuix -> MiuixKernelSUTheme(\n                appSettings = appSettings,\n                content = content\n            )\n\n            UiMode.Material -> MaterialKernelSUTheme(\n                appSettings = appSettings,\n                content = content\n            )\n        }\n    }\n}\n",
+      "ui_mode": "package me.weishu.kernelsu.ui\n\nimport androidx.compose.runtime.staticCompositionLocalOf\n\nenum class UiMode(val value: String) {\n    Miuix(\"miuix\"),\n    Material(\"material\");\n\n    companion object {\n        fun fromValue(value: String): UiMode = when (value) {\n            Miuix.value -> Miuix\n            else -> Material\n        }\n\n        val DEFAULT_VALUE = Material.value\n    }\n}\n\nval LocalUiMode = staticCompositionLocalOf { UiMode.Material }\n"
+    },
+    {
+      "manager": "FinaSU",
+      "tier": "stable-and-latest",
+      "repository": "LyraVoid/FinaSU",
+      "commit": "a839ce2d742f0f1450a3aad20bdc14bc060da840",
+      "namespace": "me.weishu.kernelsu",
+      "expected": "material3",
+      "path": "manager/app/src/main/java/me/weishu/kernelsu/ui/theme/Theme.kt",
+      "source_sha256": "f4de43ea1ddde2a14b262d23baea5b4550b7b18eb6493802fdb1028af50b99d4",
+      "excerpt_lines": [
+        96,
+        104
+      ],
+      "theme": "fun KernelSUTheme(\n    appSettings: AppSettings = ThemeController.getAppSettings(),\n    content: @Composable () -> Unit\n) {\n    MaterialKernelSUTheme(\n        appSettings = appSettings,\n        content = content\n    )\n}\n",
+      "ui_mode": ""
+    },
+    {
+      "manager": "KernelSU-Next",
+      "tier": "stable",
+      "repository": "KernelSU-Next/KernelSU-Next",
+      "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
+      "namespace": "com.rifsxd.ksunext",
+      "expected": "material3",
+      "path": "manager/app/src/main/java/com/rifsxd/ksunext/ui/theme/Theme.kt",
+      "source_sha256": "1104df0f1cf6cf3a21822222eec4b9b1edbf3e0b0f767f14a591eccea643078d",
+      "excerpt_lines": [
+        38,
+        89
+      ],
+      "theme": "fun KernelSUTheme(\n    darkTheme: Boolean = isSystemInDarkTheme(),\n    // Dynamic color is available on Android 12+\n    dynamicColor: Boolean = true,\n    amoledMode: Boolean = false,\n    content: @Composable () -> Unit\n) {\n    val colorScheme = when {\n        amoledMode && darkTheme && dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {\n            val context = LocalContext.current\n            val dynamicScheme = dynamicDarkColorScheme(context)\n            dynamicScheme.copy(\n                background = AMOLED_BLACK,\n                surface = AMOLED_BLACK,\n                surfaceVariant = dynamicScheme.surfaceVariant.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainer = dynamicScheme.surfaceContainer.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerLow = dynamicScheme.surfaceContainerLow.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerLowest = dynamicScheme.surfaceContainerLowest.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerHigh = dynamicScheme.surfaceContainerHigh.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerHighest = dynamicScheme.surfaceContainerHighest.blend(AMOLED_BLACK, 0.6f)\n            )\n        }\n        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {\n            val context = LocalContext.current\n            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)\n        }\n        amoledMode && darkTheme -> {\n            DarkColorScheme.copy(\n                background = AMOLED_BLACK,\n                surface = AMOLED_BLACK,\n                surfaceVariant = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainer = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerLow = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerLowest = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerHigh = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerHighest = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n            )\n        }\n        darkTheme -> DarkColorScheme\n        else -> LightColorScheme\n    }\n\n    SystemBarStyle(\n        darkMode = darkTheme\n    )\n\n    MaterialTheme(\n        colorScheme = colorScheme,\n        typography = Typography,\n        content = content\n    )\n}\n",
+      "ui_mode": ""
+    },
+    {
+      "manager": "KernelSU-Next",
+      "tier": "latest",
+      "repository": "KernelSU-Next/KernelSU-Next",
+      "commit": "84c644c7e32f463a6292dc811d79b62ec8253d87",
+      "namespace": "com.rifsxd.ksunext",
+      "expected": "material3",
+      "path": "manager/app/src/main/java/com/rifsxd/ksunext/ui/theme/Theme.kt",
+      "source_sha256": "1104df0f1cf6cf3a21822222eec4b9b1edbf3e0b0f767f14a591eccea643078d",
+      "excerpt_lines": [
+        38,
+        89
+      ],
+      "theme": "fun KernelSUTheme(\n    darkTheme: Boolean = isSystemInDarkTheme(),\n    // Dynamic color is available on Android 12+\n    dynamicColor: Boolean = true,\n    amoledMode: Boolean = false,\n    content: @Composable () -> Unit\n) {\n    val colorScheme = when {\n        amoledMode && darkTheme && dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {\n            val context = LocalContext.current\n            val dynamicScheme = dynamicDarkColorScheme(context)\n            dynamicScheme.copy(\n                background = AMOLED_BLACK,\n                surface = AMOLED_BLACK,\n                surfaceVariant = dynamicScheme.surfaceVariant.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainer = dynamicScheme.surfaceContainer.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerLow = dynamicScheme.surfaceContainerLow.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerLowest = dynamicScheme.surfaceContainerLowest.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerHigh = dynamicScheme.surfaceContainerHigh.blend(AMOLED_BLACK, 0.6f),\n                surfaceContainerHighest = dynamicScheme.surfaceContainerHighest.blend(AMOLED_BLACK, 0.6f)\n            )\n        }\n        dynamicColor && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {\n            val context = LocalContext.current\n            if (darkTheme) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)\n        }\n        amoledMode && darkTheme -> {\n            DarkColorScheme.copy(\n                background = AMOLED_BLACK,\n                surface = AMOLED_BLACK,\n                surfaceVariant = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainer = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerLow = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerLowest = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerHigh = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n                surfaceContainerHighest = DARK_GREY.blend(AMOLED_BLACK, 0.8f),\n            )\n        }\n        darkTheme -> DarkColorScheme\n        else -> LightColorScheme\n    }\n\n    SystemBarStyle(\n        darkMode = darkTheme\n    )\n\n    MaterialTheme(\n        colorScheme = colorScheme,\n        typography = Typography,\n        content = content\n    )\n}\n",
+      "ui_mode": ""
+    },
+    {
+      "manager": "BakaSU",
+      "tier": "latest",
+      "repository": "Baka-SU/BakaSU",
+      "commit": "516d3e87fbc986ccefdde2c2765f1700612441a9",
+      "namespace": "org.bakasu.bakasu",
+      "expected": "material3",
+      "path": "manager/app/src/main/java/org/bakasu/bakasu/ui/theme/Theme.kt",
+      "source_sha256": "74a98a395792ac8a7915174ada7a60e3c5df657c59f6d4b6ba7a70fb1f275a58",
+      "excerpt_lines": [
+        399,
+        404
+      ],
+      "theme": "        MaterialExpressiveTheme(\n            colorScheme = colorScheme,\n            motionScheme = MotionScheme.expressive(),\n            typography = generateTypography(themeConfig),\n        ) {\n            val backgroundMotionConnection = remember(backgroundRenderState) {\n",
+      "ui_mode": ""
+    }
+  ],
+  "miuix": {
+    "repository": "compose-miuix-ui/miuix",
+    "tag": "v0.9.4",
+    "path": "miuix-ui/src/commonMain/kotlin/top/yukonga/miuix/kmp/theme/Colors.kt",
+    "source_sha256": "c6885c8025dbc7cb81f11a6395032ea6c802c76862dca09c32365d5f7d40e911",
+    "properties": [
+      "primary",
+      "onPrimary",
+      "primaryVariant",
+      "onPrimaryVariant",
+      "error",
+      "onError",
+      "errorContainer",
+      "onErrorContainer",
+      "disabledPrimary",
+      "disabledOnPrimary",
+      "disabledPrimaryButton",
+      "disabledOnPrimaryButton",
+      "disabledPrimarySlider",
+      "primaryContainer",
+      "onPrimaryContainer",
+      "secondary",
+      "onSecondary",
+      "secondaryVariant",
+      "onSecondaryVariant",
+      "disabledSecondary",
+      "disabledOnSecondary",
+      "disabledSecondaryVariant",
+      "disabledOnSecondaryVariant",
+      "secondaryContainer",
+      "onSecondaryContainer",
+      "secondaryContainerVariant",
+      "onSecondaryContainerVariant",
+      "tertiaryContainer",
+      "onTertiaryContainer",
+      "tertiaryContainerVariant",
+      "background",
+      "onBackground",
+      "onBackgroundVariant",
+      "surface",
+      "onSurface",
+      "surfaceVariant",
+      "onSurfaceSecondary",
+      "onSurfaceVariantSummary",
+      "onSurfaceVariantActions",
+      "disabledOnSurface",
+      "surfaceContainer",
+      "onSurfaceContainer",
+      "onSurfaceContainerVariant",
+      "surfaceContainerHigh",
+      "onSurfaceContainerHigh",
+      "surfaceContainerHighest",
+      "onSurfaceContainerHighest",
+      "outline",
+      "dividerLine",
+      "windowDimming",
+      "sliderKeyPoint",
+      "sliderKeyPointForeground",
+      "sliderBackground"
+    ]
+  }
+}

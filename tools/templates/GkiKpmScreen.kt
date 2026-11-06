@@ -64,10 +64,35 @@ private fun quote(value: String): String {
 
 private data class SelectedKpmModule(val file: File, val name: String)
 
+private class KpmRootUnavailable : Exception()
+
+/** Limit quiet failures to authorization/root acquisition, never daemon work. */
+private inline fun <T> kpmRootOrUnavailable(block: () -> T): T = try {
+    block()
+} catch (cancelled: CancellationException) {
+    throw cancelled
+} catch (_: Exception) {
+    throw KpmRootUnavailable()
+}
+
+private inline fun kpmUiAuthorized(block: () -> Boolean): Boolean = try {
+    kpmRootOrUnavailable(block)
+} catch (_: KpmRootUnavailable) {
+    false
+}
+
 /** All operations execute the paired daemon; unsupported kernels stay unsupported. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
+    val authorized = __KPM_AUTHORIZATION__
+    if (!authorized) return
+    GkiKpmTheme { GkiKpmScreenContent(bottomPadding) }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun GkiKpmScreenContent(bottomPadding: Dp) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val daemon = remember { File(context.applicationInfo.nativeLibraryDir, "libksud.so").absolutePath }
@@ -84,8 +109,9 @@ fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
     var detail by remember { mutableStateOf<String?>(null) }
 
     suspend fun command(vararg args: String): String = withContext(Dispatchers.IO) {
-        val shell = getRootShell()
-        check(shell.isRoot) { "无法获得授权的 root shell" }
+        if (!kpmRootOrUnavailable { __KPM_COMMAND_AUTHORIZATION__ }) throw KpmRootUnavailable()
+        val shell = kpmRootOrUnavailable { getRootShell() }
+        if (!shell.isRoot) throw KpmRootUnavailable()
         val positional = setOf("load", "install", "unload", "uninstall", "control", "info")
         val literalArgs = if (args.firstOrNull() in positional) listOf(args.first(), "--") + args.drop(1) else args.toList()
         // libsu does not collect output unless explicit buffers are supplied.
@@ -142,6 +168,12 @@ fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
                 block()
             } catch (cancelled: CancellationException) {
                 throw cancelled
+            } catch (_: KpmRootUnavailable) {
+                supported = false
+                loaded = emptyList()
+                saved = emptyList()
+                status = ""
+                detail = null
             } catch (error: Exception) {
                 supported = false
                 status = if (error is org.json.JSONException) "KPM 返回的数据格式无效，请确认管理器与内核配套。" else error.message?.take(4096) ?: "KPM 操作失败"
@@ -210,6 +242,7 @@ fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
 
     LaunchedEffect(Unit) { operation { refresh() } }
     Scaffold(
+        containerColor = MaterialTheme.colorScheme.surface,
         topBar = {
             TopAppBar(title = { Text("KPM") }, actions = {
                 IconButton(enabled = !busy, onClick = { operation { refresh() } }) {
@@ -245,7 +278,10 @@ fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
                 Card(
                     modifier = Modifier.fillMaxWidth(),
                     shape = RoundedCornerShape(32.dp),
-                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.secondaryContainer),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
                 ) {
                     Row(modifier = Modifier.padding(24.dp), horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.Filled.Extension, contentDescription = null, modifier = Modifier.size(48.dp))
@@ -282,7 +318,13 @@ fun GkiKpmScreen(bottomPadding: Dp = 104.dp) {
                 }
             }
             items(modules, key = { it }) { name ->
-                Card(modifier = Modifier.fillMaxWidth()) {
+                Card(
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surfaceContainer,
+                        contentColor = MaterialTheme.colorScheme.onSurface,
+                    ),
+                ) {
                     Column(modifier = Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text(name, style = MaterialTheme.typography.titleMedium)
                         Text(listOfNotNull(if (name in loaded) "已加载" else null, if (name in saved) "重启自动加载" else null).joinToString(" · "))

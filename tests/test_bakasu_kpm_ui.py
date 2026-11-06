@@ -24,7 +24,7 @@ class BakaKpmUiTests(unittest.TestCase):
             text = (root / JAVA / 'ui/kpm/GkiKpmScreen.kt').read_text(encoding='utf-8')
             self.assertIn('Natives.isManager && org.bakasu.bakasu.Natives.isFullFeatured()', text)
             self.assertIn('koinInject<KsuCliRepository>()', text)
-            self.assertIn('val shell = cli.getRootShell()', text)
+            self.assertIn('val shell = kpmRootOrUnavailable { cli.getRootShell() }', text)
             self.assertNotIn('shell.close()', text)
             self.assertIn('selectedKpmModuleName(target.readBytes())', text)
             self.assertIn('Text("KPM 安装")', text)

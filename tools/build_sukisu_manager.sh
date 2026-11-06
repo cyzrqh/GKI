@@ -28,6 +28,7 @@ mkdir -p "$output_dir"
 output_dir="$(cd "$output_dir" && pwd -P)"
 manager_dir="$source_dir/manager"
 python3 "$build_tools/manager_ui_defaults.py" --source "$source_dir" --variant SukiSU
+python3 "$build_tools/configure_sukisu_kpm_ui.py" --source "$source_dir"
 for required in Cargo.toml Cargo.lock userspace/ksud/Cargo.toml .github/scripts/setup-rust-build.sh manager/gradlew manager/app/build.gradle.kts; do
   [ -f "$source_dir/$required" ] || { echo "Missing SukiSU build source: $required" >&2; exit 1; }
 done

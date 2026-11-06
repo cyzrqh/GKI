@@ -7,29 +7,34 @@ import textwrap
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def render_kpm_templates(namespace: str, shell_api: str) -> dict[str, str]:
+def render_kpm_templates(namespace: str, shell_api: str, theme_api: str = 'material3',
+                         authorization_expr: str | None = None,
+                         command_expr: str | None = None) -> dict[str, str]:
     from additional_manager_kpm import replace_one
+    from kpm_authorization import render_kpm_authorization
+    from kpm_theme import render_kpm_theme
     template = (ROOT / 'tools/templates/GkiKpmScreen.kt').read_text(encoding='utf-8')
     if shell_api == 'new':
         template = replace_one(template, 'ui.util.getRootShell', 'ui.util.createRootShell')
-        anchor = '        val shell = getRootShell()\n'
+        anchor = '        val shell = kpmRootOrUnavailable { getRootShell() }\n'
         if template.count(anchor) != 1:
             raise ValueError('Review the bounded KPM command shell lifetime')
         start = template.index(anchor) + len(anchor)
         end = template.index('\n    }\n\n    suspend fun jsonCommand', start)
-        template = (template[:start].replace(anchor, '        val shell = createRootShell()\n')
+        template = (template[:start].replace(anchor, '        val shell = kpmRootOrUnavailable { createRootShell() }\n')
                     + '        try {\n' + textwrap.indent(template[start:end], '    ')
                     + '\n        } finally {\n            shell.close()\n        }' + template[end:])
     elif shell_api == 'bakasu':
         template = replace_one(template, 'ui.util.getRootShell', 'data.shell.KsuCliRepository')
         template = replace_one(template, '    val context = LocalContext.current\n',
             '    val context = LocalContext.current\n    val cli = org.koin.compose.koinInject<KsuCliRepository>()\n')
-        template = replace_one(template, '        val shell = getRootShell()\n',
-            '        check(__NAMESPACE__.Natives.isManager && __NAMESPACE__.Natives.isFullFeatured()) { "需要配套管理器授权" }\n'
-            '        val shell = cli.getRootShell()\n')
+        template = replace_one(template, '        val shell = kpmRootOrUnavailable { getRootShell() }\n',
+            '        val shell = kpmRootOrUnavailable { cli.getRootShell() }\n')
     elif shell_api != 'cached':
         raise ValueError('Unknown native manager shell ownership')
+    template = render_kpm_authorization(template, namespace, authorization_expr, command_expr)
     documents = {'GkiKpmScreen.kt': template,
+                 'GkiKpmTheme.kt': render_kpm_theme(theme_api),
                  'GkiKpmModule.kt': (ROOT / 'tools/templates/GkiKpmModule.kt').read_text(encoding='utf-8')}
     result = {}
     for name, text in documents.items():
@@ -41,6 +46,25 @@ def render_kpm_templates(namespace: str, shell_api: str) -> dict[str, str]:
             text = text[:start] + '\n'.join(sorted(imports)) + text[end:]
         result[name] = text
     return result
+
+
+def _icon_imports(text: str, *styles: str) -> str:
+    """Keep native import order while giving KPM its own chip icon."""
+    for style in styles:
+        line = 'import androidx.compose.material.icons.' + style + '.Memory'
+        imports = list(re.finditer(r'^import .*$', text, re.M))
+        if any(match[0] == line for match in imports):
+            continue
+        if not imports:
+            package = re.search(r'^package [^\n]+\n', text, re.M)
+            if package is None:
+                raise ValueError('Native KPM navigation has no package/import block')
+            text = text[:package.end()] + '\n' + line + '\n' + text[package.end():]
+            continue
+        following = next((match for match in imports if match[0] > line), None)
+        position = following.start() if following else imports[-1].end() + 1
+        text = text[:position] + line + '\n' + text[position:]
+    return text
 
 
 def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, bytes]:
@@ -64,7 +88,14 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
         if not re.search(r'\bfun\s+createRootShell\s*\(', cli):
             raise ValueError('Review the native manager root-shell API before adding KPM')
         shell_api = 'new'
-    for name, text in render_kpm_templates(namespace, shell_api).items():
+    from kpm_theme import detect_kpm_theme
+    theme_api = detect_kpm_theme(namespace, read(java + '/ui/theme/Theme.kt'),
+        read(java + '/ui/UiMode.kt') if java + '/ui/UiMode.kt' in files else '')
+    authorization = ({
+        'authorization_expr': namespace + '.ui.util.LocalCapabilityState.current.privileged',
+        'command_expr': namespace + '.ui.util.CapabilityRepository.currentPrivileged()',
+    } if variant == 'FinaSU' else {})
+    for name, text in render_kpm_templates(namespace, shell_api, theme_api=theme_api, **authorization).items():
         put(java + '/ui/kpm/' + name, text)
     name = 'manager/app/src/main/res/values/strings.xml'
     put(name, replace_one(read(name), '</resources>', '    <string name="gki_kpm_title">KPM</string>\n</resources>'))
@@ -76,9 +107,9 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
             'import com.ramcosta.composedestinations.generated.destinations.GkiKpmScreenDestination\n'
             'import com.ramcosta.composedestinations.spec.DirectionDestinationSpec')
         text = replace_one(text, '    SuperUser(',
-            '    Kpm(GkiKpmScreenDestination, R.string.gki_kpm_title, Icons.Filled.Layers, Icons.Outlined.Layers, true),\n'
+            '    Kpm(GkiKpmScreenDestination, R.string.gki_kpm_title, Icons.Filled.Memory, Icons.Outlined.Memory, true),\n'
             '    SuperUser(')
-        put(name, text)
+        put(name, _icon_imports(text, 'filled', 'outlined'))
         # Use the very same generated navigation mechanism as the native tabs.
         wrapper = ('package ' + namespace + '.ui.screen\n\n'
             'import androidx.compose.runtime.Composable\n'
@@ -95,10 +126,11 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
         name = candidates[0]
         text = read(name)
         if variant == 'FinaSU':
-            entry = '    Kpm(R.string.gki_kpm_title, Icons.Filled.Extension, Icons.Outlined.Extension, "KPM"),\n'
+            entry = '    Kpm(R.string.gki_kpm_title, Icons.Filled.Memory, Icons.Outlined.Memory, "KPM"),\n'
         else:
-            entry = '    Kpm(R.string.gki_kpm_title, Icons.Rounded.Security),\n'
-        put(name, replace_one(text, '    SuperUser(', entry + '    SuperUser('))
+            entry = '    Kpm(R.string.gki_kpm_title, Icons.Rounded.Memory),\n'
+        styles = ('filled', 'outlined') if variant == 'FinaSU' else ('rounded',)
+        put(name, _icon_imports(replace_one(text, '    SuperUser(', entry + '    SuperUser('), *styles))
         text = read(main)
         if variant == 'FinaSU':
             text = replace_one(text,
@@ -135,7 +167,8 @@ def manager_ui_plan(source: Path, reference: str, variant: str) -> dict[str, byt
                     continue
                 native = read(name)
                 if anchor in native:
-                    put(name, replace_one(native, anchor,
-                        '        Triple(R.string.gki_kpm_title, Icons.Filled.Extension, Icons.Outlined.Extension),\n' + anchor))
+                    put(name, _icon_imports(replace_one(native, anchor,
+                        '        Triple(R.string.gki_kpm_title, Icons.Filled.Memory, Icons.Outlined.Memory),\n' + anchor),
+                        'filled', 'outlined'))
         put(main, text)
     return planned

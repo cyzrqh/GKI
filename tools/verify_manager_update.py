@@ -104,15 +104,21 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
                 prepare_manager_icons(source)
                 from apply_susfs23 import apply_reviewed_port, PATCH_PATH
                 apply_reviewed_port(source, PATCH_PATH, allow_variants=True)
+                from configure_sukisu_kpm_ui import configure as configure_kpm_ui
+                configure_kpm_ui(source)
                 checks = ['SUSFS 2.3 完整接入及原生生命周期', 'KPM 原生接口保留',
-                          '管理器图标依赖及 Kotlin 模块索引', '管理器/内核版本公式一致']
+                          '管理器图标依赖及 Kotlin 模块索引', 'KPM 原生页面授权门禁',
+                          '管理器/内核版本公式一致']
             elif variant == 'BakaSU':
                 from restore_bakasu_kpm import restore_bakasu_kpm, verify_bakasu_kpm_port
                 from ensure_bakasu_symbol_lookup import validate_native_symbol_lookup
                 restore_bakasu_kpm(source, reference)
                 verify_bakasu_kpm_port(source, reference)
                 validate_native_symbol_lookup(source, reference, Path('kernel'))
-                checks = ['KPM 完整还原及正反向校验', '原生符号接口', '管理器/内核版本公式一致']
+                from configure_bakasu_kpm_ui import configure as configure_kpm_ui
+                configure_kpm_ui(source)
+                checks = ['KPM 完整还原及正反向校验', '原生符号接口', 'KPM 页面主题及授权门禁',
+                          '管理器/内核版本公式一致']
             else:
                 from additional_manager_integration import apply_next_port, configure
                 from additional_manager_kpm import port, verify, with_susfs

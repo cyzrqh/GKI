@@ -32,6 +32,15 @@ PROFILES = {
 }
 ABIS = {'arm64-v8a', 'armeabi-v7a', 'x86_64', 'riscv64'}
 SHA = re.compile(r'[0-9a-f]{40}\Z')
+DEX = re.compile(r'classes(?:[2-9]|[1-9][0-9]+)?\.dex\Z')
+SIGNATURE = re.compile(r'META-INF/(?:MANIFEST\.MF|[^/]+\.(?:SF|RSA|DSA|EC))\Z', re.I)
+CLI_REMOVE_EDITS = (
+    ('setOf("load", "install", "unload", "uninstall", "control", "info")',
+     'setOf("load", "install", "unload", "remove", "control", "info")'),
+    ('command("uninstall", name)', 'command("remove", name)'),
+)
+CLI_REMOVE_PATCH_SHA256 = hashlib.sha256(
+    json.dumps(CLI_REMOVE_EDITS, separators=(',', ':')).encode('ascii')).hexdigest()
 
 
 def sha256(raw: bytes) -> str:
@@ -122,10 +131,13 @@ def original_identity(apk: Path, expected_sha256: str, ui_root: Path) -> dict:
 
 
 def preserved_member(name: str, data: bytes) -> bool:
-    # Preserve all assets, including FinaSU's embedded engine packages and the
-    # historical gki-build metadata (the final signer writes truthful new metadata).
-    return (name.startswith(('lib/', 'assets/')) or name.endswith(('.ko', '.kpm'))
-            or data.startswith(b'\x7fELF'))
+    # Only DEX/resources/manifest are compiler outputs allowed into the rebuilt
+    # archive. Preserve Kotlin builtins, services and every other non-UI member,
+    # including all assets; the final signer alone rewrites gki-build.json.
+    native = (name.startswith(('lib/', 'assets/')) or name.endswith(('.ko', '.kpm'))
+              or data.startswith((b'\x7fELF', b'KP1158\0\0')) or data[56:60] == b'ARMd')
+    ui = DEX.fullmatch(name) or name.startswith('res/') or name in ('resources.arsc', 'AndroidManifest.xml')
+    return not SIGNATURE.fullmatch(name) and (native or not ui)
 
 
 def export_recipe(repository: Path, commit: str, destination: Path):
@@ -207,6 +219,35 @@ def restore_source(source: Path, identity: dict, recipe: Path, origin: str | Non
             python_tool(recipe, 'configure_bakasu_kpm_ui.py', '--source', source, env=environment)
 
 
+def apply_cli_remove_compat(source: Path, variant: str) -> dict | None:
+    """Fix the UI command spelling against the unchanged historical Clap enum."""
+    if variant == 'SukiSU':
+        return None
+    native = source / ('userspace/ksud/src/android/kpm.rs' if variant == 'BakaSU'
+                       else 'userspace/ksud/src/kpm.rs')
+    native_text = regular(native).read_text('utf-8')
+    enum = re.search(r'enum KpmCommand\s*\{(.*?)\n\}', native_text, re.S)
+    if (enum is None or len(re.findall(r'\bRemove\s*\{\s*name:\s*String\s*\}', enum[1])) != 1
+            or re.search(r'\bUninstall\b|\balias\s*=\s*"uninstall"', enum[1])):
+        raise ValueError('Historical KPM remove CLI differs from the reviewed compatibility contract')
+    candidates = [path for path in (source / 'manager/app/src/main/java').rglob('GkiKpmScreen.kt')
+                  if path.parent.name == 'kpm']
+    if len(candidates) != 1:
+        raise ValueError('Expected exactly one generated shared KPM page for CLI compatibility')
+    path = regular(candidates[0])
+    before = path.read_bytes()
+    text = before.decode('utf-8')
+    for old, new in CLI_REMOVE_EDITS:
+        if text.count(old) != 1:
+            raise ValueError('Expected exactly one reviewed KPM CLI compatibility edit: ' + old)
+        text = text.replace(old, new, 1)
+    after = text.encode('utf-8')
+    path.write_bytes(after)
+    return {'id': 'kpm-cli-remove-v1', 'patch_sha256': CLI_REMOVE_PATCH_SHA256,
+            'file': path.relative_to(source).as_posix(),
+            'before_sha256': sha256(before), 'after_sha256': sha256(after)}
+
+
 def overlay_ui(source: Path, identity: dict, ui_root: Path):
     variant, reference = identity['metadata']['ksu_variant'], identity['metadata']['ksu_ref']
     before = source_hashes(source)
@@ -230,12 +271,13 @@ for name,data in manager_ui_plan(source,sys.argv[3],sys.argv[4]).items():
     target.write_bytes(data)
 '''
         run([sys.executable, '-c', program, ui_root / 'tools', source, reference, variant])
+    compatibility = apply_cli_remove_compat(source, variant)
     after = source_hashes(source)
     changed = sorted(name for name in before.keys() | after.keys() if before.get(name) != after.get(name))
     allowed = re.compile(r'manager/app/src/main/(?:java/(?:[A-Za-z0-9_]+/)+ui/.*\.(?:kt|java)|res/values/strings\.xml)\Z')
     if not changed or any(not allowed.fullmatch(name) for name in changed):
         raise ValueError('UI overlay changed an unexpected source path: ' + ', '.join(changed))
-    return {name: {'before': before.get(name), 'after': after.get(name)} for name in changed}
+    return {name: {'before': before.get(name), 'after': after.get(name)} for name in changed}, compatibility
 
 
 def kotlin_mask(text: str) -> str:
@@ -362,16 +404,23 @@ def rebuild_archive(original: Path, compiled: Path, target: Path, identity: dict
         old_names, new_names = zip_inventory(old), zip_inventory(new)
         if manifest_identity(new.read('AndroidManifest.xml')) != identity['manifest']:
             raise ValueError('Compiled APK changed the released package/version identity')
+        if new.read('AndroidManifest.xml') != old.read('AndroidManifest.xml'):
+            raise ValueError('Compiled APK changed the original Android manifest bytes')
         if not any(name.endswith('.dex') for name in new_names):
             raise ValueError('Compiled manager has no executable Kotlin/Java code')
         with zipfile.ZipFile(target, 'x') as output:
             for name, item in new_names.items():
                 data = new.read(name)
                 if preserved_member(name, data):
-                    if not name.startswith(('lib/', 'assets/')) and name not in identity['preserved']:
+                    if (not name.startswith(('lib/', 'assets/')) and name not in identity['preserved']
+                            and (name.endswith(('.ko', '.kpm'))
+                                 or data.startswith((b'\x7fELF', b'KP1158\0\0')) or data[56:60] == b'ARMd')):
                         raise ValueError('Unexpected new native payload outside the preserved inventory')
+                    # Discard compiler-produced metadata/static payloads. Only
+                    # the exact original inventory below may supply non-UI ZIP
+                    # members, so no newly introduced non-UI member can enter.
                     continue
-                if re.fullmatch(r'META-INF/(?:[^/]+\.(?:RSA|DSA|EC|SF)|MANIFEST\.MF)', name, re.I):
+                if SIGNATURE.fullmatch(name):
                     continue
                 output.writestr(item, data)
             for name, digest in identity['preserved'].items():
@@ -384,7 +433,7 @@ def rebuild_archive(original: Path, compiled: Path, target: Path, identity: dict
         actual = {name: sha256(archive.read(name)) for name, item in names.items()
                   if not item.is_dir() and preserved_member(name, archive.read(name))}
         if actual != identity['preserved']:
-            raise ValueError('UI-only unsigned APK did not preserve every native and asset byte')
+            raise ValueError('UI-only unsigned APK did not preserve every native, asset and non-UI member byte')
         if manifest_identity(archive.read('AndroidManifest.xml')) != identity['manifest']:
             raise ValueError('Final unsigned APK identity changed')
 
@@ -403,12 +452,13 @@ def build(args):
     recipe, source = work / 'historical-recipe', work / 'manager-source'
     export_recipe(recipe_repository, identity['metadata']['producer_head_sha'], recipe)
     restore_source(source, identity, recipe, args.source_repository)
-    ui_changes = overlay_ui(source, identity, ui_root)
+    ui_changes, compatibility = overlay_ui(source, identity, ui_root)
     gradle = prepare_gradle(source, work, identity)
     receipt = {'schema_version': 1, 'ui_commit': UI_COMMIT, 'original': identity,
                'historical_recipe': identity['metadata']['producer_head_sha'],
                'manager_source': identity['metadata']['ksu_ref'], 'ui_changes': ui_changes,
-               'gradle': gradle, 'prepared': True, 'compiled': False}
+               'gradle': gradle, 'ui_compatibility_patch': compatibility,
+               'prepared': True, 'compiled': False}
     (work / 'refresh-receipt.json').write_text(json.dumps(receipt, indent=2) + '\n', encoding='utf-8')
     if args.prepare_only:
         return

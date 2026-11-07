@@ -392,13 +392,20 @@ def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | Non
     """Accept only an actual conflict-free, reversible merge in a separate clone."""
     from snapshot_ksu_source import temporary_directory
     from additional_manager_integration import resolve_policy_sid_addition
-    def resolve_conflicts(checked: Path, candidate: Path, *, reverse: bool = False) -> bool:
+    def apply_candidate(checked: Path, candidate: Path, *, reverse: bool = False) -> bool:
+        args = ('--reverse',) if reverse else ()
+        applied = git(checked, '-c', 'merge.conflictStyle=diff3', 'apply', *args, '--3way', str(candidate))
+        unmerged = git(checked, 'ls-files', '--unmerged')
+        if unmerged.returncode:
+            return False
+        if not unmerged.stdout.strip():
+            return applied.returncode == 0
         # Both can occur together: an upstream inode-init addition beside a
         # whitespace hunk, and a new policy sequence beside the SUSFS SID hook.
         resolve_policy_sid_addition(checked, reverse=reverse)
-        if not git(checked, 'ls-files', '--unmerged').stdout.strip():
-            return True
-        return resolve_whitespace_additions(checked, patch_files(candidate))
+        unmerged = git(checked, 'ls-files', '--unmerged')
+        return not unmerged.returncode and (not unmerged.stdout.strip()
+            or resolve_whitespace_additions(checked, patch_files(candidate)))
     reference = git(repository, "rev-parse", "HEAD")
     if reference.returncode:
         return None
@@ -414,8 +421,7 @@ def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | Non
         for candidate in candidates:
             if git(checked, "reset", "--hard", "--quiet", reference.stdout.strip()).returncode:
                 return None
-            merged = git(checked, '-c', 'merge.conflictStyle=diff3', "apply", "--3way", str(candidate))
-            if merged.returncode and not resolve_conflicts(checked, candidate):
+            if not apply_candidate(checked, candidate):
                 continue
             if git(checked, "ls-files", "--unmerged").stdout.strip():
                 continue
@@ -430,9 +436,8 @@ def apply_three_way_port(repository: Path, candidates: list[Path]) -> bool | Non
                 continue
             # --3way --check can return success while reporting conflicts.
             # Require a real reverse operation and a completely restored source.
-            reversed_port = git(checked, '-c', 'merge.conflictStyle=diff3', "apply", "--reverse", "--3way", str(candidate))
-            reverse_ok = reversed_port.returncode == 0 or resolve_conflicts(checked, candidate, reverse=True)
-            if (not reverse_ok or git(checked, "ls-files", "--unmerged").stdout.strip()
+            if (not apply_candidate(checked, candidate, reverse=True)
+                    or git(checked, "ls-files", "--unmerged").stdout.strip()
                     or git(checked, "diff", "--quiet", "HEAD", "--", "kernel", "uapi").returncode):
                 continue
             prepared = temporary / "verified-merge.patch"

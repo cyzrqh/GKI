@@ -277,6 +277,31 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
         return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false',
                                '-c', 'merge.conflictStyle=diff3', *args],
                               capture_output=True, timeout=120)
+
+    def apply_three_way(checked, *, reverse=False):
+        args = ('--reverse',) if reverse else ()
+        applied = call(checked, 'apply', *args, '--3way', str(patch))
+        unmerged = call(checked, 'ls-files', '--unmerged')
+        if unmerged.returncode:
+            raise ValueError('Could not inspect the SUSFS merge index')
+        direction = 'reverse' if reverse else 'forward'
+        if not unmerged.stdout.strip():
+            if applied.returncode:
+                raise ValueError(f'Reviewed SUSFS {direction} patch application failed')
+            return
+        # Run every applicable rule even when another file has already been
+        # resolved. The index, not Git's exit status, decides what remains.
+        resolve_policy_sid_addition(checked, reverse=reverse)
+        if name == 'next-susfs23':
+            from susfs_setprocattr_compat import resolve_setprocattr
+            resolve_setprocattr(checked, reverse=reverse)
+        remaining = call(checked, 'diff', '--name-only', '--diff-filter=U')
+        if remaining.returncode:
+            raise ValueError('Could not inspect the remaining SUSFS conflicts')
+        paths = remaining.stdout.decode('utf-8', errors='replace').splitlines()
+        if paths:
+            raise ValueError(f'Reviewed SUSFS {direction} merge needs adaptation: ' + ', '.join(paths))
+
     if call(source, 'apply', '--reverse', '--check', str(patch)).returncode == 0:
         verify()
         return
@@ -306,21 +331,13 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
                                     input=raw, capture_output=True, timeout=20)
             if seeded.returncode or seeded.stdout.strip().decode() != identity:
                 raise ValueError('Cannot seed the reviewed Next SUSFS merge preimage')
-        merged = call(checked, 'apply', '--3way', str(patch))
-        if merged.returncode and not resolve_policy_sid_addition(checked):
-            conflicts = call(checked, 'diff', '--name-only', '--diff-filter=U').stdout.decode().strip()
-            raise ValueError('Official source conflicts with the reviewed SUSFS port; review required: '
-                             + (conflicts or 'patch application failed'))
-        if call(checked, 'ls-files', '--unmerged').stdout.strip():
-            raise ValueError('Official SUSFS port still contains unresolved source conflicts')
+        apply_three_way(checked)
         verify_native_preinit_cleanup(checked)
         verify_native_policy_generation(checked)
         prepared = Path(temporary) / 'rebased.patch'
         prepared.write_bytes(call(checked, 'diff', '--binary', '--full-index', 'HEAD', '--', 'kernel').stdout)
-        reversed_port = call(checked, 'apply', '--reverse', '--3way', str(patch))
-        reverse_ok = reversed_port.returncode == 0 or resolve_policy_sid_addition(checked, reverse=True)
-        if (not reverse_ok or call(checked, 'ls-files', '--unmerged').stdout.strip()
-                or call(checked, 'diff', '--quiet', 'HEAD', '--', 'kernel', 'uapi').returncode):
+        apply_three_way(checked, reverse=True)
+        if call(checked, 'diff', '--quiet', 'HEAD', '--', 'kernel', 'uapi').returncode:
             raise ValueError('SUSFS port could not reverse back to the exact selected official source')
         if prepared.stat().st_size and call(source, 'apply', '--reverse', '--check', str(prepared)).returncode == 0:
             # The complete port may already use the selected upstream's

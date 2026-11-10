@@ -41,6 +41,7 @@ def github_exact_file_hash(root: Path, paths: list[str]) -> str:
 def render_key(template, *, root=ROOT, **changes):
     values = {'runner.os': 'Linux', 'runner.arch': 'X64',
               'needs.prepare-matrix.outputs.ksu_ref': 'a' * 40,
+              'needs.prepare-matrix.outputs.native_source_version': 'd' * 16,
               'needs.prepare-matrix.outputs.manager_package': 'com.sukisu.ultra',
               'needs.prepare-matrix.outputs.manager_cert_size': '730',
               'needs.prepare-matrix.outputs.manager_cert_sha256': 'b' * 64,
@@ -188,6 +189,7 @@ class ManagerLkmJobTests(unittest.TestCase):
         self.assertLess(len(baseline), 512)
         for field, value in (
             ('needs.prepare-matrix.outputs.ksu_ref', 'd' * 40),
+            ('needs.prepare-matrix.outputs.native_source_version', 'e' * 16),
             ('needs.prepare-matrix.outputs.manager_package', 'com.example.changed'),
             ('needs.prepare-matrix.outputs.manager_cert_size', '731'),
             ('needs.prepare-matrix.outputs.manager_cert_sha256', 'e' * 64),
@@ -202,7 +204,7 @@ class ManagerLkmJobTests(unittest.TestCase):
 
     def test_full_sukisu_cache_requires_native_builder_identity_without_a_baka_port(self):
         template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
-        expected = ('gki-sukisu-lkm-v3-full-Linux-X64-' + 'a' * 40 + '-com.sukisu.ultra-730-'
+        expected = ('gki-sukisu-lkm-v3-full-Linux-X64-' + 'a' * 40 + '-' + 'd' * 16 + '-com.sukisu.ultra-730-'
                     + 'b' * 64 + '-android12-5.10-' + 'c' * 16)
         native = github_exact_file_hash(ROOT, ['tools/build_manager_extras*.sh', 'tools/manager_full_native.py'])
         self.assertEqual(expected + '-native-' + native, render_key(template))
@@ -217,7 +219,7 @@ class ManagerLkmJobTests(unittest.TestCase):
                     'needs.prepare-matrix.outputs.manager_package': 'com.resukisu.resukisu'}
         template = jobs.lkm_cache_key('matrix.kmi', 'matrix.ddk_short')
         fixed = jobs.lkm_cache_key("'android12-5.10'", "'" + 'c' * 16 + "'")
-        old = ('gki-sukisu-lkm-v3-full-Linux-X64-' + 'a' * 40 + '-com.resukisu.resukisu-730-'
+        old = ('gki-sukisu-lkm-v3-full-Linux-X64-' + 'a' * 40 + '-' + 'd' * 16 + '-com.resukisu.resukisu-730-'
                + 'b' * 64 + '-android12-5.10-' + 'c' * 16)
         digest = hashlib.sha256(hashlib.sha256(patch_file.read_bytes()).digest()
                                 + hashlib.sha256(port_lock.read_bytes()).digest()).hexdigest()

@@ -700,6 +700,7 @@ python3 tools/package_release_kernel.py --metadata release-ready/kernel.json \\
                     'max_parallel': '${{ steps.matrix.outputs.max_parallel }}',
                     'source_cache_key': '${{ steps.source-snapshot.outputs.source_cache_key }}',
                     'source_identity': '${{ steps.source-identity.outputs.source_identity }}',
+                    'native_source_version': '${{ steps.source-identity.outputs.native_source_version }}',
                     'susfs_sources': '${{ steps.shared-susfs.outputs.susfs_sources }}',
                     'ddk_matrix': '${{ steps.lkm-matrix.outputs.matrix }}',
                     'manager_package': '${{ steps.certificate.outputs.package }}',
@@ -831,17 +832,19 @@ PY
              'if': MANAGER_IF,
              'env': {'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}'},
              'run': '''python3 - <<'PY'
-import json,os,pathlib,sys
+import hashlib,json,os,pathlib,sys
 sys.path.insert(0,'tools')
 from checkout_ksu_snapshot import read_manifest
 from transfer_ksu_snapshot import prepared_identity
 manifest = read_manifest(pathlib.Path('ksu-source-bundle'),os.environ['KSU_REF'],variant=os.environ['KSU_VARIANT'])
 document = {key:manifest[key] for key in ('ref','git_tree','git_count','git_describe')}
+native_version = hashlib.sha256(json.dumps(document,sort_keys=True,separators=(',',':')).encode()).hexdigest()[:24]
 if 'susfs_sources' in manifest:
     document['susfs_sources'] = manifest['susfs_sources']
 identity = prepared_identity(document,os.environ['KSU_REF'])
 with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as output:
     output.write('source_identity='+json.dumps(identity,separators=(',',':'))+'\\n')
+    output.write('native_source_version='+native_version+'\\n')
 PY
 '''},
             {'name': '保存本次不可变源码缓存', 'uses': 'actions/cache/save@v5', 'timeout-minutes': 3,
@@ -866,12 +869,14 @@ PY
                  'build-kernel': job, 'publish-release': release_job()},
     }
     from manager_workflow_extensions import extend_gki
-    return extend_gki(workflow)
+    from reuse_manager_jobs import configure as configure_apk_reuse
+    return configure_apk_reuse(extend_gki(workflow))
 
 
 def generate(root):
     from oplus_workflow import OUTPUT as OPLUS_OUTPUT, create_workflow as create_oplus_workflow
     from combined_manager_workflow import add_combined
+    from manager_prebuild_workflow import OUTPUT as PREBUILD_OUTPUT, add_updater_call, prebuild_workflow
     single = create_workflow(root)
     oplus_single = create_oplus_workflow(root, single)
     workflow, _ = add_combined(single, oplus=False)
@@ -880,9 +885,9 @@ def generate(root):
               '# Locally maintained templates and official-source version catalog.\n')
     rendered = []
     for relative, document in ((OUTPUT, workflow), (CLEANUP_OUTPUT, cleanup_history_workflow()),
-                               (UPDATE_OUTPUT, updater_workflow()),
+                               (UPDATE_OUTPUT, add_updater_call(updater_workflow())),
                                (REORDER_OUTPUT, reorder_release_workflow()),
-                               (OPLUS_OUTPUT, oplus)):
+                               (OPLUS_OUTPUT, oplus), (PREBUILD_OUTPUT, prebuild_workflow(single))):
         content = header + yaml.dump(document, Dumper=Dumper, allow_unicode=True, sort_keys=False, width=120)
         if len(content.encode('utf-8')) > 500_000:
             raise ValueError('Generated workflow exceeds the GitHub workflow file size limit')
@@ -892,7 +897,8 @@ def generate(root):
     for target, content in rendered:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding='utf-8', newline='\n')
-    for name in ('_gki-manager-worker.yml', '_oplus-manager-worker.yml'):
+    for name in ('_gki-manager-worker.yml', '_oplus-manager-worker.yml',
+                 '_manager-apk-worker.yml'):
         obsolete = root / '.github/workflows' / name
         if obsolete.is_symlink():
             raise ValueError('Refusing a linked obsolete internal workflow')

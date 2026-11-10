@@ -20,6 +20,8 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import capture_manager_metadata as capture
 import wait_manager_identity as identity
 from apk_fixture import manager_metadata, signed_apk
+from manager_lkm_jobs import KMIS
+from reusable_manager_apk import manager_selection
 
 
 class Clock:
@@ -593,6 +595,39 @@ class ExactManagerProducerTests(unittest.TestCase):
         with self.assertRaisesRegex(identity.IdentityError, 'Timed out'):
             self.wait(reader, timeout=15)
         self.assertEqual(1, reader.paths.count('actions/artifacts/7/zip'))
+
+    def test_rerun_wrapper_can_reuse_exact_cached_apk_adopted_by_retained_prepare(self):
+        source = {'ref': self.expected.ksu_ref, 'git_tree': 'c' * 40, 'git_count': 512, 'git_describe': 'v4.2.0'}
+        original = {**self.fixture.metadata, 'ksu_branch': 'Stable(标准)', 'producer_run_id': '99',
+                    'producer_head_sha': 'e' * 40, 'manager_recipe_sha256': 'f' * 64,
+                    'manager_source_identity': source,
+                    'manager_native_proof': {'schema_version': 1, 'supported_kmis': sorted(KMIS),
+                                             'lkm_report_sha256': '1' * 64, 'boot_report_sha256': '2' * 64}}
+        raw = self.fixture.zip(original)
+        selected = manager_selection('SukiSU', 'Latest(最新)', self.expected.ksu_ref,
+                                     original['manager_cert_size'], original['manager_cert_sha256'],
+                                     original['manager_recipe_sha256'], source)
+        accepted = {'repository': self.expected.repository, 'run_id': self.expected.run_id,
+                    'head_sha': self.expected.head_sha, 'run_attempt': 1}
+        receipt = {'schema_version': 1, 'consumer': accepted, 'selection': selected,
+                   'producer': identity.read_manager_apk(raw)}
+        self.expected = replace(self.expected, run_attempt=2, external_metadata=receipt)
+        environment = {'GITHUB_REPOSITORY': accepted['repository'], 'GITHUB_RUN_ID': str(accepted['run_id']),
+                       'GITHUB_SHA': accepted['head_sha'], 'GITHUB_RUN_ATTEMPT': '2'}
+        with patch.dict(os.environ, environment):
+            reader = self.reader(metadata=original)
+            result = self.wait(reader, timeout=15)
+            self.assertEqual(hashlib.sha256(raw).hexdigest(), result['MANAGER_APK_SHA256'])
+            self.assertEqual([], self.clock.waits)
+            reader = self.reader(metadata=original, producer={'conclusion': 'failure'})
+            with self.assertRaisesRegex(identity.IdentityError, 'APK job failed'):
+                self.wait(reader)
+            self.assertFalse(any(path.endswith('/zip') for path in reader.paths))
+            with self.assertRaisesRegex(identity.IdentityError, 'exact successful manager producer'):
+                identity.read_identity_archive(raw, self.expected)
+            self.expected = replace(self.expected, external_metadata={**receipt, 'consumer': {**accepted, 'run_attempt': 2}})
+            with self.assertRaisesRegex(identity.IdentityError, 'newer than its manager producer'):
+                self.wait(self.reader(metadata=original, producer={'run_attempt': 1}))
 
     def test_exact_job_does_not_bypass_apk_signature_source_package_or_digest_validation(self):
         for metadata in ({**self.fixture.metadata, 'ksu_ref': 'e' * 40},

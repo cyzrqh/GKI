@@ -49,7 +49,7 @@ class WorkflowTests(unittest.TestCase):
                      if 'tools/verify_manager_boot_patch.py' in step.get('run', ''))
         verify = steps[index]
         self.assertNotIn('continue-on-error', verify)
-        self.assertNotIn('if', verify)  # Every source-built manager must pass it.
+        self.assertEqual("needs.prepare-matrix.outputs.manager_adoption == ''", verify['if'])
         self.assertIn('--module-report "$RUNNER_TEMP/manager-lkm-stage.json"', verify['run'])
         self.assertLess(next(i for i, step in enumerate(steps) if step.get('id') == 'manager-build'), index)
         self.assertLess(index, next(i for i, step in enumerate(steps) if step.get('id') == 'sign'))
@@ -60,7 +60,8 @@ class WorkflowTests(unittest.TestCase):
         index = next(i for i, step in enumerate(steps)
                      if 'tools/configure_bakasu_manager_notice.py' in step.get('run', ''))
         configure = steps[index]
-        self.assertEqual("inputs.kernelsu_variant == 'BakaSU'", configure['if'])
+        self.assertEqual("(inputs.kernelsu_variant == 'BakaSU') && needs.prepare-matrix.outputs.manager_adoption == ''",
+                         configure['if'])
         self.assertNotIn('continue-on-error', configure)
         self.assertIn('--identity "$RUNNER_TEMP/manager-public-certificate.json"', configure['run'])
         self.assertIn("-p 'test_bakasu_manager_notice.py'", configure['run'])
@@ -435,7 +436,9 @@ class WorkflowTests(unittest.TestCase):
         self.assertEqual(manager['name'], '编译配套 ${{ inputs.kernelsu_variant }} 管理器 APK')
         self.assertEqual(manager['needs'], ['prepare-matrix', 'build-sukisu-lkm'])
         self.assertNotIn('strategy', manager)
-        self.assertEqual(manager['if'], generator.manager_job()['if'])
+        self.assertIn("needs.build-sukisu-lkm.result == 'success'", manager['if'])
+        self.assertIn("needs.prepare-matrix.outputs.manager_adoption != '' && needs.build-sukisu-lkm.result == 'skipped'",
+                      manager['if'])
         self.assertEqual({'contents': 'read', 'actions': 'read'}, manager['permissions'])
         self.assertEqual('${{ steps.manager-producer.outputs.manager_job_id }}', manager['outputs']['manager_job_id'])
         producer = next(step for step in manager['steps'] if step.get('id') == 'manager-producer')
@@ -836,7 +839,9 @@ class WorkflowTests(unittest.TestCase):
                     patch('checkout_ksu_snapshot.read_manifest', return_value={**identity, 'bundle_sha256': 'c' * 64}) as manifest:
                 exec(compile(code, '<source-identity>', 'exec'), {})
             manifest.assert_called_once_with(Path('ksu-source-bundle'), 'a' * 40, variant=variant)
-            self.assertEqual(identity, json.loads(output.read_text().split('=', 1)[1]))
+            values = dict(line.split('=', 1) for line in output.read_text().splitlines())
+            self.assertEqual(identity, json.loads(values['source_identity']))
+            self.assertRegex(values['native_source_version'], r'^[0-9a-f]{24}$')
 
     def test_release_contains_direct_files_and_only_runs_after_success(self):
         release = self.workflow['jobs']['publish-release']

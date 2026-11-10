@@ -118,13 +118,16 @@ def add_combined(workflow, *, oplus):
         'run': 'python3 tools/manager_matrix_layout.py'})
     ready = "always() && !cancelled() && needs.prepare-matrix.result == 'success'"
     lkm = jobs['build-sukisu-lkm']
-    lkm['if'] = ready
+    lkm['needs'] = ['select-managers', 'prepare-matrix']
+    cold_managers = ' || '.join("(contains(fromJSON(needs.select-managers.outputs.active_managers), '" + variant
+        + "') && needs.prepare-matrix.outputs['" + variant.lower() + "_manager_adoption'] == '')" for variant in MANAGERS)
+    lkm['if'] = ready + ' && ' + SELECTION_READY + ' && (' + cold_managers + ')'
     lkm['strategy']['matrix'] = '${{ fromJSON(needs.prepare-matrix.outputs.ddk_build_matrix) }}'
     manager = jobs['build-sukisu-manager']
     require_selection(manager)
-    manager['if'] = ready + ' && ' + SELECTION_READY + " && needs.build-sukisu-lkm.result == 'success'"
+    manager['if'] = ready + ' && ' + SELECTION_READY + " && (needs.build-sukisu-lkm.result == 'success' || needs.build-sukisu-lkm.result == 'skipped')"
     manager['strategy'] = {'fail-fast': False, 'matrix': copy.deepcopy(VARIANTS)}
-    manager['outputs'] = outputs_by_manager(original_manager['outputs'])
+    manager['outputs'] = outputs_by_manager(scoped(original_manager['outputs']))
 
     kernel = jobs[kernel_id]
     kernel_gate = ready + " && needs.build-sukisu-manager.result == 'success'"

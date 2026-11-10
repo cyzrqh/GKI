@@ -4,10 +4,9 @@ from __future__ import annotations
 import copy
 import re
 
-from manager_lkm_jobs import lkm_cache_restore_steps
 from manager_prebuild import CHANNELS, slot_for
 from manager_variants import MANAGERS
-from reuse_manager_jobs import ADOPTION, CACHE_PATH, SAVE_KEY, expression
+from reuse_manager_jobs import expression
 
 
 PREPARE = 'prebuild-manager-sources'
@@ -86,7 +85,4 @@ PY
     matrix_job(manager, 'matrix', 3)
     manager['steps'] = [step for step in manager['steps'] if step.get('id') != 'manager-producer']
     manager.pop('outputs', None)
-    manager['steps'].extend(lkm_cache_restore_steps(expression(SAVE_KEY), CACHE_PATH,
-        id_prefix='prebuilt-apk-published', name='确认原始 APK 可供后续构建复用', lookup_only=True,
-        condition=ADOPTION + " == ''"))
     return dict(zip((PREPARE, NATIVE, MANAGER), substitute([prepare, native, manager])))

@@ -1,8 +1,11 @@
 """Build official APKs after the repository's upstream checks."""
 from __future__ import annotations
 
+from manager_prebuild import STATE_ARTIFACT
+
+
 OUTPUT = '.github/workflows/prebuild-manager-apks.yml'
-STATE_FILE = '${{ runner.temp }}/gki-manager-apk-observations.json'
+STATE_FILE = '${{ runner.temp }}/' + STATE_ARTIFACT
 STATE_PREFIX = 'gki-manager-apk-observations-v3-'
 STATE_KEY = STATE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}'
 UPDATER_NAME = '检查并同步官方更新'
@@ -37,7 +40,10 @@ def record_job() -> dict:
              'env': {'STATE_JSON': '${{ ' + CHECK_OUTPUTS + 'state }}'},
              'run': 'python3 tools/manager_prebuild.py record --state-json "$STATE_JSON" '
                     '--output "$RUNNER_TEMP/gki-manager-apk-observations.json"'},
+            {'name': '归档已验证的管理器版本记录', 'uses': 'actions/upload-artifact@v7',
+             'with': {'path': STATE_FILE, 'archive': False, 'if-no-files-found': 'error', 'overwrite': True}},
             {'name': '保存成功版本记录', 'uses': 'actions/cache/save@v5',
+             'continue-on-error': True,
              'with': {'path': STATE_FILE, 'key': STATE_KEY}},
         ],
     }
@@ -59,9 +65,10 @@ def prebuild_workflow(base: dict) -> dict:
          'uses': 'actions/cache/restore@v5', 'continue-on-error': True, 'timeout-minutes': 2,
          'with': {'path': STATE_FILE, 'key': STATE_KEY, 'restore-keys': STATE_PREFIX}},
         {'name': '选择需要预编译的官方 APK 更新', 'id': 'manager-prebuild',
-         'env': {'GH_TOKEN': '${{ github.token }}'},
+         'env': {'GH_TOKEN': '${{ github.token }}', 'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
          'run': 'python3 tools/manager_prebuild.py discover '
-                '--previous "$RUNNER_TEMP/gki-manager-apk-observations.json"'},
+                '--previous "$RUNNER_TEMP/gki-manager-apk-observations.json" '
+                '--artifact-history-branch "$DEFAULT_BRANCH"'},
         ],
     }
     return {'name': '自动预编译管理器 APK',

@@ -540,18 +540,22 @@ jobs:
         restore-keys: ${{ format('{0}-', steps.apk-cache-key.outputs.apk_cache_key) }}
     - name: 核验已编译 APK 并保留原始编译记录
       id: adopt-apk
-      if: steps.apk-cache.outputs.cache-matched-key != ''
+      if: steps.apk-cache-key.outputs.apk_cache_key != ''
+      timeout-minutes: 4
+      continue-on-error: true
       env:
         KSU_BRANCH: ${{ steps.sources.outputs.effective_ksu_branch }}
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
         MANAGER_CERT_SIZE: ${{ steps.certificate.outputs.cert_size }}
         MANAGER_CERT_SHA256: ${{ steps.certificate.outputs.cert_sha256 }}
         MANAGER_SOURCE_IDENTITY: ${{ steps.source-identity.outputs.source_identity }}
+        GH_TOKEN: ${{ github.token }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |-
         python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check cryptography
-        python3 tools/reusable_manager_apk.py stage --variant "$KSU_VARIANT" --channel "$KSU_BRANCH" --ksu-ref "$KSU_REF" \
+        python3 tools/restore_prebuilt_manager_apk.py --variant "$KSU_VARIANT" --channel "$KSU_BRANCH" --ksu-ref "$KSU_REF" \
           --cert-size "$MANAGER_CERT_SIZE" --cert-sha256 "$MANAGER_CERT_SHA256" \
-          --source-identity "$MANAGER_SOURCE_IDENTITY" --cache-dir manager-apk-cache --output-dir manager-artifact
+          --source-identity "$MANAGER_SOURCE_IDENTITY" --cache-dir manager-apk-cache --output-dir manager-artifact --source-dir ksu-snapshot-source --branch "$DEFAULT_BRANCH"
     - name: 上传原始配套 APK
       uses: actions/upload-artifact@v7
       if: steps.adopt-apk.outputs.manager_apk_reused == 'true'

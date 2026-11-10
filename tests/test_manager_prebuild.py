@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import re
@@ -13,10 +14,13 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 from check_official_updates import TARGETS
 from generate_workflow import create_workflow
-from manager_prebuild import CHANNELS, LATEST, STABLE, current_channels, plan, snapshot_channels, validate_state
+from manager_prebuild import (CHANNELS, LATEST, STABLE, STATE_ARTIFACT, current_channels, plan,
+                              restore_previous, snapshot_channels, validate_state)
 from manager_prebuild_workflow import OUTPUT, STATE_KEY, UPDATER_PATH, prebuild_workflow
 from manager_variants import MANAGERS
+from prebuilt_manager_history import WORKFLOW_API, WORKFLOW_PATH, run_artifacts, successful_runs, verified_artifact
 from resolve_build_sources import NoStableRelease, SourceResolutionError
+from wait_manager_identity import IdentityError
 from workflow_jobs import updater_workflow
 
 
@@ -34,6 +38,31 @@ def source_snapshot() -> dict:
     document['bakasu'].update(release=None, prerelease={'tag': 'rc1', 'commit': ref(32)})
     document['finasu']['release']['commit'] = document['finasu']['head']
     return document
+
+
+def history_run(run_id: int, **changes) -> dict:
+    repository = {'id': 12, 'full_name': 'cyzrqh/GKI'}
+    return {'id': run_id, 'workflow_id': 42, 'run_attempt': 1, 'path': WORKFLOW_PATH,
+            'event': 'workflow_run', 'status': 'completed', 'conclusion': 'success',
+            'repository': repository, 'head_repository': repository, 'head_branch': 'main',
+            'head_sha': ref(run_id), **changes}
+
+
+def history_artifact(artifact_id: int, run_id: int, payload: bytes, **changes) -> dict:
+    origin = {'id': run_id, 'repository_id': 12, 'head_repository_id': 12,
+              'head_branch': 'main', 'head_sha': ref(run_id)}
+    return {'id': artifact_id, 'name': STATE_ARTIFACT, 'size_in_bytes': len(payload), 'expired': False,
+            'digest': 'sha256:' + hashlib.sha256(payload).hexdigest(), 'workflow_run': origin, **changes}
+
+
+class FakeHistory:
+    def __init__(self, values):
+        self.values = {WORKFLOW_API: {'path': WORKFLOW_PATH, 'id': 42}, **values}
+        self.requests = []
+
+    def get(self, endpoint, *, binary=False):
+        self.requests.append((endpoint, binary))
+        return self.values[endpoint]
 
 
 class ManagerPrebuildTest(unittest.TestCase):
@@ -120,6 +149,50 @@ class ManagerPrebuildTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_state(state)
 
+    def test_evicted_state_recovers_from_successful_verified_standalone_run(self):
+        channels = self.snapshot()
+        _, state = plan(channels, {})
+        payload = json.dumps(state).encode()
+        reader = FakeHistory({
+            f'actions/artifacts?name={STATE_ARTIFACT}&per_page=25&page=1': {'artifacts': [
+                history_artifact(77, 100, payload),
+                history_artifact(76, 99, payload),
+                history_artifact(75, 98, payload),
+                history_artifact(74, 97, payload),
+            ]},
+            'actions/runs/99': history_run(99, conclusion='failure'),
+            'actions/runs/98': history_run(98),
+            'actions/runs/97': history_run(97),
+            'actions/artifacts/75/zip': b'X' * len(payload),
+            'actions/artifacts/74/zip': payload,
+        })
+        self.assertEqual(restore_previous(reader, 'cyzrqh/GKI', 'main', 100), channels)
+        self.assertNotIn(('actions/runs/100', False), reader.requests)
+        self.assertNotIn(('actions/artifacts/76/zip', True), reader.requests)
+        self.assertEqual(plan(channels, restore_previous(reader, 'cyzrqh/GKI', 'main', 100))[0], {'include': []})
+
+    def test_history_filters_branch_workflow_repository_and_artifact_origin(self):
+        run = history_run(95)
+        payload = b'{"verified":true}'
+        valid = history_artifact(73, 95, payload)
+        invalid = history_artifact(74, 95, payload, workflow_run={**valid['workflow_run'], 'head_sha': ref(31)})
+        reader = FakeHistory({
+            WORKFLOW_API + '/runs?branch=main&status=success&per_page=25&page=1': {'workflow_runs': [
+                history_run(100), history_run(99, head_branch='fork'),
+                history_run(98, workflow_id=41), history_run(97, event='workflow_dispatch'),
+                history_run(96, head_repository={'id': 13, 'full_name': 'fork/GKI'}), run,
+            ]},
+            'actions/runs/95/artifacts?per_page=25&page=1': {'artifacts': [invalid, valid]},
+            'actions/artifacts/73/zip': payload,
+        })
+        self.assertEqual(list(successful_runs(reader, 'cyzrqh/GKI', 'main', current_run=100)), [run])
+        self.assertEqual(list(run_artifacts(reader, run)), [valid])
+        self.assertEqual(verified_artifact(reader, run, valid, limit=len(payload)), payload)
+        with self.assertRaises(IdentityError):
+            verified_artifact(reader, run, invalid, limit=len(payload))
+        with self.assertRaises(IdentityError):
+            verified_artifact(reader, run, valid, limit=len(payload) - 1)
+
     def test_named_automatic_workflow_runs_independently_without_manual_entry(self):
         updater = updater_workflow()
         self.assertNotIn('prebuild-managers', updater['jobs'])
@@ -145,6 +218,9 @@ class ManagerPrebuildTest(unittest.TestCase):
         self.assertIn("prebuild-manager-apks.result == 'skipped'", recorder['if'])
         self.assertIn("manager_prebuild_state_changed == 'true'", recorder['if'])
         self.assertEqual(recorder['steps'][-1]['with']['key'], STATE_KEY)
+        self.assertEqual(recorder['steps'][-2]['uses'], 'actions/upload-artifact@v7')
+        self.assertEqual(recorder['steps'][-2]['with']['path'], '${{ runner.temp }}/' + STATE_ARTIFACT)
+        self.assertFalse(recorder['steps'][-2]['with']['archive'])
 
     def test_every_slot_publishes_the_ddk_lock_used_to_restore_all_native_modules(self):
         jobs = prebuild_workflow(create_workflow(ROOT))['jobs']
@@ -165,6 +241,7 @@ class ManagerPrebuildTest(unittest.TestCase):
         self.assertNotIn('needs', check)
         self.assertIn('python3 tools/manager_prebuild.py discover', check['steps'][-1]['run'])
         self.assertIn('--previous', check['steps'][-1]['run'])
+        self.assertIn('--artifact-history-branch "$DEFAULT_BRANCH"', check['steps'][-1]['run'])
 
 
 if __name__ == '__main__':

@@ -11,8 +11,10 @@ import sys
 from check_official_updates import UpdateError, validate_snapshot, write_outputs
 from manager_lkm_jobs import load_ddk_matrix
 from manager_variants import MANAGERS, manager_profile
+from prebuilt_manager_history import named_artifacts, verified_artifact
 from resolve_build_sources import (NoStableRelease, SHA, SourceResolutionError, compare_sukisu_channels,
                                    resolve_sources, validate_ref)
+from wait_manager_identity import GitHubReader, IdentityError, positive_integer
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,6 +24,7 @@ CHANNELS = {STABLE: '正式版', LATEST: '最新版'}
 MAX_STATE = 8192
 MAX_SNAPSHOT = 32768
 STATE_VERSION = 2
+STATE_ARTIFACT = 'gki-manager-apk-observations.json'
 ChannelSources = dict[str, dict[str, tuple[str, str]]]
 
 
@@ -109,6 +112,19 @@ def load_previous(path: Path) -> ChannelSources:
         return {}
 
 
+def restore_previous(reader: GitHubReader, repository: str, branch: str, current_run: int) -> ChannelSources:
+    try:
+        for run, artifact in named_artifacts(reader, repository, branch, STATE_ARTIFACT, current_run=current_run):
+            try:
+                payload = verified_artifact(reader, run, artifact, limit=MAX_STATE)
+                return validate_state(json.loads(payload))
+            except (IdentityError, ValueError, SourceResolutionError):
+                print('::warning::已归档的管理器版本记录未通过核验，将检查更早的成功记录', file=sys.stderr)
+    except (IdentityError, OSError, ValueError, SourceResolutionError):
+        print('::warning::无法读取归档的管理器版本记录，将重新核对当前安装包', file=sys.stderr)
+    return {}
+
+
 def plan(channels: ChannelSources, previous: ChannelSources) -> tuple[dict, dict]:
     state = state_document(channels)
     validate_state(state)
@@ -143,6 +159,7 @@ def main(argv: list[str] | None = None) -> int:
     discover = commands.add_parser('discover')
     discover.add_argument('--candidates-json')
     discover.add_argument('--previous', type=Path)
+    discover.add_argument('--artifact-history-branch')
     record = commands.add_parser('record')
     record.add_argument('--state-json', required=True)
     record.add_argument('--output', required=True, type=Path)
@@ -161,6 +178,10 @@ def main(argv: list[str] | None = None) -> int:
             selected = (current_channels(ROOT) if args.candidates_json is None
                         else snapshot_channels(json.loads(args.candidates_json)))
             previous = load_previous(args.previous) if args.previous else {}
+            if not previous and args.artifact_history_branch:
+                repository = os.environ['GITHUB_REPOSITORY']
+                run_id = positive_integer(os.environ['GITHUB_RUN_ID'], 'current run ID')
+                previous = restore_previous(GitHubReader(repository), repository, args.artifact_history_branch, run_id)
             matrix, state = plan(selected, previous)
             ddk = load_ddk_matrix(ROOT)
             lkm_matrix = {'include': [{**row, **item} for row in matrix['include'] for item in ddk]}
@@ -172,7 +193,7 @@ def main(argv: list[str] | None = None) -> int:
             if not os.environ.get('GITHUB_OUTPUT'):
                 print(compact(matrix))
             print(f"需预编译 {len(matrix['include'])} 组官方管理器 APK", file=sys.stderr)
-    except (OSError, ValueError, SourceResolutionError, UpdateError) as error:
+    except (OSError, ValueError, SourceResolutionError, UpdateError, IdentityError) as error:
         print(f'::error::管理器 APK 预编译来源检查失败。{error}', file=sys.stderr)
         return 1
     return 0

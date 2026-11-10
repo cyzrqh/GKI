@@ -52,7 +52,9 @@ jobs:
       id: manager-prebuild
       env:
         GH_TOKEN: ${{ github.token }}
-      run: python3 tools/manager_prebuild.py discover --previous "$RUNNER_TEMP/gki-manager-apk-observations.json"
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+      run: python3 tools/manager_prebuild.py discover --previous "$RUNNER_TEMP/gki-manager-apk-observations.json" --artifact-history-branch
+        "$DEFAULT_BRANCH"
   prebuild-manager-sources:
     name: ${{ matrix.variant }} · ${{ matrix.channels }} · 固定 APK 源码与签名
     runs-on: ubuntu-24.04
@@ -678,18 +680,22 @@ jobs:
         restore-keys: ${{ format('{0}-', steps.apk-cache-key.outputs.apk_cache_key) }}
     - name: 核验已编译 APK 并保留原始编译记录
       id: adopt-apk
-      if: steps.apk-cache.outputs.cache-matched-key != ''
+      if: steps.apk-cache-key.outputs.apk_cache_key != ''
+      timeout-minutes: 4
+      continue-on-error: true
       env:
         KSU_BRANCH: ${{ steps.sources.outputs.effective_ksu_branch }}
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
         MANAGER_CERT_SIZE: ${{ steps.certificate.outputs.cert_size }}
         MANAGER_CERT_SHA256: ${{ steps.certificate.outputs.cert_sha256 }}
         MANAGER_SOURCE_IDENTITY: ${{ steps.source-identity.outputs.source_identity }}
+        GH_TOKEN: ${{ github.token }}
+        DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
       run: |-
         python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check cryptography
-        python3 tools/reusable_manager_apk.py stage --variant "$KSU_VARIANT" --channel "$KSU_BRANCH" --ksu-ref "$KSU_REF" \
+        python3 tools/restore_prebuilt_manager_apk.py --variant "$KSU_VARIANT" --channel "$KSU_BRANCH" --ksu-ref "$KSU_REF" \
           --cert-size "$MANAGER_CERT_SIZE" --cert-sha256 "$MANAGER_CERT_SHA256" \
-          --source-identity "$MANAGER_SOURCE_IDENTITY" --cache-dir manager-apk-cache --output-dir manager-artifact
+          --source-identity "$MANAGER_SOURCE_IDENTITY" --cache-dir manager-apk-cache --output-dir manager-artifact --source-dir ksu-snapshot-source --branch "$DEFAULT_BRANCH"
     - name: 上传原始配套 APK
       uses: actions/upload-artifact@v7
       if: steps.adopt-apk.outputs.manager_apk_reused == 'true'
@@ -2229,83 +2235,6 @@ jobs:
           !manager-source/target/**/release/deps/ksud-*
           !manager-source/target/**/release/deps/ksuinit-*
         key: ${{ steps.manager-cargo-cache.outputs.cache-primary-key }}
-    - name: 确认原始 APK 可供后续构建复用（第 1 次）
-      id: prebuilt-apk-published
-      uses: actions/cache/restore@v5
-      timeout-minutes: 3
-      continue-on-error: true
-      env:
-        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
-      with:
-        path: manager-apk-cache
-        key: ${{ format('{0}-{1}-{2}', needs.prebuild-manager-sources.outputs[format('{0}_apk_cache_key', matrix.slot)], github.run_id,
-          github.run_attempt) }}
-        lookup-only: true
-        fail-on-cache-miss: false
-      if: (needs.prebuild-manager-sources.outputs[format('{0}_manager_adoption', matrix.slot)] == '')
-    - name: 确认原始 APK 可供后续构建复用（等待后重试 1）
-      if: (needs.prebuild-manager-sources.outputs[format('{0}_manager_adoption', matrix.slot)] == '') && steps.prebuilt-apk-published.outputs.cache-hit
-        != 'true'
-      shell: bash
-      run: sleep 10
-    - name: 确认原始 APK 可供后续构建复用（第 2 次）
-      id: prebuilt-apk-published-retry-1
-      uses: actions/cache/restore@v5
-      timeout-minutes: 3
-      continue-on-error: true
-      env:
-        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
-      with:
-        path: manager-apk-cache
-        key: ${{ format('{0}-{1}-{2}', needs.prebuild-manager-sources.outputs[format('{0}_apk_cache_key', matrix.slot)], github.run_id,
-          github.run_attempt) }}
-        lookup-only: true
-        fail-on-cache-miss: false
-      if: (needs.prebuild-manager-sources.outputs[format('{0}_manager_adoption', matrix.slot)] == '') && steps.prebuilt-apk-published.outputs.cache-hit
-        != 'true'
-    - name: 确认原始 APK 可供后续构建复用（等待后重试 2）
-      if: (needs.prebuild-manager-sources.outputs[format('{0}_manager_adoption', matrix.slot)] == '') && steps.prebuilt-apk-published.outputs.cache-hit
-        != 'true' && steps.prebuilt-apk-published-retry-1.outputs.cache-hit != 'true'
-      shell: bash
-      run: sleep 20
-    - name: 确认原始 APK 可供后续构建复用（第 3 次）
-      id: prebuilt-apk-published-retry-2
-      uses: actions/cache/restore@v5
-      timeout-minutes: 3
-      continue-on-error: true
-      env:
-        SEGMENT_DOWNLOAD_TIMEOUT_MINS: '2'
-      with:
-        path: manager-apk-cache
-        key: ${{ format('{0}-{1}-{2}', needs.prebuild-manager-sources.outputs[format('{0}_apk_cache_key', matrix.slot)], github.run_id,
-          github.run_attempt) }}
-        lookup-only: true
-        fail-on-cache-miss: false
-      if: (needs.prebuild-manager-sources.outputs[format('{0}_manager_adoption', matrix.slot)] == '') && steps.prebuilt-apk-published.outputs.cache-hit
-        != 'true' && steps.prebuilt-apk-published-retry-1.outputs.cache-hit != 'true'
-    - name: 确认原始 APK 可供后续构建复用
-      id: prebuilt-apk-published-ready
-      shell: bash
-      env:
-        EXPECTED_CACHE_KEY: ${{ format('{0}-{1}-{2}', needs.prebuild-manager-sources.outputs[format('{0}_apk_cache_key', matrix.slot)],
-          github.run_id, github.run_attempt) }}
-        CACHE_HIT_0: ${{ steps.prebuilt-apk-published.outputs.cache-hit }}
-        CACHE_KEY_0: ${{ steps.prebuilt-apk-published.outputs.cache-matched-key }}
-        CACHE_HIT_1: ${{ steps.prebuilt-apk-published-retry-1.outputs.cache-hit }}
-        CACHE_KEY_1: ${{ steps.prebuilt-apk-published-retry-1.outputs.cache-matched-key }}
-        CACHE_HIT_2: ${{ steps.prebuilt-apk-published-retry-2.outputs.cache-hit }}
-        CACHE_KEY_2: ${{ steps.prebuilt-apk-published-retry-2.outputs.cache-matched-key }}
-      run: |
-        python3 - <<'PY'
-        import os
-        expected = os.environ['EXPECTED_CACHE_KEY']
-        matched = any(os.environ[f'CACHE_HIT_{index}'] == 'true'
-                      and os.environ[f'CACHE_KEY_{index}'] == expected for index in range(3))
-        if not expected or not matched:
-            raise SystemExit('The exact verified manager LKM cache is still unavailable after three bounded attempts; no other source or signature cache was accepted.')
-        print('The exact verified manager LKM cache is available.')
-        PY
-      if: needs.prebuild-manager-sources.outputs[format('{0}_manager_adoption', matrix.slot)] == ''
     strategy:
       fail-fast: false
       max-parallel: 3
@@ -2332,8 +2261,16 @@ jobs:
       env:
         STATE_JSON: ${{ needs.check-upstream.outputs.manager_prebuild_state }}
       run: python3 tools/manager_prebuild.py record --state-json "$STATE_JSON" --output "$RUNNER_TEMP/gki-manager-apk-observations.json"
+    - name: 归档已验证的管理器版本记录
+      uses: actions/upload-artifact@v7
+      with:
+        path: ${{ runner.temp }}/gki-manager-apk-observations.json
+        archive: false
+        if-no-files-found: error
+        overwrite: true
     - name: 保存成功版本记录
       uses: actions/cache/save@v5
+      continue-on-error: true
       with:
         path: ${{ runner.temp }}/gki-manager-apk-observations.json
         key: gki-manager-apk-observations-v3-${{ github.run_id }}-${{ github.run_attempt }}

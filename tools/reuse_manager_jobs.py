@@ -27,6 +27,7 @@ def gate(step, condition):
 
 def configure(workflow):
     prepare = workflow['jobs']['prepare-matrix']
+    prepare['permissions'].setdefault('actions', 'read')
     lkm = workflow['jobs']['build-sukisu-lkm']
     manager = workflow['jobs']['build-sukisu-manager']
     identity_env = {
@@ -47,10 +48,14 @@ def configure(workflow):
                   'key': expression("format('{0}-{1}-{2}', steps.apk-cache-key.outputs.apk_cache_key, github.run_id, github.run_attempt)"),
                   'restore-keys': expression("format('{0}-', steps.apk-cache-key.outputs.apk_cache_key)")}},
         {'name': '核验已编译 APK 并保留原始编译记录', 'id': 'adopt-apk',
-         'if': "steps.apk-cache.outputs.cache-matched-key != ''", 'env': identity_env,
+         'if': "steps.apk-cache-key.outputs.apk_cache_key != ''", 'timeout-minutes': 4,
+         'continue-on-error': True,
+         'env': {**identity_env, 'GH_TOKEN': '${{ github.token }}',
+                 'DEFAULT_BRANCH': '${{ github.event.repository.default_branch }}'},
          'run': "python3 -c 'import cryptography' || python3 -m pip install --break-system-packages --disable-pip-version-check cryptography\n"
-                'python3 tools/reusable_manager_apk.py stage ' + ARGS
-                + ' --cache-dir ' + CACHE_PATH + ' --output-dir manager-artifact'},
+                'python3 tools/restore_prebuilt_manager_apk.py ' + ARGS
+                + ' --cache-dir ' + CACHE_PATH + ' --output-dir manager-artifact'
+                  ' --source-dir ksu-snapshot-source --branch "$DEFAULT_BRANCH"'},
         {'name': '上传原始配套 APK', 'uses': 'actions/upload-artifact@v7',
          'if': "steps.adopt-apk.outputs.manager_apk_reused == 'true'",
          'with': {'path': 'manager-artifact/${{ steps.adopt-apk.outputs.apk_filename }}',

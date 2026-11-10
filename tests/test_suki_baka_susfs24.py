@@ -181,6 +181,26 @@ void fallback(void) {
         with self.assertRaisesRegex(ValueError, 'direct input-hook lifecycle'):
             compat.remove_unlinked_input_work(safe_mode + fstat.replace('ksu_handle_vfs_fstat', 'different_hook'))
 
+    def test_suki_restores_file_scope_selinux_callbacks_without_replacing_their_logic(self):
+        original = r'''void ksu_selinux_hide_handle_second_stage()
+{
+    initialize_fake_status();
+    if (fake_status)
+        static_key_disable(&fake_status_initialize_key.key);
+    else
+        pr_warn("selinux_hide: fake status need late initialization\\n");
+
+void ksu_selinux_hide_handle_post_fs_data()
+{
+    static_key_disable(&fake_status_initialize_key.key);
+}
+'''
+        expected = original.replace('\n\nvoid ', '\n}\n\nvoid ')
+        self.assertEqual(expected, compat.restore_selinux_lifecycle_boundary(original))
+        self.assertEqual(expected, compat.restore_selinux_lifecycle_boundary(expected))
+        with self.assertRaisesRegex(ValueError, 'SELinux hide callbacks'):
+            compat.restore_selinux_lifecycle_boundary(original.replace('pr_warn', 'changed_hook'))
+
 
 if __name__ == '__main__':
     unittest.main()

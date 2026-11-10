@@ -28,6 +28,7 @@ PARSER = 'susfs_parse_priority_app_strings'
 COMMAND = 'CMD_SUSFS_SET_PRIORITY_UID_FILTER'
 CORE_INIT = 'kernel/core/init.c'
 DISPATCH = 'kernel/supercall/dispatch.c'
+HIDE = 'kernel/feature/selinux_hide.c'
 OBSERVER = 'kernel/manager/pkg_observer.c'
 KCONFIG = 'kernel/Kconfig'
 POLICY = 'kernel/selinux/sepolicy.c'
@@ -211,6 +212,24 @@ def remove_unlinked_input_work(text: str) -> str:
     return text[:fstat.end(1) - len(tail)] + text[fstat.end(1):]
 
 
+def restore_selinux_lifecycle_boundary(text: str) -> str:
+    """Keep the second-stage and post-fs-data callbacks at file scope."""
+    symbols = ('ksu_selinux_hide_handle_second_stage', 'ksu_selinux_hide_handle_post_fs_data')
+    _, definitions = inspect_c_source(Path(HIDE), text, symbols=symbols)
+    names = tuple(item.symbol for item in definitions if not item.is_static)
+    if names == symbols:
+        return text
+    anchor = ('        pr_warn("selinux_hide: fake status need late initialization\\\\n");\n'
+              '\nvoid ksu_selinux_hide_handle_post_fs_data()\n{\n')
+    if names != symbols[:1] or text.count(anchor) != 1:
+        raise ValueError('Review the changed SukiSU SELinux hide callbacks')
+    updated = text.replace(anchor, anchor.replace('\n\nvoid ', '\n}\n\nvoid '), 1)
+    _, definitions = inspect_c_source(Path(HIDE), updated, symbols=symbols)
+    if tuple(item.symbol for item in definitions if not item.is_static) != symbols:
+        raise ValueError('SukiSU SELinux hide callbacks must both be defined at file scope')
+    return updated
+
+
 def integrate(source: Path, dependency: Path, variant: str) -> tuple[Path, ...]:
     """Apply 2.4 wiring after snapshot preparation and any BakaSU KPM restoration."""
     if variant not in ('SukiSU', 'BakaSU'):
@@ -235,6 +254,8 @@ def integrate(source: Path, dependency: Path, variant: str) -> tuple[Path, ...]:
         updated[CORE_INIT] = remove_unlinked_lsm_init(original[CORE_INIT])
         original[RUNTIME] = read(source, RUNTIME)
         updated[RUNTIME] = remove_unlinked_input_work(original[RUNTIME])
+        original[HIDE] = read(source, HIDE)
+        updated[HIDE] = restore_selinux_lifecycle_boundary(original[HIDE])
     changed = []
     for relative, text in updated.items():
         if text != original[relative]:

@@ -437,6 +437,7 @@ class OPlusKernelTests(unittest.TestCase):
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_text(text)
                 (self.root / 'common' / relative).parent.mkdir(parents=True, exist_ok=True)
+            return sources[_target]
         for variant in ('SukiSU', 'BakaSU'):
             with self.subTest(variant=variant), \
                     mock.patch.object(kernel, 'checked_root', return_value=self.root), \
@@ -459,6 +460,28 @@ class OPlusKernelTests(unittest.TestCase):
                     port.assert_not_called()
                 self.assertEqual('#define SUSFS_VERSION "v2.3.0"\n',
                                  (self.root / 'common/include/linux/susfs.h').read_text())
+
+    def test_susfs24_uses_the_reviewed_manager_and_linux_adapters(self):
+        for variant in ('SukiSU', 'BakaSU', 'KernelSU-Next', 'KernelSU', 'KowSU', 'FinaSU'):
+            with self.subTest(variant=variant), \
+                    mock.patch.object(kernel, 'checked_root', return_value=self.root), \
+                    mock.patch.object(kernel, 'checkout_snapshot'), mock.patch.object(kernel, 'integrate'), \
+                    mock.patch.object(kernel, 'restore_source', return_value={'version': 'v2.4.0'}), \
+                    mock.patch('suki_baka_susfs24.integrate') as local, \
+                    mock.patch('additional_manager_integration.integrate_susfs') as additional, \
+                    mock.patch('susfs24_kernel_patch.apply_susfs24') as linux:
+                kernel.integrate_manager(self.workspace, self.profile,
+                    {**self.inputs, 'kernelsu_variant': variant, 'enable_susfs': True}, self.workspace,
+                    self.reference, variant, '{}')
+                dependency = self.workspace.resolve() / 'official-susfs'
+                linux.assert_called_once_with(self.root / 'common', dependency, 'android14-6.1',
+                                              apply_patch=kernel.patch_checked)
+                if variant in ('SukiSU', 'BakaSU'):
+                    local.assert_called_once_with(self.root / 'KernelSU', dependency, variant)
+                    additional.assert_not_called()
+                else:
+                    additional.assert_called_once_with(self.root, dependency, variant)
+                    local.assert_not_called()
 
     def test_enabled_susfs_requires_matching_nonempty_real_hooks(self):
         self.finalize_mocks()

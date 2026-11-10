@@ -71,6 +71,14 @@ def integrate_susfs(root: Path, dependency: Path, variant: str) -> None:
     if variant not in ADDITIONAL_MANAGERS:
         return
     source = root / 'KernelSU'
+    from additional_susfs24 import VERSION as SUSFS24, dependency_version, integrate as integrate_24
+    if dependency_version(dependency) == SUSFS24:
+        name = {'KowSU': 'kow-susfs23', 'KernelSU-Next': 'next-susfs23',
+                'KernelSU': 'official-susfs23'}.get(variant)
+        if name is not None and variant != 'KowSU' and not (source / 'kernel/preinit/preinit.c').is_file():
+            name += '-stable'
+        integrate_24(source, dependency, variant, lambda: apply_next_port(source, name=name))
+        return
     if variant == 'KowSU':
         from additional_manager_kpm import with_susfs
         with_susfs(source, variant, lambda: apply_next_port(source, name='kow-susfs23'))

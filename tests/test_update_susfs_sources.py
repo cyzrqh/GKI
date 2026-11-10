@@ -93,6 +93,27 @@ class SusfsSyncTests(unittest.TestCase):
         self.assertEqual('version-changed', receipt['pins']['KowSU'][update.TARGETS[0]]['reason'])
         self.assertEqual(self.profile, profile)
 
+    def test_only_the_explicitly_reviewed_24_target_can_advance(self):
+        target = 'android14-6.1'
+        self.profile['sukisu_susfs']['pins'][target] = DIFFERENT
+        self.profile['sukisu_susfs']['target_versions'] = {target: 'v2.4.0'}
+        candidate = '6' * 40
+
+        def changed(url, limit):
+            ref = url.split('ref=')[1].split('&')[0]
+            if ref in (DIFFERENT, candidate):
+                if '/repository/tree?' in url:
+                    return transport(url.replace(candidate, DIFFERENT), limit)
+                return b'#define SUSFS_VERSION "v2.4.0"\n'
+            return transport(url, limit)
+
+        receipt, profile, managers = self.plan({**self.sources, target: candidate}, fetch=changed)
+        self.assertEqual(candidate, profile['sukisu_susfs']['pins'][target])
+        self.assertEqual('current', receipt['pins']['SukiSU'][target]['status'])
+        for variant in update.MANAGERS[1:]:
+            self.assertEqual(OLD, managers['managers'][variant]['pins'][target])
+            self.assertEqual('version-changed', receipt['pins'][variant][target]['reason'])
+
     def test_receipt_and_config_forgery_are_rejected_before_merge(self):
         receipt, profile, managers = self.plan({target: DIFFERENT for target in update.TARGETS})
         altered = copy.deepcopy(receipt)

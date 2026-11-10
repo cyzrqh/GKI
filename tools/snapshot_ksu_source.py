@@ -247,6 +247,11 @@ def snapshot_source(source: Path, output: Path, reference: str, *, root: Path = 
         # must never receive the separately reviewed SukiSU-only port here.
         if variant == 'SukiSU':
             verify_susfs_compatibility(source, root, tier, susfs, bundle)
+        if susfs_sources is not None:
+            from susfs24_manager_preflight import verify_manager
+            targets = verify_manager(source, reference, variant, susfs_sources)
+            if targets:
+                print(f'{variant} SUSFS v2.4.0 manager integration verified for: ' + ', '.join(targets))
         manifest = {"schema_version": 1, "repository": repository, "ref": reference,
                     "bundle_filename": BUNDLE_NAME, "bundle_size": size,
                     "bundle_sha256": file_digest(bundle), **identity}

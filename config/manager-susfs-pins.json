@@ -2,18 +2,25 @@
   "schema_version": 1,
   "version": "v2.3.0",
   "source": "https://gitlab.com/simonpunk/susfs4ksu",
-  "reason": "Reviewed native SUSFS 2.3 hook ABI for the source-built Next, KernelSU and KowSU ports",
+  "reason": "Per-target official SUSFS v2.4.0 pins use reviewed manager and Linux hook adapters; the base ABI is retained for legacy profiles",
   "managers": {
     "KernelSU-Next": {
       "source_refs": [
         "4c706b5938665866ebe16944a481a7b91e3396af"
       ],
       "pins": {
-        "android12-5.10": "82f08351fadb8b19dd6591bd14634d02ad832145",
-        "android13-5.15": "bd27d727b27fc90bfbb6eaccd28060a53c473266",
-        "android14-6.1": "5192aa2d33b381b58c1051532f9e1dfa5de6e8d3",
-        "android15-6.6": "bd7d199ac87808001127e8a6d076832e2938cf0d",
-        "android16-6.12": "5e0b2b925865000ca7dce993ecf1d281ee312887"
+        "android12-5.10": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "android13-5.15": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "android14-6.1": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "android15-6.6": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "android16-6.12": "395a8c0c88d348e9fe7c14f66a456fde4653287c"
+      },
+      "target_versions": {
+        "android12-5.10": "v2.4.0",
+        "android13-5.15": "v2.4.0",
+        "android14-6.1": "v2.4.0",
+        "android15-6.6": "v2.4.0",
+        "android16-6.12": "v2.4.0"
       }
     },
     "KernelSU": {
@@ -21,11 +28,18 @@
         "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d"
       ],
       "pins": {
-        "android12-5.10": "82f08351fadb8b19dd6591bd14634d02ad832145",
-        "android13-5.15": "bd27d727b27fc90bfbb6eaccd28060a53c473266",
-        "android14-6.1": "5192aa2d33b381b58c1051532f9e1dfa5de6e8d3",
-        "android15-6.6": "bd7d199ac87808001127e8a6d076832e2938cf0d",
-        "android16-6.12": "5e0b2b925865000ca7dce993ecf1d281ee312887"
+        "android12-5.10": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "android13-5.15": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "android14-6.1": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "android15-6.6": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "android16-6.12": "395a8c0c88d348e9fe7c14f66a456fde4653287c"
+      },
+      "target_versions": {
+        "android12-5.10": "v2.4.0",
+        "android13-5.15": "v2.4.0",
+        "android14-6.1": "v2.4.0",
+        "android15-6.6": "v2.4.0",
+        "android16-6.12": "v2.4.0"
       }
     },
     "KowSU": {
@@ -33,11 +47,50 @@
         "6ecdd69224fe6769e6c8715a4ef2b91602b23362"
       ],
       "pins": {
-        "android12-5.10": "82f08351fadb8b19dd6591bd14634d02ad832145",
-        "android13-5.15": "bd27d727b27fc90bfbb6eaccd28060a53c473266",
-        "android14-6.1": "5192aa2d33b381b58c1051532f9e1dfa5de6e8d3",
-        "android15-6.6": "bd7d199ac87808001127e8a6d076832e2938cf0d",
-        "android16-6.12": "5e0b2b925865000ca7dce993ecf1d281ee312887"
+        "android12-5.10": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "android13-5.15": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "android14-6.1": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "android15-6.6": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "android16-6.12": "395a8c0c88d348e9fe7c14f66a456fde4653287c"
+      },
+      "target_versions": {
+        "android12-5.10": "v2.4.0",
+        "android13-5.15": "v2.4.0",
+        "android14-6.1": "v2.4.0",
+        "android15-6.6": "v2.4.0",
+        "android16-6.12": "v2.4.0"
+      }
+    },
+    "BakaSU": {
+      "pins": {
+        "android12-5.10": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "android13-5.15": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "android14-6.1": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "android15-6.6": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "android16-6.12": "395a8c0c88d348e9fe7c14f66a456fde4653287c"
+      },
+      "target_versions": {
+        "android12-5.10": "v2.4.0",
+        "android13-5.15": "v2.4.0",
+        "android14-6.1": "v2.4.0",
+        "android15-6.6": "v2.4.0",
+        "android16-6.12": "v2.4.0"
+      }
+    },
+    "FinaSU": {
+      "pins": {
+        "android12-5.10": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "android13-5.15": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "android14-6.1": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "android15-6.6": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "android16-6.12": "395a8c0c88d348e9fe7c14f66a456fde4653287c"
+      },
+      "target_versions": {
+        "android12-5.10": "v2.4.0",
+        "android13-5.15": "v2.4.0",
+        "android14-6.1": "v2.4.0",
+        "android15-6.6": "v2.4.0",
+        "android16-6.12": "v2.4.0"
       }
     }
   }

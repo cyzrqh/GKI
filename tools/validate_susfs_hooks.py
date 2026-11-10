@@ -38,6 +38,10 @@ DIRECT_HOOKS = HOOKS + LEGACY_HOOKS
 HOOK_PATTERN = re.compile(r"\b(" + "|".join(HOOKS) + r")\s*\(")
 SKIP_DIRECTORIES = {".git", ".repo", ".upstream", "__pycache__", "out", "dist"}
 COMPATIBILITY_MESSAGE = "请使用相互兼容的SUSFS和KernelSU版本。"
+PREINIT_GUARD = '#ifdef CONFIG_KSU_SUSFS_NATIVE_PREINIT'
+PREINIT_BLOCK = re.compile(r'(?m)^' + PREINIT_GUARD + r'[ \t]*\n'
+                          r'(?:(?![ \t]*#)[^\n]*\n)*'
+                          r'^#endif // ' + PREINIT_GUARD + r'[ \t]*$')
 
 
 @dataclass(frozen=True)
@@ -320,10 +324,18 @@ def validate_hooks(kernel_root: Path, ksu_dir: Path | None = None, *, variant: s
         raise ValueError(f"Kernel root is not a directory: {root}")
     source = (root / "common").resolve() if (root / "common").is_dir() else root
     ksu = resolve_ksu_dir(root, Path(ksu_dir) if ksu_dir is not None else None)
+    kconfig = ksu / 'Kconfig' if ksu is not None else None
+    old_preinit = (kconfig is not None and kconfig.is_file()
+                   and re.search(r'(?m)^config KSU_SUSFS_NATIVE_PREINIT\s*$',
+                                 kconfig.read_text(encoding='utf-8')) is None)
     calls: dict[str, list[Location]] = {}
     definitions: list[Definition] = []
     for path in _c_files(source, (ksu,) if ksu is not None else ()):
         text = path.read_text(encoding="utf-8", errors="replace")
+        if old_preinit and path == source / 'fs/exec.c':
+            # The verified 2.4 port emits this guard around only the two
+            # newer preinit calls. Leave all active legacy calls visible.
+            text = PREINIT_BLOCK.sub(lambda match: '\n' * match[0].count('\n'), text)
         if not any(symbol in text for symbol in DIRECT_HOOKS):
             continue
         file_calls, file_definitions = inspect_c_source(path, text, symbols=DIRECT_HOOKS)

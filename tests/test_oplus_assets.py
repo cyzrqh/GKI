@@ -267,7 +267,7 @@ class OplusAssetsTests(unittest.TestCase):
         self.assertNotIn('true', summary)
         self.assertNotIn('false', summary)
         self.assertNotIn('null', summary)
-        self.assertIn('| SUSFS | 开启 |', summary)
+        self.assertIn('| SUSFS | v2.3.0 |', summary)
         self.assertIn('| KPM | 关闭 |', summary)
         self.assertEqual('OnePlus · SukiSU 40922 开发版', (self.output / 'title.txt').read_text())
         self.assertNotIn('title.txt', hashes)

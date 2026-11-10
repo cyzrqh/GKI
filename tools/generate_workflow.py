@@ -497,24 +497,46 @@ PY
   --kernel-root "$KERNEL_ROOT" --susfs-dir "$SUSFS4KSU"
 ''',
     })
+    steps.insert(steps.index(integration) + 2, {
+        'name': '应用 SukiSU/BakaSU SUSFS 2.4 适配',
+        'if': "env.SUSFS_SOURCE_VERSION == 'v2.4.0' && (inputs.ksu_variant == 'SukiSU' || inputs.ksu_variant == 'BakaSU')",
+        'run': '''python3 "$GITHUB_WORKSPACE/tools/suki_baka_susfs24.py" --source "$KERNEL_ROOT/KernelSU" \\
+  --dependency "$SUSFS4KSU" --variant "$KSU_VARIANT"
+''',
+    })
     # The complete 2.3 port supplies the native implementations. Older flat-tree
     # shims must never overwrite them with legacy fallbacks.
     for name in ('确保 KernelSU SUSFS ABI 兼容', '补齐 SukiSU SUSFS 内联 hook 符号',
                  '最终修复 SukiSU/BakaSU 源码兼容'):
         step = step_named(steps, name)
-        step['if'] = "env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (" + step['if'] + ')'
+        step['if'] = "env.SUSFS_COMPAT_VERSION != 'v2.3.0' && env.SUSFS_SOURCE_VERSION != 'v2.4.0' && (" + step['if'] + ')'
     config = step_named(steps, '添加 SUSFS 配置')
     legacy_guard = 'if [ "${{ inputs.ksu_variant }}" == "SukiSU" ]; then'
     if config['run'].count(legacy_guard) != 1:
         raise ValueError('Upstream SUSFS configuration guard changed')
     config['run'] = config['run'].replace(
-        legacy_guard, 'if [ "${SUSFS_COMPAT_VERSION:-}" != v2.3.0 ] && [ "${{ inputs.ksu_variant }}" == "SukiSU" ]; then')
+        legacy_guard, 'if [ "${SUSFS_COMPAT_VERSION:-}" != v2.3.0 ] && [ "${SUSFS_SOURCE_VERSION:-}" != v2.4.0 ] && [ "${{ inputs.ksu_variant }}" == "SukiSU" ]; then')
     config['run'] += '''
-if [ "${SUSFS_COMPAT_VERSION:-}" = v2.3.0 ]; then
+if [ "${SUSFS_COMPAT_VERSION:-}" = v2.3.0 ] || [ "${SUSFS_SOURCE_VERSION:-}" = v2.4.0 ]; then
   # The real preinit runner requires installed target UAPI headers.
   echo 'CONFIG_HEADERS_INSTALL=y' >> "$DEFCONFIG"
 fi
+if [ "${SUSFS_SOURCE_VERSION:-}" = v2.4.0 ] && [ "$KSU_VARIANT" = FinaSU ]; then
+  sed -i '/^CONFIG_KSU_HOOK_SUSFS_INLINE=/d; /^# CONFIG_KSU_HOOK_SUSFS_INLINE is not set$/d' "$DEFCONFIG"
+  echo 'CONFIG_KSU_HOOK_SUSFS_INLINE=y' >> "$DEFCONFIG"
+fi
 '''
+    patch_susfs = step_named(steps, '应用 SUSFS 补丁')
+    patch_susfs['run'] = '''if [ "${SUSFS_SOURCE_VERSION:-}" = v2.4.0 ]; then
+  set -euo pipefail
+  python3 "$GITHUB_WORKSPACE/tools/susfs24_kernel_patch.py" --kernel-root "$KERNEL_ROOT/common" \\
+    --susfs-dir "$SUSFS4KSU" --target "$ABK_ANDROID_VERSION-$ABK_KERNEL_VERSION"
+  python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_headers.py" --kernel-root "$KERNEL_ROOT"
+  python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_inode_compat.py" --kernel-root "$KERNEL_ROOT"
+  python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_map_compat.py" --kernel-root "$KERNEL_ROOT"
+  exit 0
+fi
+''' + patch_susfs['run']
     android16 = step_named(steps, '修复 SukiSU/BakaSU android16-6.12 源码兼容')
     old = 'super_access_c = ksu_dir / "kpm/super_access.c"'
     if android16['run'].count(old) != 1:
@@ -634,7 +656,7 @@ python3 "$GITHUB_WORKSPACE/tools/apply_kpm_patch.py" patch \\
                  'META_KSU_VERSION_CODE': '${{ env.MANAGER_VERSION_CODE }}',
                  'META_KSU_VERSION_NAME': '${{ env.MANAGER_VERSION_NAME }}',
                  'META_ENABLE_SUSFS': '${{ inputs.enable_susfs }}',
-                 'META_EXPECTED_SUSFS_VERSION': '${{ env.SUSFS_COMPAT_VERSION }}',
+                 'META_EXPECTED_SUSFS_VERSION': '${{ env.SUSFS_SOURCE_VERSION || env.SUSFS_COMPAT_VERSION }}',
                  'ARTIFACT_MODE': '${{ inputs.artifact_mode }}'},
          'run': '''python3 tools/capture_build_metadata.py --kernel-root "$KERNEL_ROOT" \\
   --image "$GITHUB_WORKSPACE/Image" --output release-ready/kernel.json

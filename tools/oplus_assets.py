@@ -31,6 +31,7 @@ from oplus_mtk_memory import validate_mtk_memory_provenance, verify_mtk_memory_r
 from validate_arm64_image import validate_image
 from oplus_f2fs_compat import verify_f2fs_compat, validate_f2fs_provenance
 from oplus_scheduler_compat import verify_scheduler_compat, validate_scheduler_provenance
+from shared_susfs_source import read_json, validate_sources
 
 
 MEMBER = 'META-INF/oplus-kernel.json'
@@ -313,12 +314,19 @@ def package(profile: dict, kernel_root: Path, image_path: Path, template: Path, 
     enable_susfs = os.environ.get('ENABLE_SUSFS', 'true').lower()
     if enable_susfs not in ('true', 'false'):
         raise AssetError('ENABLE_SUSFS must be the actual boolean menu selection')
+    expected_susfs = 'v2.3.0'
+    if enable_susfs == 'true' and os.environ.get('SUSFS_SOURCES'):
+        target = profile['android_version'] + '-' + profile['kernel_version']
+        selected = validate_sources(read_json(os.environ['SUSFS_SOURCES'])).get(target)
+        if selected is None or selected['version'] not in ('v2.3.0', 'v2.4.0'):
+            raise AssetError('OPlus packaging requires a supported prepared SUSFS identity for ' + target)
+        expected_susfs = selected['version']
     context = {'file': filename(profile, variant), 'android_version': profile['android_version'],
                'kernel_version': profile['kernel_version'], 'sub_level': profile['sub_level'],
                'ksu_variant': variant, 'ksu_branch': os.environ.get('KSU_BRANCH', ''), 'ksu_ref': reference,
                'ksu_version_code': os.environ.get('MANAGER_VERSION_CODE', ''),
                'ksu_version_name': os.environ.get('MANAGER_VERSION_NAME', ''),
-               'enable_susfs': enable_susfs, 'expected_susfs_version': 'v2.3.0'}
+               'enable_susfs': enable_susfs, 'expected_susfs_version': expected_susfs}
     metadata = capture(kernel_root, image_path, context)
     metadata.pop('os_patch_level', None)
     if metadata['features']['susfs'] != (enable_susfs == 'true'):
@@ -501,8 +509,9 @@ def verify_image(document: dict, image: bytes, payload: bytes | None) -> None:
         if type(document['features'].get(key)) is not type(value) or document['features'][key] != value:
             raise AssetError('OPlus reported feature differs from actual Image: ' + key)
     if actual['susfs']:
-        if document.get('susfs_version') != 'v2.3.0' or b'v2.3.0' not in image:
-            raise AssetError('OPlus Image does not contain the required SUSFS v2.3.0')
+        version = document.get('susfs_version')
+        if version not in ('v2.3.0', 'v2.4.0') or version.encode('ascii') not in image:
+            raise AssetError('OPlus Image does not contain the recorded supported SUSFS version')
     elif document.get('susfs_version') is not None:
         raise AssetError('OPlus reports SUSFS for a kernel where it is disabled')
     if payload is not None:
@@ -631,7 +640,10 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
               'bbg': 'BBG', 'zram': 'ZRAM', 'lz4kd': 'LZ4KD', 'kpm': 'KPM', 'ntsync': 'NTsync',
               'rekernel': 'Re-Kernel', 'virtualization': '虚拟化', 'ddk': 'DDK'}
     for field, label in labels.items():
-        values = {feature_label(row['features'].get(field)) for row in records}
+        if field == 'susfs':
+            values = {row['susfs_version'] or feature_label(False) for row in records}
+        else:
+            values = {feature_label(row['features'].get(field)) for row in records}
         lines.append('| ' + label + ' | ' + ', '.join(sorted(values)).replace('|', '\\|') + ' |')
     lines += ['', '## 适用构建范围', '', '| 平台 | 完整内核 | 原生 release | 系统源码依据 |', '|---|---|---|---|']
     for row in sorted(records, key=lambda item: (catalog.order(item['profile']), item['ksu_variant'])):

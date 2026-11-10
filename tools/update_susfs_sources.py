@@ -19,7 +19,9 @@ from urllib.parse import quote
 import uuid
 
 from check_official_updates import TARGETS, gitlab_head
+from manager_variants import MANAGERS as ALL_MANAGERS
 from official_susfs_archive import API, MAX_JSON
+from pin_build_dependencies import CompatibilityError, target_version
 from susfs_sync_transport import RunMetadataCache, request_bytes
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -67,7 +69,7 @@ def normalize_receipt(document):
             or type(document['schema_version']) is not int or document['schema_version'] != 1
             or document['source'] != SOURCE or document['policy'] != POLICY
             or not isinstance(document['candidates'], dict) or set(document['candidates']) != set(TARGETS)
-            or not isinstance(document['pins'], dict) or set(document['pins']) != set(MANAGERS)):
+            or not isinstance(document['pins'], dict) or set(document['pins']) not in (set(MANAGERS), set(ALL_MANAGERS))):
         raise SusfsUpdateError('Invalid SUSFS synchronization receipt')
     for target, item in document['candidates'].items():
         if (not isinstance(item, dict) or set(item) != {'ref', 'version', 'build_tree_sha256'}
@@ -104,19 +106,24 @@ def configured_pins(profile_document, manager_pins_document):
             raise KeyError('version')
         if manager_pins_document.get('version') != suki['version']:
             raise SusfsUpdateError('SUSFS compatibility profiles disagree on their version')
-        result = {'SukiSU': {target: _sha(suki['pins'][target]) for target in TARGETS}}
-        for variant in MANAGERS[1:]:
-            result[variant] = {target: _sha(manager_pins_document['managers'][variant]['pins'][target]) for target in TARGETS}
-        return result, suki['version']
-    except (KeyError, TypeError, AttributeError):
+        profiles = {'SukiSU': suki, **manager_pins_document['managers']}
+        if set(profiles) not in (set(MANAGERS), set(ALL_MANAGERS)) or profiles['SukiSU'] is not suki:
+            raise KeyError('managers')
+        references, versions = {}, {}
+        for variant, profile in profiles.items():
+            references[variant] = {target: _sha(profile['pins'][target]) for target in TARGETS}
+            versions[variant] = {target: target_version(profile, suki['version'], target) for target in TARGETS}
+        return references, versions
+    except (KeyError, TypeError, AttributeError, CompatibilityError):
         raise SusfsUpdateError('The selected SUSFS compatibility pin inventory is incomplete') from None
 
 
 def verify_receipt_pins(receipt, profile_document, manager_pins_document):
     receipt = normalize_receipt(receipt)
     actual, _ = configured_pins(profile_document, manager_pins_document)
-    if any(receipt['pins'][variant][target]['selected_ref'] != actual[variant][target]
-           for variant in MANAGERS for target in TARGETS):
+    if set(receipt['pins']) != set(actual) or any(
+            receipt['pins'][variant][target]['selected_ref'] != actual[variant][target]
+            for variant in actual for target in TARGETS):
         raise SusfsUpdateError('SUSFS receipt differs from the effective compatibility pins')
     return receipt
 
@@ -170,7 +177,7 @@ def plan(sources, profile_document, manager_pins_document, *, fetch=None):
     if not isinstance(sources, dict) or set(sources) != set(TARGETS):
         raise SusfsUpdateError('SUSFS update must contain all five official target commits')
     sources = {target: _sha(sources[target]) for target in TARGETS}
-    pins, version = configured_pins(profile_document, manager_pins_document)
+    pins, versions = configured_pins(profile_document, manager_pins_document)
     references = sorted(set(sources.values()) | {value for rows in pins.values() for value in rows.values()})
     # Stop scheduling the remaining commits after a terminal rate-limit or
     # metadata failure, instead of draining the whole queued inventory first.
@@ -189,6 +196,7 @@ def plan(sources, profile_document, manager_pins_document, *, fetch=None):
         receipt['pins'][variant] = {}
         for target, old_ref in targets.items():
             old, candidate = metadata[old_ref], metadata[sources[target]]
+            version = versions[variant][target]
             if old['version'] != version:
                 raise SusfsUpdateError('Effective SUSFS source version differs from its compatibility profile')
             same = old['build_tree_sha256'] == candidate['build_tree_sha256'] and candidate['version'] == version

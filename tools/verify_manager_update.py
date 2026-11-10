@@ -88,7 +88,9 @@ def fetch_reference(repository: Path, reference: str) -> int:
     return int(count)
 
 
-def check_source(repository: Path, variant: str, reference: str, count: int) -> dict:
+def check_source(repository: Path, variant: str, reference: str, count: int, *,
+                 susfs24_pins: dict[str, str] | None = None, legacy_susfs: bool = True,
+                 susfs24_cache: dict | None = None) -> dict:
     with temporary_directory(repository.parent, '.manager-compatibility-') as temporary:
         source = temporary / 'KernelSU'
         git(temporary, 'clone', '--quiet', '--shared', '--no-checkout', str(repository), str(source))
@@ -99,16 +101,27 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
         if _gradle_version(gradle, count, variant) != code:
             raise ManagerUpdateError('Official manager and kernel numeric version formulas disagree')
         try:
+            checked24 = ()
+            if susfs24_pins:
+                from susfs24_manager_preflight import fetch_pins, manager_inputs, verify_inputs
+                inputs_cache = {} if susfs24_cache is None else susfs24_cache
+                identity = tuple(sorted(susfs24_pins.items()))
+                if identity not in inputs_cache:
+                    inputs_cache[identity] = manager_inputs(source, fetch_pins(source, susfs24_pins))
+                checked24 = verify_inputs(source, reference, variant, inputs_cache[identity])
             if variant == 'SukiSU':
                 from prepare_manager_icons import prepare_manager_icons
                 prepare_manager_icons(source)
                 from apply_susfs23 import apply_reviewed_port, PATCH_PATH
-                apply_reviewed_port(source, PATCH_PATH, allow_variants=True)
+                if legacy_susfs:
+                    apply_reviewed_port(source, PATCH_PATH, allow_variants=True)
                 from configure_sukisu_kpm_ui import configure as configure_kpm_ui
                 configure_kpm_ui(source)
-                checks = ['SUSFS 2.3 完整接入及原生生命周期', 'KPM 原生接口保留',
+                checks = ['KPM 原生接口保留',
                           '管理器图标依赖及 Kotlin 模块索引', 'KPM 原生页面授权门禁',
                           '管理器/内核版本公式一致']
+                if legacy_susfs:
+                    checks.append('SUSFS 2.3 完整接入及原生生命周期')
             elif variant == 'BakaSU':
                 from restore_bakasu_kpm import restore_bakasu_kpm, verify_bakasu_kpm_port
                 from ensure_bakasu_symbol_lookup import validate_native_symbol_lookup
@@ -124,7 +137,7 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
                 from additional_manager_kpm import port, verify, with_susfs
                 port(source, reference, variant)
                 verify(source, reference, variant)
-                if variant in ('KernelSU-Next', 'KernelSU', 'KowSU'):
+                if legacy_susfs and variant in ('KernelSU-Next', 'KernelSU', 'KowSU'):
                     name = {'KernelSU-Next': 'next-susfs23', 'KernelSU': 'official-susfs23',
                             'KowSU': 'kow-susfs23'}[variant]
                     if not (source / 'kernel/preinit/preinit.c').is_file():
@@ -132,8 +145,11 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
                     with_susfs(source, variant, lambda: apply_next_port(source, name=name))
                 configure(temporary, '827', 'a' * 64, manager_profile(variant)['package'], str(code), variant=variant)
                 checks = ['管理器/内核完整历史版本一致', '官方包名与固定自定义证书绑定接口',
-                          'KPM ABI-2 内核接口、内置页面及持久加载源码接线',
-                          '完整 SUSFS 适配']
+                          'KPM ABI-2 内核接口、内置页面及持久加载源码接线']
+                if legacy_susfs and variant in ('KernelSU-Next', 'KernelSU', 'KowSU'):
+                    checks.append('完整 SUSFS 2.3 适配')
+            if checked24:
+                checks.append('SUSFS 2.4.0 管理器配套：' + '、'.join(checked24))
             from manager_ui_defaults import apply_defaults
             apply_defaults(source, variant)
             checks.append('管理器更新默认关闭，模块更新独立保留')
@@ -147,10 +163,11 @@ def check_source(repository: Path, variant: str, reference: str, count: int) -> 
 
 
 def validate_manager_snapshot(snapshot: dict, *, cache: Path, report_path: Path | None = None,
-                              before_snapshot: dict | None = None) -> dict:
+                              before_snapshot: dict | None = None, susfs_configuration: tuple | None = None) -> dict:
     snapshot = validate_snapshot(snapshot)
     previous = validate_snapshot(before_snapshot) if before_snapshot is not None else None
     rows = []
+    susfs24_cache = {}
     for variant in MANAGERS:
         record = snapshot.get(variant.lower())
         if record is None:
@@ -180,7 +197,16 @@ def validate_manager_snapshot(snapshot: dict, *, cache: Path, report_path: Path 
                                 else {old.get('head'), (old.get('development') or {}).get('head')}
                                 if tier == '测试版' else set())
                     row['changed'] = reference not in old_refs
-                result = check_source(repository, variant, reference, count)
+                selected = {}
+                if susfs_configuration is not None and variant in susfs_configuration[0]:
+                    from pin_build_dependencies import SUSFS_24
+                    pins, versions = susfs_configuration
+                    pins24 = {target: pins[variant][target] for target, version in versions[variant].items()
+                              if version == SUSFS_24}
+                    if pins24:
+                        selected = {'susfs24_pins': pins24, 'legacy_susfs': len(pins24) < len(pins[variant]),
+                                    'susfs24_cache': susfs24_cache}
+                result = check_source(repository, variant, reference, count, **selected)
                 row.update(result, status='passed', reason='配套源码验证通过，未编译 APK 或内核')
             except (OSError, ValueError, RuntimeError) as error:
                 row.update(status='failure', reason=str(error)[:1500])

@@ -12,7 +12,7 @@ import sys
 import time
 
 from manager_variants import MANAGERS
-from pin_build_dependencies import custom_configuration, selected_pin
+from pin_build_dependencies import CompatibilityError, SUSFS_24, custom_configuration, selected_pin
 from snapshot_ksu_source import (BUNDLE_NAME, ROOT, GitCommandError, SnapshotError, check_official_source,
                                 expected_commit, file_digest, git, source_identity,
                                 temporary_directory)
@@ -169,11 +169,11 @@ def prepare_sources(source: Path, matrix: dict, reference: str, *, root: Path = 
     check_official_source(source, variant)
     before = source_identity(source, reference)
     targets = matrix_targets(matrix)
-    custom, requested_refs, refspecs = {}, {}, []
+    custom, pins, requested_refs, refspecs = {}, {}, {}, []
     for target in targets:
-        pin = (selected_pin(root, variant, reference, tier, target, manager_source=source)
-               if variant in ('KernelSU-Next', 'KernelSU', 'KowSU') else
-               selected_pin(root, variant, reference, tier, target))
+        pin = selected_pin(root, variant, reference, tier, target, manager_source=source)
+        if pin is not None:
+            pins[target] = pin
         requested = configured_custom_ref(root, target)
         if requested is not None:
             custom[target] = requested
@@ -202,6 +202,13 @@ def prepare_sources(source: Path, matrix: dict, reference: str, *, root: Path = 
                 raise SnapshotError('Custom SUSFS prefix is missing or ambiguous in its official branch history')
             git(source, 'update-ref', NAMESPACE + target, candidates[0])
         sources = {target: metadata(source, target, NAMESPACE + target) for target in targets}
+    for target, (ref, version) in pins.items():
+        if sources[target]['ref'] != ref or sources[target]['version'] != version:
+            raise SnapshotError('Official SUSFS identity differs from the approved build pin for ' + target)
+    if not custom_configuration(root):
+        for target, item in sources.items():
+            if item['version'] == SUSFS_24 and target not in pins:
+                raise SnapshotError(f'{variant} {target} SUSFS {SUSFS_24} 尚未通过配套验证，不能采用浮动的官方分支')
     if source_identity(source, reference) != before:
         raise SnapshotError('Preparing SUSFS changed the selected manager source identity')
     check_official_source(source, variant)
@@ -312,8 +319,11 @@ def main(argv=None):
         else:
             item = restore_source(args.input, args.output, args.expected_ref, args.target,
                                   read_json(args.expected_sources), variant=args.variant)
+            if os.environ.get('GITHUB_ENV'):
+                with Path(os.environ['GITHUB_ENV']).open('a', encoding='utf-8', newline='\n') as output:
+                    output.write('SUSFS_SOURCE_VERSION=' + item['version'] + '\n')
             print('Restored official SUSFS offline: ' + args.target + ' ' + item['ref'])
-    except (OSError, ValueError, UnicodeError) as error:
+    except (OSError, ValueError, UnicodeError, CompatibilityError) as error:
         print('::error::Shared SUSFS source preparation/restoration failed: ' + str(error), file=sys.stderr)
         return 1
     return 0

@@ -26,6 +26,7 @@ END_GUARD = f'#endif // CONFIG_{OPTION}\n'
 SETTER = 'susfs_set_priority_uid_filter'
 PARSER = 'susfs_parse_priority_app_strings'
 COMMAND = 'CMD_SUSFS_SET_PRIORITY_UID_FILTER'
+CORE_INIT = 'kernel/core/init.c'
 DISPATCH = 'kernel/supercall/dispatch.c'
 OBSERVER = 'kernel/manager/pkg_observer.c'
 KCONFIG = 'kernel/Kconfig'
@@ -184,6 +185,18 @@ def configure(text: str, modern: bool) -> str:
     return text
 
 
+def remove_unlinked_lsm_init(text: str) -> str:
+    """Drop the stray lifecycle call left by one reviewed direct-hook port."""
+    code = strip_comments_and_literals(text)
+    calls = re.findall(r'\bksu_lsm_hook_(?:init|exit)\s*\(', code)
+    if not calls:
+        return text
+    anchor = '    ksu_feature_init();\n\n    ksu_lsm_hook_init();\n    ksu_avc_spoof_init();\n'
+    if calls != ['ksu_lsm_hook_init('] or code.count(anchor) != 1:
+        raise ValueError('Review the changed SukiSU direct-hook lifecycle')
+    return text.replace(anchor, anchor.replace('    ksu_lsm_hook_init();\n', ''), 1)
+
+
 def integrate(source: Path, dependency: Path, variant: str) -> tuple[Path, ...]:
     """Apply 2.4 wiring after snapshot preparation and any BakaSU KPM restoration."""
     if variant not in ('SukiSU', 'BakaSU'):
@@ -202,6 +215,10 @@ def integrate(source: Path, dependency: Path, variant: str) -> tuple[Path, ...]:
         KCONFIG: configure(original[KCONFIG], native_preinit(source, variant)),
         POLICY: policy_hooks(original[POLICY], baka_layout=variant == 'BakaSU'),
     }
+    if variant == 'SukiSU':
+        # The verified SUSFS direct-hook port does not link hook/lsm_hook.o.
+        original[CORE_INIT] = read(source, CORE_INIT)
+        updated[CORE_INIT] = remove_unlinked_lsm_init(original[CORE_INIT])
     changed = []
     for relative, text in updated.items():
         if text != original[relative]:

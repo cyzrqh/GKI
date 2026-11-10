@@ -140,6 +140,22 @@ void fallback(void) {
         with self.assertRaisesRegex(ValueError, 'legacy SUSFS hook provider'):
             compat.native_preinit(self.root, 'BakaSU')
 
+    def test_suki_direct_hooks_keep_avc_lifecycle_without_unlinked_lsm_init(self):
+        original = '''int __init kernelsu_init(void)
+{
+    ksu_feature_init();
+
+    ksu_lsm_hook_init();
+    ksu_avc_spoof_init();
+    return 0;
+}
+'''
+        expected = original.replace('    ksu_lsm_hook_init();\n', '')
+        self.assertEqual(expected, compat.remove_unlinked_lsm_init(original))
+        self.assertEqual(expected, compat.remove_unlinked_lsm_init(expected))
+        with self.assertRaisesRegex(ValueError, 'direct-hook lifecycle'):
+            compat.remove_unlinked_lsm_init(original.replace('ksu_avc_spoof_init();', 'ksu_lsm_hook_exit();'))
+
 
 if __name__ == '__main__':
     unittest.main()

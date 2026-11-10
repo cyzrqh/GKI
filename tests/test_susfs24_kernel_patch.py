@@ -4,7 +4,8 @@ import unittest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools'))
 from snapshot_ksu_source import temporary_directory
-from susfs24_kernel_patch import EXPORTS, adapt_header, apply_susfs24, guard_preinit, patch_sections
+from susfs24_kernel_patch import (EXPORTS, LEGACY_POLICY, POLICY_ARGS, POLICY_SERVICES, adapt_header,
+                                  apply_susfs24, guard_preinit, patch_sections, restore_legacy_policy_services)
 
 
 def section(path, hunk):
@@ -92,6 +93,40 @@ class Susfs24KernelPatchTests(unittest.TestCase):
                         section('fs/open.c', '@@ -1 +1 @@\n-a\n+b\n').replace('+++ b/fs/open.c', '+++ b/fs/other.c')):
             with self.assertRaises(ValueError):
                 patch_sections(invalid)
+
+    def test_stable_policy_bridge_preserves_native_functions_and_needs_matching_consumer(self):
+        with temporary_directory(Path(__file__).parent, '.susfs24-policy-') as directory:
+            common = directory / 'common'
+            manager = directory / 'KernelSU'
+            services = common / POLICY_SERVICES
+            hide = manager / 'kernel/feature/selinux_hide.c'
+            services.parent.mkdir(parents=True)
+            hide.parent.mkdir(parents=True)
+            native = []
+            consumer = []
+            for name, tail, arguments in LEGACY_POLICY:
+                params = f'{POLICY_ARGS}, {tail}'
+                native.append(f'static void {name}({params})\n{{\n\tnative_{name}();\n}}\n')
+                consumer.append(f'extern void {name}_fn({params});\n'
+                                f'void verify_{name}({params})\n{{\n'
+                                f'    {name}_fn(policydb, scontext, tcontext, tclass, {arguments});\n}}\n')
+            original = ''.join(native).encode()
+            services.write_bytes(original)
+            restore_legacy_policy_services(common, manager)
+            self.assertEqual(original, services.read_bytes())
+
+            hide.write_bytes(''.join(consumer).replace('u16 tclass', 'u32 tclass').encode())
+            with self.assertRaisesRegex(ValueError, 'ABI differ'):
+                restore_legacy_policy_services(common, manager)
+            self.assertEqual(original, services.read_bytes())
+
+            hide.write_bytes(''.join(consumer).encode())
+            restore_legacy_policy_services(common, manager)
+            result = services.read_text(encoding='utf-8')
+            for name, tail, arguments in LEGACY_POLICY:
+                self.assertIn(f'void {name}_fn({POLICY_ARGS}, {tail})\n{{\n'
+                              f'\t{name}(policydb, scontext, tcontext, tclass, {arguments});\n}}', result)
+                self.assertIn(f'\tnative_{name}();', result)
 
 
 if __name__ == '__main__':

@@ -13,7 +13,9 @@ import sys
 
 from checked_kernel_patch import patch_checked
 from historical_susfs23 import prepared_source, restored_source, validate_restored
+from oplus_compat import function_text
 from snapshot_ksu_source import temporary_directory
+from validate_susfs_hooks import strip_comments_and_literals
 
 
 TARGETS = ('android12-5.10', 'android13-5.15', 'android14-6.1',
@@ -41,6 +43,12 @@ OPTIONAL_CONTEXT = {
 }
 SECTION = re.compile(r'(?m)^diff --git a/([a-zA-Z0-9_./-]+) b/\1\n')
 HUNK = re.compile(r'(?m)^@@ -(\d+),(\d+) \+(\d+),(\d+) @@([^\n]*)\n')
+POLICY_SERVICES = 'security/selinux/ss/services.c'
+POLICY_ARGS = 'struct policydb *policydb, struct context *scontext, struct context *tcontext, u16 tclass'
+LEGACY_POLICY = (
+    ('security_dump_masked_av', 'u32 permissions, const char *reason', 'permissions, reason'),
+    ('context_struct_compute_av', 'struct av_decision *avd, struct extended_perms *xperms', 'avd, xperms'),
+)
 
 
 def patch_sections(patch: str) -> dict[str, str]:
@@ -120,6 +128,40 @@ def guard_preinit(section: str) -> str:
     return section.replace(opening, '+' + guard + '\n').replace(closing, '+#endif // ' + guard + '\n')
 
 
+def restore_legacy_policy_services(common: Path, manager: Path) -> None:
+    hide = manager / 'kernel/feature/selinux_hide.c'
+    if not hide.exists() and not hide.is_symlink():
+        return
+    code = strip_comments_and_literals(source_path(manager, 'kernel/feature/selinux_hide.c').read_text(encoding='utf-8'))
+    if not any(re.search(r'\bextern\s+void\s+' + name + r'_fn\s*\(', code) for name, _, _ in LEGACY_POLICY):
+        return
+    # The reviewed stable ports use the original native policy on a supplied
+    # policydb. The v2.4 live-policy spoof helper has a different contract.
+    from additional_manager_integration import verify_stable_policy_bridge
+    verify_stable_policy_bridge(manager)
+    path = source_path(common, POLICY_SERVICES)
+    text = path.read_bytes().decode('utf-8')
+    services = strip_comments_and_literals(text)
+    manager_code = ' '.join(code.split())
+    updated = text
+    for name, tail, arguments in LEGACY_POLICY:
+        native = function_text(text, name)
+        signature = native[:native.index('{')].strip()
+        if ' '.join(signature.split()) != f'static void {name}({POLICY_ARGS}, {tail})':
+            raise ValueError(f'Review changed native SELinux service signature: {name}')
+        declaration = signature.replace(f'static void {name}(', f'void {name}_fn(', 1)
+        if f'extern {" ".join(declaration.split())};' not in manager_code:
+            raise ValueError(f'Legacy SUSFS manager and native SELinux ABI differ: {name}_fn')
+        wrapper = ('\n\n#ifdef CONFIG_KSU_SUSFS\n' + declaration + ';\n'
+                   + declaration + '\n{\n'
+                   + f'\t{name}(policydb, scontext, tcontext, tclass, {arguments});\n'
+                   + '}\n#endif // #ifdef CONFIG_KSU_SUSFS')
+        if text.count(native) != 1 or re.search(r'\b' + name + r'_fn\b', services):
+            raise ValueError(f'Conflicting native SUSFS policy service: {name}_fn')
+        updated = updated.replace(native, native + wrapper, 1)
+    path.write_bytes(updated.encode('utf-8'))
+
+
 def apply_susfs24(kernel_root: Path, susfs_dir: Path, target: str, *,
                   apply_patch: Callable[[Path, Path], None] | None = None) -> None:
     if target not in TARGETS or kernel_root.is_symlink() or susfs_dir.is_symlink():
@@ -168,6 +210,8 @@ def apply_susfs24(kernel_root: Path, susfs_dir: Path, target: str, *,
         staged_patch = temporary / patch_name
         staged_patch.write_bytes(''.join(sections.values()).encode('utf-8'))
         apply_patch(stage, staged_patch)
+        if target in ('android15-6.6', 'android16-6.12'):
+            restore_legacy_policy_services(stage, kernel_root.parent / 'KernelSU')
         if target in LEGACY_FDINFO:
             text = fdinfo.read_bytes().decode('utf-8')
             if native_block is not None:

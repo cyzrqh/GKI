@@ -66,7 +66,7 @@ def adapt_task_mmu(common: Path, patch_bytes: bytes) -> bytes:
     def guard(match):
         indent, argument = match[1], match[2]
         return ('#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' + indent
-                + 'if (!vma->vm_file || !SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
+                + 'if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))\n'
                 + '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' + indent + '\t'
                 + 'smap_gather_stats(vma, &mss, ' + argument + ');')
     changed_rollup = re.sub(pattern, guard, rollup)

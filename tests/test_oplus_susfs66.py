@@ -42,7 +42,7 @@ class OPlusSusfs66Tests(unittest.TestCase):
         self.assertNotIn(b' #include <trace/hooks/fs.h>\n', adapted)
         self.assertIn(b' #include <trace/hooks/blk.h>\n', adapted)
         self.assertIn(b' \tstruct vm_area_struct *vma = get_data_vma(v);', adapted)
-        self.assertIn(b'if (!vma->vm_file || !SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))', adapted)
+        self.assertIn(b'if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))', adapted)
         self.assertNotIn(b'+bypass_orig_flow:', adapted)
         self.assertEqual(self.original, self.task.read_text(encoding='utf-8'))
 

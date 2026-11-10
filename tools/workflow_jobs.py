@@ -29,7 +29,8 @@ def cleanup_history_job():
              'env': {'GH_TOKEN': '${{ github.token }}'},
              'run': '''python3 tools/cleanup_workflow_runs.py \\
   --repo "$GITHUB_REPOSITORY" --workflow all \\
-  --keep 2 --exclude-workflow cleanup-build-history.yml --execute --summary "$GITHUB_STEP_SUMMARY"
+  --keep 2 --exclude-workflow cleanup-build-history.yml --protect-workflow prebuild-manager-apks.yml \\
+  --execute --summary "$GITHUB_STEP_SUMMARY"
 '''},
         ],
     }

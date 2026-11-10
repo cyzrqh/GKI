@@ -261,6 +261,7 @@ class CleanupPlan:
     preserved: dict[int, str] = field(default_factory=dict)
     excluded_workflow_ids: list[int] = field(default_factory=list)
     release_run_ids: list[int] = field(default_factory=list)
+    protected_workflow_run_ids: list[int] = field(default_factory=list)
 
 
 def preservation_reason(run, current_run_id=None):
@@ -272,7 +273,7 @@ def preservation_reason(run, current_run_id=None):
 
 
 def plan_runs(runs, *, keep=DEFAULT_KEEP, current_run_id=None, workflow_id=None,
-              excluded_workflow_ids=(), release_run_ids=()):
+              excluded_workflow_ids=(), release_run_ids=(), protected_workflow_run_ids=()):
     """Release runs are extra protection and never consume ordinary success slots."""
     if type(keep) is not int or keep < 1:
         raise CleanupError('At least one successful workflow run must be retained')
@@ -290,6 +291,10 @@ def plan_runs(runs, *, keep=DEFAULT_KEEP, current_run_id=None, workflow_id=None,
             or any(not positive_id(value) for value in release_run_ids)):
         raise CleanupError('Release source run IDs must be valid positive integers')
     published = set(release_run_ids)
+    if (not isinstance(protected_workflow_run_ids, (list, tuple, set, frozenset))
+            or any(not positive_id(value) for value in protected_workflow_run_ids)):
+        raise CleanupError('Protected workflow runs must have valid positive IDs')
+    protected = set(protected_workflow_run_ids)
     seen, ordered = set(), []
     for run in runs:
         created = validate_run(run, workflow_id)
@@ -300,19 +305,20 @@ def plan_runs(runs, *, keep=DEFAULT_KEEP, current_run_id=None, workflow_id=None,
     ordered.sort(key=lambda item: (item[0], item[1]), reverse=True)
     successful = [run_id for _, run_id, run in ordered
                   if run['status'] == 'completed' and run['conclusion'] == 'success'
-                  and run['workflow_id'] not in excluded and run_id not in published]
+                  and run['workflow_id'] not in excluded and run_id not in published and run_id not in protected]
     kept_ids = successful[:keep]
     kept = set(kept_ids)
     candidates, preserved = [], {}
     for _, run_id, run in ordered:
         if run_id in kept:
             continue
-        reason = 'published release' if run_id in published else preservation_reason(run, current_run_id)
+        reason = ('protected workflow' if run_id in protected else
+                  'published release' if run_id in published else preservation_reason(run, current_run_id))
         if reason:
             preserved[run_id] = reason
         else:
             candidates.append(run_id)
-    return CleanupPlan(workflow_id, kept_ids, candidates, preserved, sorted(excluded), sorted(published))
+    return CleanupPlan(workflow_id, kept_ids, candidates, preserved, sorted(excluded), sorted(published), sorted(protected))
 
 
 @dataclass
@@ -339,13 +345,36 @@ class CleanupReport:
                 'preserved': self.plan.preserved if self.plan else {},
                 'excluded_workflow_ids': self.plan.excluded_workflow_ids if self.plan else [],
                 'release_run_ids': self.plan.release_run_ids if self.plan else [],
+                'protected_workflow_run_ids': self.plan.protected_workflow_run_ids if self.plan else [],
                 'candidate_ids': candidates, 'deleted_ids': self.deleted_ids, 'gone_ids': self.gone_ids,
                 'remaining_candidate_ids': [value for value in candidates if value not in finished_ids],
                 'error': self.error}
 
 
+def protected_runs(client, runs, workflow):
+    if workflow is None:
+        return set()
+    validate_workflow(workflow)
+    if workflow == 'all':
+        raise CleanupError('Only one exact APK workflow can be protected')
+    metadata = client.request('/actions/workflows/' + quote(workflow, safe=''))
+    if not isinstance(metadata, dict) or not positive_id(metadata.get('id')):
+        raise CleanupError('Protected workflow metadata is missing a valid ID')
+    path = f'{client.repository}/.github/workflows/{workflow}'.casefold()
+    protected = {run['id'] for run in runs if run['workflow_id'] == metadata['id']}
+    # Preserve bootstrap runs from when the APK workflow ran as a push-only
+    # job within the upstream checker. Its pinned path is reported by GitHub.
+    for run in runs:
+        references = run.get('referenced_workflows')
+        if run.get('event') == 'push' and isinstance(references, list) and any(
+                isinstance(item, dict) and isinstance(item.get('path'), str)
+                and item['path'].partition('@')[0].casefold() == path for item in references):
+            protected.add(run['id'])
+    return protected
+
+
 def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run_id=None,
-            execute=False, report=None, exclude_workflow=DEFAULT_EXCLUDE_WORKFLOW):
+            execute=False, report=None, exclude_workflow=DEFAULT_EXCLUDE_WORKFLOW, protect_workflow=None):
     report = report if report is not None else CleanupReport(client.repository, workflow, keep, execute)
     excluded = []
     if exclude_workflow is not None:
@@ -357,9 +386,11 @@ def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run
             raise CleanupError('Excluded workflow metadata is missing a valid ID')
         excluded.append(metadata['id'])
     workflow_id, runs = fetch_workflow_runs(client, workflow)
+    protected = protected_runs(client, runs, protect_workflow)
     release_ids = fetch_release_run_ids(client, runs)
     report.plan = plan_runs(runs, keep=keep, current_run_id=current_run_id, workflow_id=workflow_id,
-                            excluded_workflow_ids=excluded, release_run_ids=release_ids)
+                            excluded_workflow_ids=excluded, release_run_ids=release_ids,
+                            protected_workflow_run_ids=protected)
     if execute:
         original = {run['id']: run for run in runs}
         for run_id in list(report.plan.candidate_ids):
@@ -382,7 +413,8 @@ def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run
             finished = set(report.deleted_ids + report.gone_ids)
             refreshed = plan_runs([run for run in runs if run['id'] not in finished], keep=keep,
                                   current_run_id=current_run_id, workflow_id=workflow_id,
-                                  excluded_workflow_ids=excluded, release_run_ids=release_ids)
+                                  excluded_workflow_ids=excluded, release_run_ids=release_ids,
+                                  protected_workflow_run_ids=protected)
             report.plan = refreshed
             report.plan.candidate_ids = list(report.deleted_ids + report.gone_ids) + refreshed.candidate_ids
             if run_id not in refreshed.candidate_ids:
@@ -400,13 +432,14 @@ def cleanup(client, workflow=DEFAULT_WORKFLOW, *, keep=DEFAULT_KEEP, current_run
 
 def write_summary(report, path):
     data = report.as_dict()
-    temporary = {key: value for key, value in data['preserved'].items() if value != 'published release'}
+    temporary = {key: value for key, value in data['preserved'].items() if value in ('current run', 'not completed')}
     lines = ['## 清理历史记录', '',
              '- 模式：' + ('执行清理' if report.execute else '仅预览'),
              '- 状态：' + ('失败' if data['status'] == 'failed' else '完成'),
              '- 范围：' + ('仓库全部工作流' if report.workflow == 'all' else report.workflow),
              f'- 保留普通成功记录：{len(data["kept_ids"])} 条（上限 {report.keep} 条，发行记录不占名额）',
              f'- 保护发行对应运行：{sum(value == "published release" for value in data["preserved"].values())} 条（含日志及尚未过期的 Actions 产物）',
+             f'- 保留管理器 APK 预编译运行：{len(data["protected_workflow_run_ids"])} 条（含尚未过期的附件）',
              '- 不计入保留名额的工作流 ID：' + (', '.join(map(str, data['excluded_workflow_ids'])) or '无'),
              f'- 暂时保护：{len(temporary)} 条（当前或未完成运行，不取消任务）',
              f'- 待清理旧运行：{len(data["candidate_ids"])} 条',
@@ -438,6 +471,7 @@ def main(argv=None):
     parser.add_argument('--exclude-workflow', default=DEFAULT_EXCLUDE_WORKFLOW,
                         help='maintenance workflow excluded from successful retention slots '
                              '(default: cleanup-build-history.yml)')
+    parser.add_argument('--protect-workflow', help='preserve every run and artifact of this workflow filename')
     parser.add_argument('--execute', action='store_true', help='delete candidates; default is read-only')
     parser.add_argument('--summary', default=os.environ.get('GITHUB_STEP_SUMMARY'))
     args = parser.parse_args(argv)
@@ -457,7 +491,8 @@ def main(argv=None):
         token = os.environ.get('GH_TOKEN') or os.environ.get('GITHUB_TOKEN', '')
         client = GitHub(args.repo, token)
         cleanup(client, args.workflow, keep=args.keep, current_run_id=current_run_id,
-                execute=args.execute, report=report, exclude_workflow=args.exclude_workflow)
+                execute=args.execute, report=report, exclude_workflow=args.exclude_workflow,
+                protect_workflow=args.protect_workflow)
     except CleanupError as error:
         report.error = str(error)
     if args.summary:

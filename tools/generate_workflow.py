@@ -876,7 +876,7 @@ PY
 def generate(root):
     from oplus_workflow import OUTPUT as OPLUS_OUTPUT, create_workflow as create_oplus_workflow
     from combined_manager_workflow import add_combined
-    from manager_prebuild_workflow import OUTPUT as PREBUILD_OUTPUT, add_updater_call, prebuild_workflow
+    from manager_prebuild_workflow import OUTPUT as PREBUILD_OUTPUT, prebuild_workflow
     single = create_workflow(root)
     oplus_single = create_oplus_workflow(root, single)
     workflow, _ = add_combined(single, oplus=False)
@@ -885,7 +885,7 @@ def generate(root):
               '# Locally maintained templates and official-source version catalog.\n')
     rendered = []
     for relative, document in ((OUTPUT, workflow), (CLEANUP_OUTPUT, cleanup_history_workflow()),
-                               (UPDATE_OUTPUT, add_updater_call(updater_workflow())),
+                               (UPDATE_OUTPUT, updater_workflow()),
                                (REORDER_OUTPUT, reorder_release_workflow()),
                                (OPLUS_OUTPUT, oplus), (PREBUILD_OUTPUT, prebuild_workflow(single))):
         content = header + yaml.dump(document, Dumper=Dumper, allow_unicode=True, sort_keys=False, width=120)

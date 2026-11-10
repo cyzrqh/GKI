@@ -13,7 +13,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from check_official_updates import TARGETS
 from generate_workflow import create_workflow
 from manager_prebuild import CHANNELS, LATEST, STABLE, current_channels, plan, snapshot_channels, validate_state
-from manager_prebuild_workflow import OUTPUT, STATE_KEY, add_updater_call, prebuild_workflow
+from manager_prebuild_workflow import STATE_KEY, prebuild_workflow
 from manager_variants import MANAGERS
 from resolve_build_sources import NoStableRelease, SourceResolutionError
 from workflow_jobs import updater_workflow
@@ -119,17 +119,10 @@ class ManagerPrebuildTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             validate_state(state)
 
-    def test_named_automatic_workflow_uses_existing_schedule_without_manual_entry(self):
-        original = updater_workflow()
-        caller = add_updater_call(updater_workflow())
-        self.assertEqual(caller['on']['schedule'], original['on']['schedule'])
-        self.assertEqual(caller['on']['push']['paths'], [OUTPUT])
-        self.assertEqual(caller['jobs']['check-upstream'], original['jobs']['check-upstream'])
-        self.assertIn("github.event_name == 'schedule'", caller['jobs']['prebuild-managers']['if'])
-        self.assertNotIn('workflow_dispatch', caller['jobs']['prebuild-managers']['if'])
-        self.assertEqual(caller['jobs']['prebuild-managers']['uses'], './' + OUTPUT)
+    def test_named_automatic_workflow_runs_independently_without_manual_entry(self):
+        self.assertNotIn('prebuild-managers', updater_workflow()['jobs'])
         workflow = prebuild_workflow(create_workflow(ROOT))
-        self.assertEqual(set(workflow['on']), {'workflow_call'})
+        self.assertEqual(workflow['on'], {'schedule': [{'cron': '0 4,16 * * *'}]})
         self.assertNotIn('workflow_dispatch', json.dumps(workflow))
         auto = workflow['jobs']['prebuild-manager-sources']
         self.assertIn("manager_prebuild_pending == 'true'", auto['if'])

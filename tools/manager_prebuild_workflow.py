@@ -1,11 +1,10 @@
-"""Build official APKs from the existing schedule without a manual trigger."""
+"""Build official APKs twice daily without a manual trigger."""
 from __future__ import annotations
 
 OUTPUT = '.github/workflows/prebuild-manager-apks.yml'
 STATE_FILE = '${{ runner.temp }}/gki-manager-apk-observations.json'
-STATE_PREFIX = 'gki-manager-apk-observations-v2-'
+STATE_PREFIX = 'gki-manager-apk-observations-v3-'
 STATE_KEY = STATE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}'
-AUTOMATIC = "(github.event_name == 'schedule' || github.event_name == 'push')"
 DEFAULT = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
 CHECK_OUTPUTS = 'needs.check-upstream.outputs.manager_prebuild_'
 DISCOVERY_OUTPUTS = ('matrix', 'lkm_matrix', 'pending', 'state', 'state_changed')
@@ -42,7 +41,7 @@ def prebuild_workflow(base: dict) -> dict:
 
     discovery = {
         'name': '确定六种管理器的正式版与最新版',
-        'if': AUTOMATIC + ' && ' + DEFAULT,
+        'if': "github.event_name == 'schedule' && " + DEFAULT,
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 10,
         'outputs': {'manager_prebuild_' + key: '${{ steps.manager-prebuild.outputs.' + key + ' }}'
                     for key in DISCOVERY_OUTPUTS},
@@ -58,17 +57,7 @@ def prebuild_workflow(base: dict) -> dict:
                 '--previous "$RUNNER_TEMP/gki-manager-apk-observations.json"'},
         ],
     }
-    return {'name': '自动预编译管理器 APK', 'on': {'workflow_call': {}},
+    return {'name': '自动预编译管理器 APK', 'on': {'schedule': [{'cron': '0 4,16 * * *'}]},
             'permissions': {'contents': 'read', 'actions': 'write'},
+            'concurrency': {'group': 'gki-official-manager-apk-prebuild', 'cancel-in-progress': False},
             'jobs': {'check-upstream': discovery, **create_jobs(base), 'record-manager-prebuild': record_job()}}
-
-
-def add_updater_call(workflow: dict) -> dict:
-    # The initial push of the APK workflow starts backfill immediately. Further
-    # checks use the existing cron, with no standalone APK run or button.
-    workflow['on']['push'] = {'branches': ['main'], 'paths': [OUTPUT]}
-    workflow['jobs']['prebuild-managers'] = {
-        'name': '自动预编译管理器 APK', 'if': AUTOMATIC + ' && ' + DEFAULT,
-        'uses': './' + OUTPUT, 'permissions': {'contents': 'read', 'actions': 'write'}, 'secrets': 'inherit',
-    }
-    return workflow

@@ -439,6 +439,23 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual([2, 1], report.deleted_ids)
         self.assertEqual({3: 'current run'}, report.plan.preserved)
 
+    def test_prebuild_and_bootstrap_runs_are_protected_without_using_success_slots(self):
+        apk_workflow = 'prebuild-manager-apks.yml'
+        apk_id = 704
+        refs = [{'path': f'Owner/GKI/.github/workflows/{apk_workflow}@' + 'a' * 40}]
+        client = FakeGitHub([run(1), run(2), run(3), run(4, workflow_id=apk_id),
+                             run(5, workflow_id=apk_id, conclusion='failure'),
+                             run(6, event='push', referenced_workflows=refs),
+                             run(7, conclusion='cancelled', referenced_workflows=refs)])
+        original = client.request
+        client.request = lambda resource, **kwargs: ({'id': apk_id}
+            if resource == '/actions/workflows/' + apk_workflow else original(resource, **kwargs))
+        report = cleanup.cleanup(client, execute=True, protect_workflow=apk_workflow)
+        self.assertEqual([3, 2], report.plan.kept_ids)
+        self.assertEqual([7, 1], report.deleted_ids)
+        self.assertEqual({4: 'protected workflow', 5: 'protected workflow', 6: 'protected workflow'},
+                         report.plan.preserved)
+
     def test_excluded_workflow_metadata_failure_prevents_listing_and_every_deletion(self):
         for document in (None, {}, {'id': None}, {'id': 0}, {'id': True}):
             client = FakeGitHub([run(1)])

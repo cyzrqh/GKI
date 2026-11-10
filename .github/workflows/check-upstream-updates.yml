@@ -61,6 +61,32 @@ jobs:
       env:
         GH_TOKEN: ${{ github.token }}
       run: python3 tools/check_official_updates.py --check-only
+    - name: 恢复已完成的官方 APK 版本记录
+      if: steps.official.outcome == 'success' || steps.official.outcome == 'failure'
+      uses: actions/cache/restore@v5
+      continue-on-error: true
+      timeout-minutes: 2
+      with:
+        path: ${{ runner.temp }}/gki-manager-apk-observations.json
+        key: gki-manager-apk-observations-v2-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: gki-manager-apk-observations-v2-
+    - name: 选择需要预编译的官方 APK 更新
+      id: manager-prebuild
+      if: steps.official.outcome == 'success' || steps.official.outcome == 'failure'
+      continue-on-error: true
+      env:
+        GH_TOKEN: ${{ github.token }}
+        OFFICIAL_RESULT: ${{ steps.official.outcome }}
+        OFFICIAL_CANDIDATES: ${{ steps.official.outputs.candidates_json }}
+      run: |
+        set -euo pipefail
+        args=(--previous "$RUNNER_TEMP/gki-manager-apk-observations.json")
+        if [ "$OFFICIAL_RESULT" = success ] && [ -n "$OFFICIAL_CANDIDATES" ]; then
+          args+=(--candidates-json "$OFFICIAL_CANDIDATES")
+        else
+          echo '综合官方源检查未提供完整结果，直接核对六种管理器的官方版本。'
+        fi
+        python3 tools/manager_prebuild.py discover "${args[@]}"
     - name: 检查 SUSFS 实际构建来源与适配状态
       id: susfs
       continue-on-error: true
@@ -347,6 +373,11 @@ jobs:
       run: |
         echo '::error::部分官方源检查失败；请查看失败步骤并重试。仅成功检查部分可以准备待同步数据。'
         exit 1
+    outputs:
+      manager_prebuild_matrix: ${{ steps.manager-prebuild.outputs.matrix }}
+      manager_prebuild_pending: ${{ steps.manager-prebuild.outputs.pending }}
+      manager_prebuild_state: ${{ steps.manager-prebuild.outputs.state }}
+      manager_prebuild_state_changed: ${{ steps.manager-prebuild.outputs.state_changed }}
   reorder-old-release-tags:
     name: 补排旧发行版的遗留标签
     if: github.event_name == 'schedule'
@@ -378,3 +409,49 @@ jobs:
           echo '已有发行任务尚未结束，等待后重试，不取消或重跑构建。'
           sleep 30
         done
+  prebuild-managers:
+    name: ${{ matrix.variant }} · ${{ matrix.channels }} APK
+    if: always() && !cancelled() && needs.check-upstream.outputs.manager_prebuild_pending == 'true'
+    needs:
+    - check-upstream
+    permissions:
+      contents: read
+      actions: write
+    strategy:
+      fail-fast: false
+      max-parallel: 3
+      matrix: ${{ fromJSON(needs.check-upstream.outputs.manager_prebuild_matrix) }}
+    uses: ./.github/workflows/_manager-apk-worker.yml
+    with:
+      variant: ${{ matrix.variant }}
+      tier: ${{ matrix.tier }}
+      reference: ${{ matrix.reference }}
+      source_branch: ${{ matrix.source_branch }}
+    secrets: inherit
+  record-manager-prebuild:
+    name: 记录已验证的官方版本状态
+    needs:
+    - check-upstream
+    - prebuild-managers
+    if: always() && !cancelled() && (needs.prebuild-managers.result == 'success' || (needs.prebuild-managers.result == 'skipped'
+      && needs.check-upstream.outputs.manager_prebuild_pending == 'false' && needs.check-upstream.outputs.manager_prebuild_state_changed
+      == 'true'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 4
+    permissions:
+      contents: read
+      actions: write
+    steps:
+    - name: 检出验证工具
+      uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+    - name: 验证已完成的官方版本
+      env:
+        STATE_JSON: ${{ needs.check-upstream.outputs.manager_prebuild_state }}
+      run: python3 tools/manager_prebuild.py record --state-json "$STATE_JSON" --output "$RUNNER_TEMP/gki-manager-apk-observations.json"
+    - name: 保存成功版本记录
+      uses: actions/cache/save@v5
+      with:
+        path: ${{ runner.temp }}/gki-manager-apk-observations.json
+        key: gki-manager-apk-observations-v2-${{ github.run_id }}-${{ github.run_attempt }}

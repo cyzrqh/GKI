@@ -17,8 +17,9 @@ import sys
 import tempfile
 import zipfile
 
-from embedded_build_metadata import APK_MEMBER, read_member, validate_members, verify_sukisu_apk
+from embedded_build_metadata import APK_MEMBER, metadata_json, read_member, validate_members, verify_sukisu_apk
 from manager_variants import MANAGERS, manager_profile, selected_variant, valid_manager_apk_filename
+from reusable_manager_apk import manager_selection, native_proof
 
 
 KEYSTORE_ENV = "SUKISU_APK_KEYSTORE"
@@ -254,12 +255,17 @@ def embed_identity(unsigned: Path, destination: Path, identity: dict) -> None:
 
 
 def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path | None = None,
-                 build_metadata: Path | None = None, legacy_41065: bool = False) -> dict[str, str | int]:
+                 build_metadata: Path | None = None, legacy_41065: bool = False,
+                 manager_recipe_sha256: str | None = None, module_report: Path | None = None,
+                 boot_report: Path | None = None, source_identity: dict | None = None) -> dict[str, str | int]:
     unsigned = Path(unsigned).resolve()
     if (output is None) == (output_dir is None):
         raise SigningError("Choose exactly one signed output file or output directory.")
     if output_dir is not None and build_metadata is None:
         raise SigningError("--output-dir requires --build-metadata to preserve the native APK filename.")
+    proof_inputs = (manager_recipe_sha256, module_report, boot_report, source_identity)
+    if any(value is not None for value in proof_inputs) and (None in proof_inputs or legacy_41065):
+        raise SigningError('Reusable APK signing requires the recipe hash, source identity and both native verification reports.')
     output = Path(output).resolve() if output is not None else None
     if unsigned == output:
         raise SigningError("The signed output must be a separate file from the unsigned input.")
@@ -305,6 +311,14 @@ def sign_manager(unsigned: Path, output: Path | None = None, *, output_dir: Path
             raise SigningError('keytool did not export a valid-sized public manager certificate.')
         embedded_identity = public_build_identity(source_metadata, certificate, output.name,
                                                   legacy_41065=legacy_41065)
+        if manager_recipe_sha256 is not None:
+            selection = manager_selection(embedded_identity['ksu_variant'], embedded_identity['ksu_branch'],
+                                          embedded_identity['ksu_ref'], embedded_identity['manager_cert_size'],
+                                          embedded_identity['manager_cert_sha256'], manager_recipe_sha256,
+                                          source_identity)
+            embedded_identity['manager_recipe_sha256'] = manager_recipe_sha256
+            embedded_identity['manager_source_identity'] = selection['manager_source_identity']
+            embedded_identity['manager_native_proof'] = native_proof(module_report, boot_report, embedded_identity)
         embed_identity(unsigned, embedded, embedded_identity)
         run_command([tools["zipalign"], "-P", "16", "-f", "4", str(embedded), str(aligned)],
                     password, secrets)
@@ -367,12 +381,18 @@ def main(argv=None) -> int:
     destination.add_argument("--output", type=Path, help="Explicit signed APK path (compatibility mode)")
     destination.add_argument("--output-dir", type=Path, help="Directory for the APK retaining its original Gradle filename")
     parser.add_argument("--build-metadata", type=Path, help="Verified manager-build-metadata.json written by the build step")
+    parser.add_argument('--manager-recipe-sha256')
+    parser.add_argument('--source-identity')
+    parser.add_argument('--module-report', type=Path)
+    parser.add_argument('--boot-report', type=Path)
     parser.add_argument('--variant', choices=MANAGERS, default=os.environ.get('KSU_VARIANT', 'SukiSU'))
     args = parser.parse_args(argv)
     try:
         os.environ['KSU_VARIANT'] = args.variant
+        source_identity = metadata_json(args.source_identity.encode('utf-8')) if args.source_identity is not None else None
         metadata = sign_manager(args.unsigned, args.output, output_dir=args.output_dir,
-                                build_metadata=args.build_metadata)
+                                build_metadata=args.build_metadata, manager_recipe_sha256=args.manager_recipe_sha256,
+                                module_report=args.module_report, boot_report=args.boot_report, source_identity=source_identity)
     except (SigningError, OSError, UnicodeError, ValueError) as error:
         values = (os.environ.get(KEYSTORE_ENV, ""), os.environ.get(PASSWORD_ENV, ""))
         print("Manager APK signing stopped: " + redact(str(error), values), file=sys.stderr)

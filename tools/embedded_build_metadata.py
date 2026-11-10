@@ -28,6 +28,9 @@ def official_receipt_from_environment() -> dict | None:
     if len(raw.encode('utf-8')) > 16384:
         raise ValueError('Official manager producer receipt is too large')
     receipt = metadata_json(raw.encode('utf-8'))
+    if 'consumer' in receipt:
+        adoption_consumer(receipt)
+        return receipt
     for field, variable in (('producer_repository', 'GITHUB_REPOSITORY'),
                             ('producer_head_sha', 'GITHUB_SHA')):
         if os.environ.get(variable) != receipt.get(field):
@@ -38,6 +41,18 @@ def official_receipt_from_environment() -> dict | None:
     if type(attempt) is not int or not 1 <= attempt <= int(os.environ.get('GITHUB_RUN_ATTEMPT', '0')):
         raise ValueError('Official manager receipt belongs to an invalid attempt')
     return receipt
+
+
+def adoption_consumer(receipt: dict) -> dict:
+    from reusable_manager_apk import workflow_consumer
+    actual = workflow_consumer()
+    accepted = receipt.get('consumer')
+    if not isinstance(accepted, dict) or type(accepted.get('run_attempt')) is not int:
+        raise ValueError('Precompiled manager acceptance lacks its workflow attempt')
+    attempt = accepted['run_attempt']
+    if not 1 <= attempt <= actual['run_attempt'] or {**actual, 'run_attempt': attempt} != accepted:
+        raise ValueError('Precompiled manager acceptance belongs to another workflow run or commit')
+    return accepted
 
 APK_MEMBER = 'assets/gki-build.json'
 KERNEL_MEMBER = 'META-INF/gki/build.json'
@@ -294,6 +309,15 @@ def read_manager_apk(source: Path | bytes, *, filename: str | None = None,
     else:
         data = bytes(source)
     if external_metadata is not None:
+        if isinstance(external_metadata, dict) and 'consumer' in external_metadata:
+            from reusable_manager_apk import validate_adoption
+            original = read_manager_apk(data, filename=filename)
+            accepted = validate_adoption(external_metadata, original,
+                                         consumer=adoption_consumer(external_metadata),
+                                         selection=external_metadata.get('selection'))
+            return {**accepted, 'original_apk_producer': {
+                name: original[name] for name in ('producer_repository', 'producer_run_id',
+                                                 'producer_run_attempt', 'producer_head_sha')}}
         return read_official_manager(data, external_metadata, filename=filename)
     certificate = verify_apk_v2(data) if allow_legacy_signing_blocks else verify_sukisu_apk(data)
     with zipfile.ZipFile(io.BytesIO(data)) as archive:

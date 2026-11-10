@@ -118,6 +118,7 @@ def lkm_cache_key(kmi_expr: str, ddk_short_expr: str) -> str:
             raise ValueError('Expected raw, single-line GitHub expression contents.')
         return '${{ ' + value + ' }}'
     fields = ('runner.os', 'runner.arch', 'needs.prepare-matrix.outputs.ksu_ref',
+              'needs.prepare-matrix.outputs.native_source_version',
               'needs.prepare-matrix.outputs.manager_package', 'needs.prepare-matrix.outputs.manager_cert_size',
               'needs.prepare-matrix.outputs.manager_cert_sha256', kmi_expr, ddk_short_expr)
     key = 'gki-sukisu-lkm-v3-full-' + '-'.join(expression(field) for field in fields)
@@ -207,6 +208,13 @@ def manager_lkm_job(condition: str) -> dict:
         'env': {'KSU_VARIANT': MANAGER_VARIANT},
         'timeout-minutes': 30,
         'defaults': {'run': {'shell': 'bash'}},
+        'concurrency': {
+            'group': 'native-manager-lkm-${{ github.ref }}-${{ inputs.kernelsu_variant }}-'
+                     '${{ needs.prepare-matrix.outputs.native_source_version }}-${{ matrix.kmi }}-${{ matrix.ddk_short }}-'
+                     '${{ needs.prepare-matrix.outputs.manager_cert_sha256 }}-${{ needs.prepare-matrix.outputs.manager_recipe_sha256 }}',
+            'queue': 'max',
+            'cancel-in-progress': False,
+        },
         'strategy': {'fail-fast': False, 'max-parallel': 8,
                      'matrix': '${{ fromJSON(needs.prepare-matrix.outputs.ddk_matrix) }}'},
         'steps': [

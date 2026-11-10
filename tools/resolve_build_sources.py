@@ -152,7 +152,18 @@ def sukisu_latest_selection(repository: str, *, branch: str | None = None,
     if (development.get('name') != 'dev' or not isinstance(dev_commit, str)
             or not SHA.fullmatch(dev_commit)):
         raise SourceResolutionError('Official dev branch identity or full commit SHA is invalid')
-    dev_commit = dev_commit.lower()
+    return compare_sukisu_channels(repository, branch, main_commit, dev_commit)
+
+
+def compare_sukisu_channels(repository: str, branch: str, main_commit: str,
+                            dev_commit: str) -> tuple[str, str]:
+    """Compare already observed SukiSU branch identities without rereading either ref."""
+    if repository != REPOSITORIES['SukiSU']:
+        raise SourceResolutionError('Latest main/dev comparison requires the official SukiSU repository')
+    validate_ref(branch)
+    if any(not isinstance(ref, str) or not SHA.fullmatch(ref) for ref in (main_commit, dev_commit)):
+        raise SourceResolutionError('Official main/dev comparison requires full commit SHAs')
+    main_commit, dev_commit = main_commit.lower(), dev_commit.lower()
     if dev_commit == main_commit:
         return main_commit, branch
     path = '/compare/' + main_commit + '...' + dev_commit

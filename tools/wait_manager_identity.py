@@ -217,6 +217,17 @@ def read_identity_archive(archive: bytes, expected: Expected, *,
         if isinstance(error, IdentityError):
             raise
         raise IdentityError('Could not verify the final signed manager APK: ' + str(error)) from None
+    if isinstance(expected.external_metadata, dict) and 'consumer' in expected.external_metadata:
+        # The successful prepare job uploaded this exact APK and published the
+        # receipt. A failed-job rerun can retain that job while rerunning the
+        # manager wrapper. Keep requiring its exact successful job, but check
+        # the already verified APK against the retained acceptance attempt.
+        if expected.manager_job_id is None or producer_attempt is None:
+            raise IdentityError('An adopted APK requires an exact successful manager producer job')
+        accepted_attempt = positive_integer(metadata['producer_run_attempt'], 'APK acceptance attempt')
+        if accepted_attempt > producer_attempt:
+            raise IdentityError('The APK acceptance attempt is newer than its manager producer job')
+        reusable_attempt = producer_attempt = accepted_attempt
     return validate_metadata(metadata, expected, reusable_attempt=reusable_attempt,
                              producer_attempt=producer_attempt)
 

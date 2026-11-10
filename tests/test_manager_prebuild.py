@@ -14,7 +14,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from check_official_updates import TARGETS
 from generate_workflow import create_workflow
 from manager_prebuild import CHANNELS, LATEST, STABLE, current_channels, plan, snapshot_channels, validate_state
-from manager_prebuild_workflow import OUTPUT, STATE_KEY, prebuild_workflow
+from manager_prebuild_workflow import OUTPUT, STATE_KEY, UPDATER_PATH, prebuild_workflow
 from manager_variants import MANAGERS
 from resolve_build_sources import NoStableRelease, SourceResolutionError
 from workflow_jobs import updater_workflow
@@ -121,11 +121,18 @@ class ManagerPrebuildTest(unittest.TestCase):
             validate_state(state)
 
     def test_named_automatic_workflow_runs_independently_without_manual_entry(self):
-        self.assertNotIn('prebuild-managers', updater_workflow()['jobs'])
+        updater = updater_workflow()
+        self.assertNotIn('prebuild-managers', updater['jobs'])
+        self.assertEqual(updater['on']['schedule'], [{'cron': '0 4,16 * * *'}])
         workflow = prebuild_workflow(create_workflow(ROOT))
-        self.assertEqual(workflow['on'], {'schedule': [{'cron': '0 4,16 * * *'}],
+        self.assertEqual(workflow['on'], {'workflow_run': {'workflows': [updater['name']],
+                                         'types': ['completed'], 'branches': ['main']},
                                          'push': {'branches': ['main'], 'paths': [OUTPUT]}})
-        self.assertNotIn('workflow_dispatch', json.dumps(workflow))
+        discovery = workflow['jobs']['check-upstream']
+        self.assertIn(f"github.event.workflow_run.path == '{UPDATER_PATH}'", discovery['if'])
+        self.assertIn('github.event.workflow_run.head_repository.full_name == github.repository', discovery['if'])
+        self.assertIn("github.event.workflow_run.event == 'schedule'", discovery['if'])
+        self.assertIn("github.event.workflow_run.event == 'workflow_dispatch'", discovery['if'])
         auto = workflow['jobs']['prebuild-manager-sources']
         self.assertIn("manager_prebuild_pending == 'true'", auto['if'])
         self.assertIn('sukisu_latest_ksu_ref', auto['outputs'])

@@ -2,8 +2,13 @@
 # Locally maintained templates and official-source version catalog.
 name: 自动预编译管理器 APK
 'on':
-  schedule:
-  - cron: 0 4,16 * * *
+  workflow_run:
+    workflows:
+    - 检查并同步官方更新
+    types:
+    - completed
+    branches:
+    - main
   push:
     branches:
     - main
@@ -18,7 +23,10 @@ concurrency:
 jobs:
   check-upstream:
     name: 确定六种管理器的正式版与最新版
-    if: (github.event_name == 'schedule' || github.event_name == 'push') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: (github.event_name == 'push' || (github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name
+      == github.repository && github.event.workflow_run.path == '.github/workflows/check-upstream-updates.yml' && (github.event.workflow_run.event
+      == 'schedule' || github.event.workflow_run.event == 'workflow_dispatch'))) && github.ref == format('refs/heads/{0}',
+      github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:

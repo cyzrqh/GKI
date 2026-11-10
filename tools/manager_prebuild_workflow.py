@@ -1,11 +1,17 @@
-"""Build official APKs twice daily without a manual trigger."""
+"""Build official APKs after the repository's upstream checks."""
 from __future__ import annotations
 
 OUTPUT = '.github/workflows/prebuild-manager-apks.yml'
 STATE_FILE = '${{ runner.temp }}/gki-manager-apk-observations.json'
 STATE_PREFIX = 'gki-manager-apk-observations-v3-'
 STATE_KEY = STATE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}'
-AUTOMATIC = "(github.event_name == 'schedule' || github.event_name == 'push')"
+UPDATER_NAME = '检查并同步官方更新'
+UPDATER_PATH = '.github/workflows/check-upstream-updates.yml'
+AUTOMATIC = ("(github.event_name == 'push' || (github.event_name == 'workflow_run' && "
+             "github.event.workflow_run.head_repository.full_name == github.repository && "
+             f"github.event.workflow_run.path == '{UPDATER_PATH}' && "
+             "(github.event.workflow_run.event == 'schedule' || "
+             "github.event.workflow_run.event == 'workflow_dispatch')))")
 DEFAULT = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
 CHECK_OUTPUTS = 'needs.check-upstream.outputs.manager_prebuild_'
 DISCOVERY_OUTPUTS = ('matrix', 'lkm_matrix', 'pending', 'state', 'state_changed')
@@ -59,7 +65,7 @@ def prebuild_workflow(base: dict) -> dict:
         ],
     }
     return {'name': '自动预编译管理器 APK',
-            'on': {'schedule': [{'cron': '0 4,16 * * *'}],
+            'on': {'workflow_run': {'workflows': [UPDATER_NAME], 'types': ['completed'], 'branches': ['main']},
                    'push': {'branches': ['main'], 'paths': [OUTPUT]}},
             'permissions': {'contents': 'read', 'actions': 'write'},
             'concurrency': {'group': 'gki-official-manager-apk-prebuild', 'cancel-in-progress': False},

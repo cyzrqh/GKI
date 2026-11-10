@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import re
 import sys
 import unittest
 from unittest.mock import patch
@@ -13,7 +14,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 from check_official_updates import TARGETS
 from generate_workflow import create_workflow
 from manager_prebuild import CHANNELS, LATEST, STABLE, current_channels, plan, snapshot_channels, validate_state
-from manager_prebuild_workflow import STATE_KEY, prebuild_workflow
+from manager_prebuild_workflow import OUTPUT, STATE_KEY, prebuild_workflow
 from manager_variants import MANAGERS
 from resolve_build_sources import NoStableRelease, SourceResolutionError
 from workflow_jobs import updater_workflow
@@ -122,7 +123,8 @@ class ManagerPrebuildTest(unittest.TestCase):
     def test_named_automatic_workflow_runs_independently_without_manual_entry(self):
         self.assertNotIn('prebuild-managers', updater_workflow()['jobs'])
         workflow = prebuild_workflow(create_workflow(ROOT))
-        self.assertEqual(workflow['on'], {'schedule': [{'cron': '0 4,16 * * *'}]})
+        self.assertEqual(workflow['on'], {'schedule': [{'cron': '0 4,16 * * *'}],
+                                         'push': {'branches': ['main'], 'paths': [OUTPUT]}})
         self.assertNotIn('workflow_dispatch', json.dumps(workflow))
         auto = workflow['jobs']['prebuild-manager-sources']
         self.assertIn("manager_prebuild_pending == 'true'", auto['if'])
@@ -136,6 +138,20 @@ class ManagerPrebuildTest(unittest.TestCase):
         self.assertIn("prebuild-manager-apks.result == 'skipped'", recorder['if'])
         self.assertIn("manager_prebuild_state_changed == 'true'", recorder['if'])
         self.assertEqual(recorder['steps'][-1]['with']['key'], STATE_KEY)
+
+    def test_every_slot_publishes_the_ddk_lock_used_to_restore_all_native_modules(self):
+        jobs = prebuild_workflow(create_workflow(ROOT))['jobs']
+        source = jobs['prebuild-manager-sources']
+        self.assertIn('lkm-matrix', {step.get('id') for step in source['steps']})
+        for name in ('prebuild-manager-native', 'prebuild-manager-apks'):
+            fields = set(re.findall(r"needs\.prebuild-manager-sources\.outputs\[format\('\{0\}_(\w+)', matrix\.slot\)\]",
+                                    json.dumps(jobs[name])))
+            self.assertTrue(fields)
+            for variant in MANAGERS:
+                for tier in ('stable', 'latest'):
+                    self.assertLessEqual({f'{variant.lower()}_{tier}_{field}' for field in fields}, source['outputs'].keys())
+        for variant in MANAGERS:
+            self.assertIn('steps.lkm-matrix.outputs.matrix', source['outputs'][variant.lower() + '_latest_ddk_matrix'])
 
     def test_discovery_runs_independently_of_the_susfs_probe(self):
         check = prebuild_workflow(create_workflow(ROOT))['jobs']['check-upstream']

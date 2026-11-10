@@ -376,11 +376,19 @@ def sync(repository: str, number: int, base: str, api, *, source_cache: Path | N
         pins_changed = (configured_pins(document(PROFILE, current_base), document(MANAGER_PINS, current_base))
                         != configured_pins(document(PROFILE, head), document(MANAGER_PINS, head)))
     if managers_changed or pins_changed:
+        from update_susfs_sources import configured_pins
         candidate = candidate or document('data/upstream-candidates.json', head)
         previous = previous or document('data/upstream-candidates.json', current_base, missing=True)
+        profile = document(PROFILE, head if PROFILE in pr_files else current_base)
+        manager_pins = document(MANAGER_PINS, head if MANAGER_PINS in pr_files else current_base, missing=True)
+        compatibility_args = {}
+        overrides = [profile['sukisu_susfs'], *(manager_pins or {}).get('managers', {}).values()]
+        if any('target_versions' in row for row in overrides):
+            compatibility_args['susfs_configuration'] = configured_pins(profile, manager_pins)
         validate_manager_snapshot(candidate['sources'], cache=source_cache or Path.cwd() / '.gki-manager-compatibility',
                                   report_path=compatibility_report,
-                                  before_snapshot=previous['sources'] if previous is not None else None)
+                                  before_snapshot=previous['sources'] if previous is not None else None,
+                                  **compatibility_args)
     else:
         skipped_manager_report(compatibility_report)
     # Refuse any source/base drift observed during content validation. A PR's

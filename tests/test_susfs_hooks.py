@@ -29,6 +29,18 @@ class SusfsHookTests(unittest.TestCase):
     def call(self, symbol, file="common/fs/exec.c"):
         return self.source(file, f"extern void {symbol}(void);\nvoid caller(void) {{ {symbol}(); }}\n")
 
+    def test_susfs24_preinit_is_checked_only_where_the_new_backend_can_be_enabled(self):
+        self.source('common/fs/exec.c',
+                    '#ifdef CONFIG_KSU_SUSFS_NATIVE_PREINIT\n'
+                    'void run(void) { ksu_setup_preinit_file(); }\n'
+                    '#endif // #ifdef CONFIG_KSU_SUSFS_NATIVE_PREINIT\n'
+                    'void legacy(void) { ksu_handle_execveat(); }\n')
+        self.source('KernelSU/kernel/exec.c', 'void ksu_handle_execveat(void) {}\n')
+        self.source('KernelSU/kernel/Kconfig', 'config KSU_SUSFS\n\tbool\n')
+        self.assertEqual({'ksu_handle_execveat'}, set(hooks.validate_hooks(self.root).calls))
+        self.source('KernelSU/kernel/Kconfig', 'config KSU_SUSFS_NATIVE_PREINIT\n\tbool\n')
+        self.assertEqual({'ksu_setup_preinit_file'}, set(hooks.validate_hooks(self.root).missing))
+
     def baka_alias(self):
         self.source('common/security/selinux/hooks.c',
                     'int caller(void) { if (ksu_selinux_hide_running) return my_setprocattr(); return 0; }\n')

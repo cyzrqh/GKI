@@ -168,7 +168,7 @@ def susfs_sync_delta(before, after, before_profile, after_profile, before_pins, 
     """Bind observations to the real build configuration, not just a receipt claim."""
     if before is None and after is None:
         return None
-    from update_susfs_sources import normalize_receipt, verify_receipt_pins
+    from update_susfs_sources import configured_pins, normalize_receipt, verify_receipt_pins
     old, new = (normalize_receipt(value) if value is not None else None for value in (before, after))
     if new is None:
         raise ReportError('The current SUSFS sync receipt cannot disappear')
@@ -187,12 +187,8 @@ def susfs_sync_delta(before, after, before_profile, after_profile, before_pins, 
             raise
         # An unsuccessful independent probe may preserve an already stale
         # receipt; it cannot claim any new change or activate another pin.
-    def actual(profile, pins):
-        values = {'SukiSU': profile['sukisu_susfs']['pins']}
-        if pins is not None:
-            values.update({name: row['pins'] for name, row in pins['managers'].items()})
-        return values
-    old_refs, new_refs = actual(before_profile, before_pins), actual(after_profile, after_pins)
+    old_refs, old_versions = configured_pins(before_profile, before_pins)
+    new_refs, new_versions = configured_pins(after_profile, after_pins)
     candidates = [{'target': target, 'before': old['candidates'].get(target) if old else None,
                    'after': candidate} for target, candidate in sorted(new['candidates'].items())
                   if old is None or old['candidates'].get(target) != candidate]
@@ -202,11 +198,16 @@ def susfs_sync_delta(before, after, before_profile, after_profile, before_pins, 
             previous = old['pins'].get(name, {}).get(target) if old else None
             selected_before = old_refs.get(name, {}).get(target)
             selected_after = new_refs[name][target]
-            if previous != row or selected_before != selected_after:
+            version_before = old_versions.get(name, {}).get(target)
+            version_after = new_versions[name][target]
+            if previous != row or selected_before != selected_after or version_before != version_after:
                 pins.append({'manager': name, 'target': target, 'before': previous, 'after': row,
-                             'effective_before': selected_before, 'effective_after': selected_after})
-    return {'changed': old != new or old_refs != new_refs, 'first_observation': old is None,
-            'previous_receipt_stale': stale_before, 'candidates': candidates, 'pins': pins}
+                             'effective_before': selected_before, 'effective_after': selected_after,
+                             'effective_version_before': version_before, 'effective_version_after': version_after,
+                             'candidate_version': new['candidates'][target]['version']})
+    pending = sum(row['status'] == 'pending_adaptation' for targets in new['pins'].values() for row in targets.values())
+    return {'changed': old != new or old_refs != new_refs or old_versions != new_versions, 'first_observation': old is None,
+            'previous_receipt_stale': stale_before, 'candidates': candidates, 'pins': pins, 'pending': pending}
 
 
 def oplus_sync_delta(before, after, before_config, after_config):
@@ -254,7 +255,9 @@ def compatibility_state(document: dict) -> dict:
         source = refs[0] if isinstance(refs, list) and refs else None
     if not isinstance(source, str) or not SHA.fullmatch(source):
         raise ReportError('Invalid verified manager source in official report')
-    return {'sukisu_source_ref': source, 'susfs_version': profile['version'], 'susfs_pins': profile['pins'],
+    from pin_build_dependencies import target_version
+    versions = {target_version(profile, profile['version'], target) for target in TARGETS}
+    return {'sukisu_source_ref': source, 'susfs_version': ' / '.join(sorted(versions)), 'susfs_pins': profile['pins'],
             'profile_sha256': hashlib.sha256(canonical(document)).hexdigest()}
 
 
@@ -516,6 +519,8 @@ def render_susfs_sync(delta: dict | None, status: str = 'success') -> list[str]:
         return lines + ['', '本次检查未完成；保留上次记录与实际构建引用，不能确认官方有无新更新。']
     if delta['previous_receipt_stale']:
         lines.append('此前观察记录未随人工适配变更刷新；以下以本次检查前的实际构建配置为准。')
+    if delta.get('pending'):
+        lines.append(f"仍有 {delta['pending']} 个管理器／内核组合等待适配验证，继续使用已配套的版本。")
     if not delta['changed']:
         return lines + ['', '官方候选和实际构建引用均无变化。']
     if delta['candidates']:
@@ -526,7 +531,7 @@ def render_susfs_sync(delta: dict | None, status: str = 'success') -> list[str]:
                         source_ref_label('simonpunk/susfs4ksu', value['ref'], gitlab=True))
             lines.append('| ' + code(row['target']) + ' | ' + label(row['before']) + ' | ' + label(row['after']) + ' |')
     if delta['pins']:
-        lines.extend(['', '| 管理器 | 内核分支 | 实际构建引用 | 处理结果 |', '| --- | --- | --- | --- |'])
+        lines.extend(['', '| 管理器 | 内核分支 | 实际构建版本与引用 | 处理结果 |', '| --- | --- | --- | --- |'])
         for row in delta['pins']:
             state = row['after']
             changed = row['effective_before'] != row['effective_after']
@@ -535,10 +540,11 @@ def render_susfs_sync(delta: dict | None, status: str = 'success') -> list[str]:
                     and row['before']['selected_build_tree_sha256'] == state['selected_build_tree_sha256']):
                 result += '（构建内容未变）'
             if state['status'] == 'pending_adaptation':
-                result = ('官方版本变化，待适配；保留适配引用' if state['reason'] == 'version-changed'
-                          else '构建代码变化，待适配；保留适配引用')
-            before = source_ref_label('simonpunk/susfs4ksu', row['effective_before'], gitlab=True)
-            after = source_ref_label('simonpunk/susfs4ksu', row['effective_after'], gitlab=True)
+                result = ('官方版本 ' + code(row['candidate_version']) + ' 待适配；保留适配引用'
+                          if state['reason'] == 'version-changed' else '构建代码变化，待适配；保留适配引用')
+            before = ('无' if row['effective_version_before'] is None else code(row['effective_version_before']) + ' '
+                      + source_ref_label('simonpunk/susfs4ksu', row['effective_before'], gitlab=True))
+            after = code(row['effective_version_after']) + ' ' + source_ref_label('simonpunk/susfs4ksu', row['effective_after'], gitlab=True)
             lines.append('| ' + row['manager'] + ' | ' + code(row['target']) + ' | ' +
                          (before + ' → ' + after if changed else after) + ' | ' + result + ' |')
     return lines

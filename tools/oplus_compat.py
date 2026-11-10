@@ -179,7 +179,7 @@ def adapt_susfs_patch(common: Path, patch_bytes: bytes) -> bytes:
         def guard(match):
             indent, argument = match[1], match[2]
             return ('#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' + indent
-                    + 'if (!vma->vm_file || !SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file)))\n'
+                    + 'if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))\n'
                     + '#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n' + indent + '\t'
                     + 'smap_gather_stats(vma, &mss, ' + argument + ');')
         changed_rollup = re.sub(r'(?m)^([ \t]*)smap_gather_stats\(vma, &mss, (0|last_vma_end)\);$', guard, rollup)

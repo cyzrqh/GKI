@@ -15,10 +15,20 @@ ROOT = Path(__file__).resolve().parents[1]
 SHA = re.compile(r"[0-9a-fA-F]{40}\Z")
 TARGET = re.compile(r"android[0-9]+-[0-9]+\.[0-9]+\Z")
 TIERS = frozenset(("Stable(标准)", "Dev(开发)", "Latest(最新)"))
+SUSFS_24 = "v2.4.0"
 
 
 class CompatibilityError(RuntimeError):
     """Stop before mixing incompatible build dependencies."""
+
+
+def target_version(profile: dict, default: str, target: str) -> str:
+    """A reviewed series can move to the new ABI independently of other series."""
+    versions = profile.get('target_versions', {})
+    if (not isinstance(versions, dict) or not versions.keys() <= profile['pins'].keys()
+            or any(value != SUSFS_24 for value in versions.values())):
+        raise CompatibilityError('Invalid SUSFS per-target compatibility versions')
+    return versions.get(target, default)
 
 
 def source_policy(profile: dict) -> str:
@@ -103,26 +113,31 @@ def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str,
                  manager_source: Path | None = None) -> tuple[str, str] | None:
     if not TARGET.fullmatch(target):
         raise CompatibilityError("Invalid Android/kernel target")
-    if variant in ('KernelSU-Next', 'KernelSU', 'KowSU'):
+    if custom_configuration(root):
+        return None
+    if variant != 'SukiSU':
         path = root / 'config/manager-susfs-pins.json'
         if path.is_file():
             document = json.loads(path.read_text(encoding='utf-8'))
             profile = document.get('managers', {}).get(variant, {})
+            if not profile:
+                return None
+            version = target_version(profile, document.get('version'), target)
             legacy = (manager_source is not None
                       and (manager_source / 'kernel/feature/preinit.c').is_file()
                       and not (manager_source / 'kernel/preinit/preinit.c').is_file())
-            if ksu_ref in profile.get('source_refs', []) or legacy or variant == 'KowSU':
+            if (version == SUSFS_24
+                    or ksu_ref in profile.get('source_refs', []) or legacy or variant == 'KowSU'):
                 reference = profile.get('pins', {}).get(target)
                 if (not isinstance(reference, str) or not SHA.fullmatch(reference)
-                        or document.get('version') != 'v2.3.0'):
-                    raise CompatibilityError('Missing native-ABI SUSFS 2.3 pin for the selected manager')
-                return reference, document['version']
+                        or version not in ('v2.3.0', SUSFS_24)):
+                    raise CompatibilityError('Missing native-ABI SUSFS pin for the selected manager')
+                return reference.lower(), version
+        return None
     if variant != "SukiSU" or tier not in TIERS:
         return None
     profile = load_profile(root)
     if tier not in profile["tiers"]:
-        return None
-    if custom_configuration(root):
         return None
     if not isinstance(ksu_ref, str) or not SHA.fullmatch(ksu_ref):
         raise CompatibilityError("Selected SukiSU source must be a full commit SHA")
@@ -134,7 +149,7 @@ def selected_pin(root: Path, variant: str, ksu_ref: str, tier: str, target: str,
     # patch and native interfaces before the kernel compile begins.
     if target not in profile["pins"]:
         raise CompatibilityError(f"No compatible SUSFS pin for {target}; review build-compatibility.json")
-    return profile["pins"][target].lower(), profile["version"]
+    return profile["pins"][target].lower(), target_version(profile, profile['version'], target)
 
 
 def git(directory: Path, *arguments: str) -> str:

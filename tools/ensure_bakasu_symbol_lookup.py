@@ -99,6 +99,22 @@ def _git(directory: Path, *arguments: str) -> bytes:
     return result.stdout
 
 
+def _matches_reviewed_dispatch(repository: Path, actual: bytes, expected: bytes) -> bool:
+    if actual == expected:
+        return True
+    if b'CMD_SUSFS_SET_PRIORITY_UID_FILTER' not in actual:
+        return False
+    # Reconstruct the one permitted SUSFS v2.4 change from immutable bytes.
+    # A substring check against the working tree could hide unrelated edits
+    # to the KPM command table, resolver, or root access gate.
+    from suki_baka_susfs24 import dispatch_with_priority
+    try:
+        reviewed = dispatch_with_priority(repository, expected.decode('utf-8'), 'BakaSU')
+    except (OSError, ValueError):
+        return False
+    return actual == reviewed.encode('utf-8')
+
+
 def _validate_dispatch(repository: Path, expected_ref: str, path: Path, original: bytes) -> None:
     """Accept the native caller or the exact, source-bound reviewed KPM caller.
 
@@ -110,7 +126,7 @@ def _validate_dispatch(repository: Path, expected_ref: str, path: Path, original
     receipt_path = repository / kpm_port.RECEIPT
     actual = path.read_bytes()
     if not receipt_path.exists() and not kpm_port.is_link(receipt_path):
-        if actual == original:
+        if _matches_reviewed_dispatch(repository, actual, original):
             return
         raise ValueError("Compiled BakaSU supercall/dispatch.c differs from the selected official commit "
                          "without an audited KPM port receipt; preserve the native source")
@@ -123,7 +139,7 @@ def _validate_dispatch(repository: Path, expected_ref: str, path: Path, original
         raise ValueError("BakaSU KPM receipt differs from the actual frozen source and port")
     relative = path.relative_to(repository).as_posix()
     if (relative != 'kernel/supercall/dispatch.c' or before.get(relative) != original
-            or relative not in after or actual != after[relative]):
+            or relative not in after or not _matches_reviewed_dispatch(repository, actual, after[relative])):
         raise ValueError("Compiled BakaSU supercall/dispatch.c differs from the exact audited KPM port")
 
 

@@ -4,6 +4,11 @@ name: 自动预编译管理器 APK
 'on':
   schedule:
   - cron: 0 4,16 * * *
+  push:
+    branches:
+    - main
+    paths:
+    - .github/workflows/prebuild-manager-apks.yml
 permissions:
   contents: read
   actions: write
@@ -13,7 +18,7 @@ concurrency:
 jobs:
   check-upstream:
     name: 确定六种管理器的正式版与最新版
-    if: github.event_name == 'schedule' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    if: (github.event_name == 'schedule' || github.event_name == 'push') && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     outputs:
@@ -56,6 +61,7 @@ jobs:
         || '' }}
       sukisu_stable_native_source_version: ${{ matrix.slot == 'sukisu_stable' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      sukisu_stable_ddk_matrix: ${{ matrix.slot == 'sukisu_stable' && (steps.lkm-matrix.outputs.matrix) || '' }}
       sukisu_stable_manager_package: ${{ matrix.slot == 'sukisu_stable' && (steps.certificate.outputs.package) || '' }}
       sukisu_stable_manager_cert_size: ${{ matrix.slot == 'sukisu_stable' && (steps.certificate.outputs.cert_size) || '' }}
       sukisu_stable_manager_cert_sha256: ${{ matrix.slot == 'sukisu_stable' && (steps.certificate.outputs.cert_sha256) ||
@@ -92,6 +98,7 @@ jobs:
         || '' }}
       sukisu_latest_native_source_version: ${{ matrix.slot == 'sukisu_latest' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      sukisu_latest_ddk_matrix: ${{ matrix.slot == 'sukisu_latest' && (steps.lkm-matrix.outputs.matrix) || '' }}
       sukisu_latest_manager_package: ${{ matrix.slot == 'sukisu_latest' && (steps.certificate.outputs.package) || '' }}
       sukisu_latest_manager_cert_size: ${{ matrix.slot == 'sukisu_latest' && (steps.certificate.outputs.cert_size) || '' }}
       sukisu_latest_manager_cert_sha256: ${{ matrix.slot == 'sukisu_latest' && (steps.certificate.outputs.cert_sha256) ||
@@ -128,6 +135,7 @@ jobs:
         || '' }}
       bakasu_stable_native_source_version: ${{ matrix.slot == 'bakasu_stable' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      bakasu_stable_ddk_matrix: ${{ matrix.slot == 'bakasu_stable' && (steps.lkm-matrix.outputs.matrix) || '' }}
       bakasu_stable_manager_package: ${{ matrix.slot == 'bakasu_stable' && (steps.certificate.outputs.package) || '' }}
       bakasu_stable_manager_cert_size: ${{ matrix.slot == 'bakasu_stable' && (steps.certificate.outputs.cert_size) || '' }}
       bakasu_stable_manager_cert_sha256: ${{ matrix.slot == 'bakasu_stable' && (steps.certificate.outputs.cert_sha256) ||
@@ -164,6 +172,7 @@ jobs:
         || '' }}
       bakasu_latest_native_source_version: ${{ matrix.slot == 'bakasu_latest' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      bakasu_latest_ddk_matrix: ${{ matrix.slot == 'bakasu_latest' && (steps.lkm-matrix.outputs.matrix) || '' }}
       bakasu_latest_manager_package: ${{ matrix.slot == 'bakasu_latest' && (steps.certificate.outputs.package) || '' }}
       bakasu_latest_manager_cert_size: ${{ matrix.slot == 'bakasu_latest' && (steps.certificate.outputs.cert_size) || '' }}
       bakasu_latest_manager_cert_sha256: ${{ matrix.slot == 'bakasu_latest' && (steps.certificate.outputs.cert_sha256) ||
@@ -200,6 +209,8 @@ jobs:
         || '' }}
       kernelsu-next_stable_native_source_version: ${{ matrix.slot == 'kernelsu-next_stable' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      kernelsu-next_stable_ddk_matrix: ${{ matrix.slot == 'kernelsu-next_stable' && (steps.lkm-matrix.outputs.matrix) || ''
+        }}
       kernelsu-next_stable_manager_package: ${{ matrix.slot == 'kernelsu-next_stable' && (steps.certificate.outputs.package)
         || '' }}
       kernelsu-next_stable_manager_cert_size: ${{ matrix.slot == 'kernelsu-next_stable' && (steps.certificate.outputs.cert_size)
@@ -240,6 +251,8 @@ jobs:
         || '' }}
       kernelsu-next_latest_native_source_version: ${{ matrix.slot == 'kernelsu-next_latest' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      kernelsu-next_latest_ddk_matrix: ${{ matrix.slot == 'kernelsu-next_latest' && (steps.lkm-matrix.outputs.matrix) || ''
+        }}
       kernelsu-next_latest_manager_package: ${{ matrix.slot == 'kernelsu-next_latest' && (steps.certificate.outputs.package)
         || '' }}
       kernelsu-next_latest_manager_cert_size: ${{ matrix.slot == 'kernelsu-next_latest' && (steps.certificate.outputs.cert_size)
@@ -280,6 +293,7 @@ jobs:
         || '' }}
       kernelsu_stable_native_source_version: ${{ matrix.slot == 'kernelsu_stable' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      kernelsu_stable_ddk_matrix: ${{ matrix.slot == 'kernelsu_stable' && (steps.lkm-matrix.outputs.matrix) || '' }}
       kernelsu_stable_manager_package: ${{ matrix.slot == 'kernelsu_stable' && (steps.certificate.outputs.package) || '' }}
       kernelsu_stable_manager_cert_size: ${{ matrix.slot == 'kernelsu_stable' && (steps.certificate.outputs.cert_size) ||
         '' }}
@@ -318,6 +332,7 @@ jobs:
         || '' }}
       kernelsu_latest_native_source_version: ${{ matrix.slot == 'kernelsu_latest' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      kernelsu_latest_ddk_matrix: ${{ matrix.slot == 'kernelsu_latest' && (steps.lkm-matrix.outputs.matrix) || '' }}
       kernelsu_latest_manager_package: ${{ matrix.slot == 'kernelsu_latest' && (steps.certificate.outputs.package) || '' }}
       kernelsu_latest_manager_cert_size: ${{ matrix.slot == 'kernelsu_latest' && (steps.certificate.outputs.cert_size) ||
         '' }}
@@ -356,6 +371,7 @@ jobs:
         '' }}
       kowsu_stable_native_source_version: ${{ matrix.slot == 'kowsu_stable' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      kowsu_stable_ddk_matrix: ${{ matrix.slot == 'kowsu_stable' && (steps.lkm-matrix.outputs.matrix) || '' }}
       kowsu_stable_manager_package: ${{ matrix.slot == 'kowsu_stable' && (steps.certificate.outputs.package) || '' }}
       kowsu_stable_manager_cert_size: ${{ matrix.slot == 'kowsu_stable' && (steps.certificate.outputs.cert_size) || '' }}
       kowsu_stable_manager_cert_sha256: ${{ matrix.slot == 'kowsu_stable' && (steps.certificate.outputs.cert_sha256) || ''
@@ -391,6 +407,7 @@ jobs:
         '' }}
       kowsu_latest_native_source_version: ${{ matrix.slot == 'kowsu_latest' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      kowsu_latest_ddk_matrix: ${{ matrix.slot == 'kowsu_latest' && (steps.lkm-matrix.outputs.matrix) || '' }}
       kowsu_latest_manager_package: ${{ matrix.slot == 'kowsu_latest' && (steps.certificate.outputs.package) || '' }}
       kowsu_latest_manager_cert_size: ${{ matrix.slot == 'kowsu_latest' && (steps.certificate.outputs.cert_size) || '' }}
       kowsu_latest_manager_cert_sha256: ${{ matrix.slot == 'kowsu_latest' && (steps.certificate.outputs.cert_sha256) || ''
@@ -426,6 +443,7 @@ jobs:
         || '' }}
       finasu_stable_native_source_version: ${{ matrix.slot == 'finasu_stable' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      finasu_stable_ddk_matrix: ${{ matrix.slot == 'finasu_stable' && (steps.lkm-matrix.outputs.matrix) || '' }}
       finasu_stable_manager_package: ${{ matrix.slot == 'finasu_stable' && (steps.certificate.outputs.package) || '' }}
       finasu_stable_manager_cert_size: ${{ matrix.slot == 'finasu_stable' && (steps.certificate.outputs.cert_size) || '' }}
       finasu_stable_manager_cert_sha256: ${{ matrix.slot == 'finasu_stable' && (steps.certificate.outputs.cert_sha256) ||
@@ -462,6 +480,7 @@ jobs:
         || '' }}
       finasu_latest_native_source_version: ${{ matrix.slot == 'finasu_latest' && (steps.source-identity.outputs.native_source_version)
         || '' }}
+      finasu_latest_ddk_matrix: ${{ matrix.slot == 'finasu_latest' && (steps.lkm-matrix.outputs.matrix) || '' }}
       finasu_latest_manager_package: ${{ matrix.slot == 'finasu_latest' && (steps.certificate.outputs.package) || '' }}
       finasu_latest_manager_cert_size: ${{ matrix.slot == 'finasu_latest' && (steps.certificate.outputs.cert_size) || '' }}
       finasu_latest_manager_cert_sha256: ${{ matrix.slot == 'finasu_latest' && (steps.certificate.outputs.cert_sha256) ||
@@ -542,6 +561,20 @@ jobs:
         SUKISU_APK_KEYSTORE: ${{ secrets.SUKISU_APK_KEYSTORE }}
         SUKISU_APK_PASSWORD: ${{ secrets.SUKISU_APK_PASSWORD }}
       run: python3 tools/export_manager_certificate.py --output "$RUNNER_TEMP/manager-public-certificate.json"
+    - name: 选择官方镜像修补构建环境
+      id: lkm-matrix
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
+      run: |
+        python3 - <<'PY'
+        import json,os,pathlib,sys
+        sys.path.insert(0,'tools')
+        from manager_lkm_jobs import load_ddk_matrix
+        matrix = {'include':load_ddk_matrix(pathlib.Path.cwd())}
+        with open(os.environ['GITHUB_OUTPUT'],'a') as output:
+            output.write('matrix='+json.dumps(matrix,separators=(',',':'))+'\n')
+        PY
     - name: 仅下载一次官方管理器源码
       uses: actions/checkout@v6
       if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant

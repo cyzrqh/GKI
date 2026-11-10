@@ -5,6 +5,7 @@ OUTPUT = '.github/workflows/prebuild-manager-apks.yml'
 STATE_FILE = '${{ runner.temp }}/gki-manager-apk-observations.json'
 STATE_PREFIX = 'gki-manager-apk-observations-v3-'
 STATE_KEY = STATE_PREFIX + '${{ github.run_id }}-${{ github.run_attempt }}'
+AUTOMATIC = "(github.event_name == 'schedule' || github.event_name == 'push')"
 DEFAULT = "github.ref == format('refs/heads/{0}', github.event.repository.default_branch)"
 CHECK_OUTPUTS = 'needs.check-upstream.outputs.manager_prebuild_'
 DISCOVERY_OUTPUTS = ('matrix', 'lkm_matrix', 'pending', 'state', 'state_changed')
@@ -41,7 +42,7 @@ def prebuild_workflow(base: dict) -> dict:
 
     discovery = {
         'name': '确定六种管理器的正式版与最新版',
-        'if': "github.event_name == 'schedule' && " + DEFAULT,
+        'if': AUTOMATIC + ' && ' + DEFAULT,
         'runs-on': 'ubuntu-24.04', 'timeout-minutes': 10,
         'outputs': {'manager_prebuild_' + key: '${{ steps.manager-prebuild.outputs.' + key + ' }}'
                     for key in DISCOVERY_OUTPUTS},
@@ -57,7 +58,9 @@ def prebuild_workflow(base: dict) -> dict:
                 '--previous "$RUNNER_TEMP/gki-manager-apk-observations.json"'},
         ],
     }
-    return {'name': '自动预编译管理器 APK', 'on': {'schedule': [{'cron': '0 4,16 * * *'}]},
+    return {'name': '自动预编译管理器 APK',
+            'on': {'schedule': [{'cron': '0 4,16 * * *'}],
+                   'push': {'branches': ['main'], 'paths': [OUTPUT]}},
             'permissions': {'contents': 'read', 'actions': 'write'},
             'concurrency': {'group': 'gki-official-manager-apk-prebuild', 'cancel-in-progress': False},
             'jobs': {'check-upstream': discovery, **create_jobs(base), 'record-manager-prebuild': record_job()}}

@@ -2953,8 +2953,14 @@ jobs:
       run: |
         python3 "$GITHUB_WORKSPACE/tools/apply_susfs23.py" \
           --kernel-root "$KERNEL_ROOT" --susfs-dir "$SUSFS4KSU"
+    - name: 应用 SukiSU/BakaSU SUSFS 2.4 适配
+      if: env.SUSFS_SOURCE_VERSION == 'v2.4.0' && (matrix.variant == 'SukiSU' || matrix.variant == 'BakaSU')
+      run: |
+        python3 "$GITHUB_WORKSPACE/tools/suki_baka_susfs24.py" --source "$KERNEL_ROOT/KernelSU" \
+          --dependency "$SUSFS4KSU" --variant "$KSU_VARIANT"
     - name: 确保 KernelSU SUSFS ABI 兼容
-      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && ((matrix.variant == 'SukiSU' || matrix.variant == 'BakaSU') && inputs.enable_susfs)
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && env.SUSFS_SOURCE_VERSION != 'v2.4.0' && ((matrix.variant == 'SukiSU' ||
+        matrix.variant == 'BakaSU') && inputs.enable_susfs)
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -3039,6 +3045,15 @@ jobs:
         ABK_USE_BBG: ${{ inputs.use_bbg }}
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
+        if [ "${SUSFS_SOURCE_VERSION:-}" = v2.4.0 ]; then
+          set -euo pipefail
+          python3 "$GITHUB_WORKSPACE/tools/susfs24_kernel_patch.py" --kernel-root "$KERNEL_ROOT/common" \
+            --susfs-dir "$SUSFS4KSU" --target "$ABK_ANDROID_VERSION-$ABK_KERNEL_VERSION"
+          python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_headers.py" --kernel-root "$KERNEL_ROOT"
+          python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_inode_compat.py" --kernel-root "$KERNEL_ROOT"
+          python3 "$GITHUB_WORKSPACE/tools/ensure_susfs_map_compat.py" --kernel-root "$KERNEL_ROOT"
+          exit 0
+        fi
         echo "应用 SUSFS 补丁..."
         # 读取 SUSFS 上游版本（例如 v2.1.0），用于匹配修复补丁目录
         SUSFS_VERSION=$(grep -E '^#define[[:space:]]+SUSFS_VERSION' "$SUSFS4KSU/kernel_patches/include/linux/susfs.h" | awk '{print $3}' | tr -d '"' | sed 's/^v//')
@@ -5170,7 +5185,7 @@ jobs:
         ABK_FEATURE_FAILURE_MESSAGE: SUSFS defconfig integration failed
       working-directory: ${{ env.KERNEL_ROOT }}
       run: |
-        if [ "${SUSFS_COMPAT_VERSION:-}" != v2.3.0 ] && [ "${{ matrix.variant }}" == "SukiSU" ]; then
+        if [ "${SUSFS_COMPAT_VERSION:-}" != v2.3.0 ] && [ "${SUSFS_SOURCE_VERSION:-}" != v2.4.0 ] && [ "${{ matrix.variant }}" == "SukiSU" ]; then
           KSU_SOURCE_DIR=""
           for dir in common/drivers/kernelsu drivers/kernelsu KernelSU/kernel kernel; do
             if [ -f "$dir/infra/symbol_resolver.c" ]; then
@@ -5201,9 +5216,13 @@ jobs:
         CONFIG_KSU_SUSFS_SUS_MAP=y
         EOF
 
-        if [ "${SUSFS_COMPAT_VERSION:-}" = v2.3.0 ]; then
+        if [ "${SUSFS_COMPAT_VERSION:-}" = v2.3.0 ] || [ "${SUSFS_SOURCE_VERSION:-}" = v2.4.0 ]; then
           # The real preinit runner requires installed target UAPI headers.
           echo 'CONFIG_HEADERS_INSTALL=y' >> "$DEFCONFIG"
+        fi
+        if [ "${SUSFS_SOURCE_VERSION:-}" = v2.4.0 ] && [ "$KSU_VARIANT" = FinaSU ]; then
+          sed -i '/^CONFIG_KSU_HOOK_SUSFS_INLINE=/d; /^# CONFIG_KSU_HOOK_SUSFS_INLINE is not set$/d' "$DEFCONFIG"
+          echo 'CONFIG_KSU_HOOK_SUSFS_INLINE=y' >> "$DEFCONFIG"
         fi
     - name: 配置内核名称
       working-directory: ${{ env.KERNEL_ROOT }}
@@ -7049,7 +7068,7 @@ jobs:
             print(f"{path} 的 Official 6.1-6.12 SELinux 导出已满足要求")
         PY
     - name: 补齐 SukiSU SUSFS 内联 hook 符号
-      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (matrix.variant == 'SukiSU' && inputs.enable_susfs)
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && env.SUSFS_SOURCE_VERSION != 'v2.4.0' && (matrix.variant == 'SukiSU' && inputs.enable_susfs)
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -7060,7 +7079,7 @@ jobs:
         set -euo pipefail
         python3 "$GITHUB_WORKSPACE/.github/scripts/fix_sukisu_susfs.py" "$KERNEL_ROOT"
     - name: 最终修复 SukiSU/BakaSU 源码兼容
-      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && (matrix.variant == 'SukiSU')
+      if: env.SUSFS_COMPAT_VERSION != 'v2.3.0' && env.SUSFS_SOURCE_VERSION != 'v2.4.0' && (matrix.variant == 'SukiSU')
       env:
         BASH_ENV: ${{ 'aosp' == 'custom_git' && format('{0}/.github/scripts/custom-source-feature-env.sh', github.workspace)
           || '' }}
@@ -7919,7 +7938,7 @@ jobs:
         META_KSU_VERSION_CODE: ${{ env.MANAGER_VERSION_CODE }}
         META_KSU_VERSION_NAME: ${{ env.MANAGER_VERSION_NAME }}
         META_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
-        META_EXPECTED_SUSFS_VERSION: ${{ env.SUSFS_COMPAT_VERSION }}
+        META_EXPECTED_SUSFS_VERSION: ${{ env.SUSFS_SOURCE_VERSION || env.SUSFS_COMPAT_VERSION }}
         ARTIFACT_MODE: ${{ inputs.artifact_mode }}
         GKI_REQUEST_ENABLE_SUSFS: ${{ inputs.enable_susfs }}
         GKI_REQUEST_USE_KPM: ${{ inputs.use_kpm }}

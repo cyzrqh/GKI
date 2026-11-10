@@ -88,7 +88,7 @@ class OplusCompatibilityTests(unittest.TestCase):
         smap = compat.function_text(result, 'show_smap')
         rollup = compat.function_text(result, 'show_smaps_rollup')
         self.assertIn('if (vma->vm_file)', smap)
-        self.assertEqual(3, rollup.count('if (!vma->vm_file || !SUSFS_IS_INODE_SUS_MAP'))
+        self.assertEqual(3, rollup.count('if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))'))
         self.assertEqual(3, rollup.count('smap_gather_stats(vma, &mss,'))
         self.assertIn('preserve_vendor_lifecycle()', rollup)
         self.assertNotIn('bypass_orig_flow', rollup)
@@ -124,11 +124,11 @@ class OplusCompatibilityTests(unittest.TestCase):
                 smap = compat.function_text(changed, 'show_smap')
                 rollup = compat.function_text(changed, 'show_smaps_rollup')
                 self.assertIn('if (!' + helper + '(vma))', smap)
-                self.assertEqual(3, rollup.count('if (!vma->vm_file || !SUSFS_IS_INODE_SUS_MAP'))
+                self.assertEqual(3, rollup.count('if (!vma->vm_file || !(SUSFS_IS_INODE_SUS_MAP(file_inode(vma->vm_file))))'))
                 self.assertEqual(3, rollup.count('smap_gather_stats(vma, &mss,'))
                 self.assertEqual(compat.function_text(source, 'show_smaps_rollup'),
                     re.sub(r'#ifdef CONFIG_KSU_SUSFS_SUS_MAP\n([ \t]*)if \(!vma->vm_file \|\| '
-                           r'!SUSFS_IS_INODE_SUS_MAP\(file_inode\(vma->vm_file\)\)\)\n'
+                           r'!\(SUSFS_IS_INODE_SUS_MAP\(file_inode\(vma->vm_file\)\)\)\)\n'
                            r'#endif // #ifdef CONFIG_KSU_SUSFS_SUS_MAP\n\1\t', r'\1', rollup))
                 subprocess.run(['git', '-C', str(self.common), 'apply', '--reverse', str(self.patch)],
                                check=True, capture_output=True)

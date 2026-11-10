@@ -47,12 +47,11 @@ def create_jobs(base):
     ids = ('prepare-matrix', 'build-sukisu-lkm', 'build-sukisu-manager')
     prepare, native, manager = (copy.deepcopy(base['jobs'][name]) for name in ids)
     prepare['name'] = '${{ matrix.variant }} · ${{ matrix.channels }} · 固定 APK 源码与签名'
-    for key in ('matrix', 'count', 'full_catalog', 'max_parallel', 'susfs_sources', 'ddk_matrix'):
+    for key in ('matrix', 'count', 'full_catalog', 'max_parallel', 'susfs_sources'):
         prepare['outputs'].pop(key, None)
     omit = {'检查并生成矩阵', '校验旧版内核 SUSFS 映射兼容性', '验证共享源码还原及原生符号接口',
             '矩阵展开前统一下载并固定 SUSFS', '自动删除已成功的清理记录'}
-    prepare['steps'] = [step for step in prepare['steps']
-                        if step.get('name') not in omit and step.get('id') != 'lkm-matrix']
+    prepare['steps'] = [step for step in prepare['steps'] if step.get('name') not in omit]
     source = next(step for step in prepare['steps'] if step.get('id') == 'sources')
     source['env'].update(EXPECTED_REF='${{ matrix.reference }}', EXPECTED_SOURCE_BRANCH='${{ matrix.source_branch }}')
     source['run'] = '''set -euo pipefail

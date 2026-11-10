@@ -13,12 +13,13 @@ import sys
 import time
 
 from checkout_ksu_snapshot import checkout_snapshot
+import checked_kernel_patch
 from integrate_sukisu import integrate
 from manager_variants import manager_profile
 from oplus_recipe import bool_value, check_kernel, git as source_git, native_inputs, strict_json, validate_profile
+from pin_build_dependencies import SUSFS_24
 from set_manager_signature import configure
 from shared_susfs_source import read_json, restore_source
-from snapshot_ksu_source import temporary_directory
 from validate_susfs_hooks import validate_hooks
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -96,73 +97,11 @@ def verify_manager_checkout(root: Path, reference: str):
 
 
 def command(arguments, *, cwd=None):
-    result = subprocess.run([str(item) for item in arguments], cwd=cwd,
-                            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=240)
-    if result.returncode:
-        if Path(str(arguments[0])).name.lower() in ('patch', 'patch.exe'):
-            phase = 'reverse' if '--reverse' in arguments else 'forward'
-            phase += ' dry-run' if '--dry-run' in arguments else ' apply'
-            patch_name = Path(str(arguments[arguments.index('-i') + 1])).name if '-i' in arguments else 'unknown.patch'
-            diagnostics = result.stdout + '\n' + result.stderr
-            for name in ('GH_TOKEN', 'GITHUB_TOKEN', 'SUKISU_APK_PASSWORD', 'SUKISU_APK_KEYSTORE'):
-                if secret := os.environ.get(name):
-                    diagnostics = diagnostics.replace(secret, '[REDACTED]')
-            print(f'OPlus patch {patch_name} failed during {phase}:\n' + diagnostics[-12 * 1024:], file=sys.stderr)
-        raise ValueError('OPlus integration command failed: ' + str(arguments[0])
-                         + ' (exit ' + str(result.returncode) + ')')
-    return result.stdout.strip()
+    return checked_kernel_patch.command(arguments, cwd=cwd, runner=subprocess.run)
 
 
 def patch_checked(common: Path, patch: Path):
-    if patch.is_symlink() or not patch.is_file() or not 0 < patch.stat().st_size <= 16 * 1024 * 1024:
-        raise ValueError('The selected compatibility patch is missing or invalid')
-    data = patch.read_bytes()
-    strict_files = ()
-    if patch.name == '50_add_susfs_in_gki-android14-6.1.patch':
-        from oplus_susfs_headers import adapt_namespace_header
-        data = adapt_namespace_header(common, data)
-        strict_files = ('fs/namespace.c',)
-    elif patch.name == '50_add_susfs_in_gki-android15-6.6.patch':
-        from oplus_susfs66 import adapt_susfs66
-        data = adapt_susfs66(common, data)
-        strict_files = ('fs/namespace.c', 'fs/proc/task_mmu.c')
-    elif patch.name == '50_add_susfs_in_gki-android16-6.12.patch':
-        from oplus_compat import adapt_susfs_patch
-        data = adapt_susfs_patch(common, data)
-        strict_files = ('fs/proc/task_mmu.c',)
-    # Never edit the immutable official SUSFS checkout. Known vendor context
-    # adaptations keep all added code, and the complete resulting patch must
-    # pass forward and reverse checks rather than ignoring rejected hunks.
-    with temporary_directory(common.parent, '.oplus-patch-') as temporary:
-        pieces = [(data, False)]
-        if strict_files:
-            # Preserve the exact vendor function/header port independently of
-            # unrelated include-context differences in the other official files.
-            pieces = []
-            remaining = data
-            for strict_file in strict_files:
-                pattern = rb'(?ms)^diff --git a/' + re.escape(strict_file.encode()) + rb' b/' + re.escape(strict_file.encode()) + rb'\n.*?(?=^diff --git |\Z)'
-                matches = list(re.finditer(pattern, remaining))
-                if len(matches) != 1:
-                    raise ValueError('The adapted official SUSFS file must have exactly one complete patch section')
-                selected = matches[0]
-                pieces.append((selected[0], True))
-                remaining = remaining[:selected.start()] + remaining[selected.end():]
-            if remaining.strip():
-                pieces.append((remaining, False))
-        commands = []
-        for index, (content, strict) in enumerate(pieces):
-            prepared = temporary / (str(index) + '-' + patch.name)
-            prepared.write_bytes(content)
-            commands.append(['patch', '--batch', '--fuzz=0' if strict else '--fuzz=3', '-p1', '-i', prepared])
-        # All files pass before any source is modified, including the native
-        # show_smap/rollup function port that must never use fuzzy placement.
-        for options in commands:
-            command([*options, '--forward', '--dry-run'], cwd=common)
-        for options in commands:
-            command([*options, '--forward'], cwd=common)
-        for options in commands:
-            command([*options, '--reverse', '--dry-run'], cwd=common)
+    return checked_kernel_patch.patch_checked(common, patch, execute=command)
 
 
 def checked_root(workspace: Path, profile: dict) -> Path:
@@ -199,10 +138,19 @@ def integrate_manager(workspace: Path, profile: dict, inputs: dict, snapshot: Pa
     if effective_susfs(variant, bool_value(inputs['enable_susfs'])):
         dependency = workspace.resolve() / 'official-susfs'
         target = profile['android_version'] + '-' + profile['kernel_version']
-        restore_source(snapshot, dependency, reference, target, read_json(susfs_sources), variant=variant)
-        header = dependency / 'kernel_patches/include/linux/susfs.h'
-        if not re.search(r'^\s*#define\s+SUSFS_VERSION\s+"v2\.3\.0"', header.read_text(encoding='utf-8'), re.M):
-            raise ValueError('The OPlus SUSFS integration requires official SUSFS v2.3.0')
+        selected = restore_source(snapshot, dependency, reference, target, read_json(susfs_sources), variant=variant)
+        version = selected['version']
+        if version == SUSFS_24:
+            if variant in ('SukiSU', 'BakaSU'):
+                from suki_baka_susfs24 import integrate as integrate_susfs24
+                integrate_susfs24(root / 'KernelSU', dependency, variant)
+            else:
+                integrate_susfs(root, dependency, variant)
+            from susfs24_kernel_patch import apply_susfs24
+            apply_susfs24(root / 'common', dependency, target, apply_patch=patch_checked)
+            return root
+        if version != 'v2.3.0':
+            raise ValueError('The OPlus SUSFS integration does not support ' + version)
         if variant == 'SukiSU':
             from apply_susfs23 import apply_integration
             apply_integration(root, dependency)
@@ -252,6 +200,8 @@ def finalize_config(workspace: Path, profile: dict, inputs: dict, reference: str
     if enable_kpm and not re.search(r'(?m)^config KPM\s*$', kconfig):
         raise ValueError('Selected manager source does not expose its required native KPM bridge configuration')
     values['CONFIG_KSU_SUSFS'] = 'y' if susfs else 'n'
+    if variant == 'FinaSU' and susfs and re.search(r'(?m)^config KSU_SUSFS_NATIVE_PREINIT\s*$', kconfig):
+        values['CONFIG_KSU_HOOK_SUSFS_INLINE'] = 'y'
     if variant == 'BakaSU':
         values['CONFIG_KSU_MULTI_MANAGER_SUPPORT'] = 'y'
         if not susfs:

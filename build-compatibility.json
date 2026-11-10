@@ -15,14 +15,25 @@
       "17ff94d9da24d589a9705227fdda39a1c9045698",
       "22561329c04479b7985391764125a3a362170df0"
     ],
-    "tiers": ["Stable(标准)", "Dev(开发)", "Latest(最新)"],
+    "tiers": [
+      "Stable(标准)",
+      "Dev(开发)",
+      "Latest(最新)"
+    ],
     "version": "v2.3.0",
     "pins": {
-      "android12-5.10": "f43926dc94b8ffbf9b74321313536600f69367b1",
-      "android13-5.15": "86b5b10068459dedb545dc5db46a0f0254428eda",
-      "android14-6.1": "b57ed1998b82c4e3a2a81cdbf11172a560979c40",
-      "android15-6.6": "4a4cb1be85a4694372d3efb9420de69982eac29a",
-      "android16-6.12": "9c9f19d8395693327c78df36569b44e94c187b8a"
+      "android12-5.10": "5436438b5cc77f146e04f71070da153dabe17a9d",
+      "android13-5.15": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+      "android14-6.1": "69b8e734920b8f9ed885ab8d112969719698e242",
+      "android15-6.6": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+      "android16-6.12": "395a8c0c88d348e9fe7c14f66a456fde4653287c"
+    },
+    "target_versions": {
+      "android12-5.10": "v2.4.0",
+      "android13-5.15": "v2.4.0",
+      "android14-6.1": "v2.4.0",
+      "android15-6.6": "v2.4.0",
+      "android16-6.12": "v2.4.0"
     }
   }
 }

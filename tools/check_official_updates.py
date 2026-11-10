@@ -106,13 +106,15 @@ def gitlab_head(target: str) -> str:
 
 
 def baseline(root: Path) -> dict:
+    from pin_build_dependencies import target_version
     profile = load_profile(root)
     source = profile.get('source_ref', profile['ksu_commits'][0])
     if not isinstance(source, str) or not SHA.fullmatch(source):
         raise UpdateError('Compatibility source_ref must be a full commit SHA')
     if any(target not in profile['pins'] for target in TARGETS):
         raise UpdateError('The compatibility profile must contain all five official SUSFS targets')
-    return {'sukisu': source.lower(), 'susfs_version': profile['version'],
+    versions = {target_version(profile, profile['version'], target) for target in TARGETS}
+    return {'sukisu': source.lower(), 'susfs_version': ' / '.join(sorted(versions)),
             'susfs': {target: profile['pins'][target].lower() for target in TARGETS}}
 
 

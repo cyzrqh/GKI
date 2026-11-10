@@ -31,6 +31,7 @@ DISPATCH = 'kernel/supercall/dispatch.c'
 OBSERVER = 'kernel/manager/pkg_observer.c'
 KCONFIG = 'kernel/Kconfig'
 POLICY = 'kernel/selinux/sepolicy.c'
+RUNTIME = 'kernel/runtime/ksud_integration.c'
 PROVIDERS = ('ksu_setup_preinit_file', 'ksu_preinit_handle_post_execveat')
 PREINIT_SIGNATURES = (
     r'int\s+ksu_setup_preinit_file\(\s*struct filename\s*\*\*\s*\w+,\s*'
@@ -197,6 +198,19 @@ def remove_unlinked_lsm_init(text: str) -> str:
     return text.replace(anchor, anchor.replace('    ksu_lsm_hook_init();\n', ''), 1)
 
 
+def remove_unlinked_input_work(text: str) -> str:
+    """Keep direct input hooks and drop the stray legacy kprobe work from fstat."""
+    code = strip_comments_and_literals(text)
+    references = re.findall(r'\b(?:input_hook_stopped|stop_input_hook_work)\b', code)
+    if not references:
+        return text
+    fstat = re.search(r'(?ms)^void ksu_handle_vfs_fstat\(int fd, loff_t \*kstat_size_ptr\)\n\{\n(.*?)^\}', code)
+    tail = '    input_hook_stopped = true;\n    schedule_work(&stop_input_hook_work);\n'
+    if references != ['input_hook_stopped', 'stop_input_hook_work'] or fstat is None or not fstat[1].endswith(tail):
+        raise ValueError('Review the changed SukiSU direct input-hook lifecycle')
+    return text[:fstat.end(1) - len(tail)] + text[fstat.end(1):]
+
+
 def integrate(source: Path, dependency: Path, variant: str) -> tuple[Path, ...]:
     """Apply 2.4 wiring after snapshot preparation and any BakaSU KPM restoration."""
     if variant not in ('SukiSU', 'BakaSU'):
@@ -219,6 +233,8 @@ def integrate(source: Path, dependency: Path, variant: str) -> tuple[Path, ...]:
         # The verified SUSFS direct-hook port does not link hook/lsm_hook.o.
         original[CORE_INIT] = read(source, CORE_INIT)
         updated[CORE_INIT] = remove_unlinked_lsm_init(original[CORE_INIT])
+        original[RUNTIME] = read(source, RUNTIME)
+        updated[RUNTIME] = remove_unlinked_input_work(original[RUNTIME])
     changed = []
     for relative, text in updated.items():
         if text != original[relative]:

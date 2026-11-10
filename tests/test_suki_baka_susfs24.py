@@ -156,6 +156,31 @@ void fallback(void) {
         with self.assertRaisesRegex(ValueError, 'direct-hook lifecycle'):
             compat.remove_unlinked_lsm_init(original.replace('ksu_avc_spoof_init();', 'ksu_lsm_hook_exit();'))
 
+    def test_suki_fstat_keeps_rc_size_and_safe_mode_without_legacy_input_work(self):
+        safe_mode = '''bool ksu_is_safe_mode(void)
+{
+    if (static_key_enabled(&ksu_is_input_hook_enabled)) {
+        static_branch_disable(&ksu_is_input_hook_enabled);
+    }
+    return is_volumedown_enough(volumedown_pressed_count);
+}
+'''
+        fstat = '''void ksu_handle_vfs_fstat(int fd, loff_t *kstat_size_ptr)
+{
+    if (is_rc) {
+        *kstat_size_ptr = orig_size + extra;
+    }
+    input_hook_stopped = true;
+    schedule_work(&stop_input_hook_work);
+}
+'''
+        expected = safe_mode + fstat.replace('    input_hook_stopped = true;\n'
+                                            '    schedule_work(&stop_input_hook_work);\n', '')
+        self.assertEqual(expected, compat.remove_unlinked_input_work(safe_mode + fstat))
+        self.assertEqual(expected, compat.remove_unlinked_input_work(expected))
+        with self.assertRaisesRegex(ValueError, 'direct input-hook lifecycle'):
+            compat.remove_unlinked_input_work(safe_mode + fstat.replace('ksu_handle_vfs_fstat', 'different_hook'))
+
 
 if __name__ == '__main__':
     unittest.main()

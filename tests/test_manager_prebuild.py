@@ -130,6 +130,7 @@ class ManagerPrebuildTest(unittest.TestCase):
         self.assertEqual(caller['jobs']['prebuild-managers']['uses'], './' + OUTPUT)
         workflow = prebuild_workflow(create_workflow(ROOT))
         self.assertEqual(set(workflow['on']), {'workflow_call'})
+        self.assertNotIn('workflow_dispatch', json.dumps(workflow))
         auto = workflow['jobs']['prebuild-manager-sources']
         self.assertIn("manager_prebuild_pending == 'true'", auto['if'])
         self.assertIn('sukisu_latest_ksu_ref', auto['outputs'])

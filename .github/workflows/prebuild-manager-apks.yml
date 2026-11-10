@@ -496,13 +496,12 @@ jobs:
     - name: 验证管理器原生生命周期及真实 C 状态行为
       run: python3 -m unittest discover -s tests -p 'test_manager_port_native.py'
     - name: 检查管理器构建脚本
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       run: for script in tools/build_sukisu_manager.sh tools/build_bakasu_manager.sh; do bash -n "$script" || exit 1; done
     - name: 验证 BakaSU KPM 原生接口与补丁
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && matrix.variant
-        == 'BakaSU'
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && matrix.variant == 'BakaSU'
       run: |
         set -euo pipefail
         command -v cc >/dev/null
@@ -532,18 +531,18 @@ jobs:
         PY
     - name: 读取固定签名的公开证书
       id: certificate
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       env:
         SUKISU_APK_KEYSTORE: ${{ secrets.SUKISU_APK_KEYSTORE }}
         SUKISU_APK_PASSWORD: ${{ secrets.SUKISU_APK_PASSWORD }}
       run: python3 tools/export_manager_certificate.py --output "$RUNNER_TEMP/manager-public-certificate.json"
     - name: 仅下载一次官方管理器源码
       uses: actions/checkout@v6
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       with:
         repository: ${{ steps.sources.outputs.ksu_repo }}
         ref: ${{ steps.sources.outputs.ksu_ref }}
@@ -552,9 +551,9 @@ jobs:
         persist-credentials: false
     - name: 展开矩阵前验证并固定源码快照
       id: source-snapshot
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       env:
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
         KSU_TIER: ${{ steps.sources.outputs.effective_ksu_branch }}
@@ -586,9 +585,9 @@ jobs:
         PY
     - name: 固定源码树和管理器版本身份
       id: source-identity
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       env:
         KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
       run: |
@@ -658,9 +657,9 @@ jobs:
       uses: actions/cache/save@v5
       timeout-minutes: 3
       continue-on-error: true
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       with:
         path: ksu-source-bundle
         key: ${{ steps.source-snapshot.outputs.source_cache_key }}
@@ -668,9 +667,9 @@ jobs:
       uses: actions/cache/restore@v5
       timeout-minutes: 3
       continue-on-error: true
-      if: github.event_name == 'workflow_dispatch' && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant
-        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+      if: true && ('仅编译管理器安装包' == '编译内核' || '仅编译管理器安装包' == '仅编译管理器安装包') && ((matrix.variant == 'SukiSU' || matrix.variant
+        == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' || matrix.variant == 'KowSU' ||
+        matrix.variant == 'FinaSU'))
       with:
         path: ksu-source-bundle
         key: ${{ steps.source-snapshot.outputs.source_cache_key }}

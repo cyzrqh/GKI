@@ -20,6 +20,7 @@ SUBSTITUTIONS = {
     'inputs.kernelsu_branch': 'matrix.tier',
     'inputs.operation': "'仅编译管理器安装包'",
     'inputs.enable_susfs': 'false',
+    "github.event_name == 'workflow_dispatch'": 'true',
 }
 
 

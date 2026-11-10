@@ -55,7 +55,7 @@ def create_jobs(base):
     source = next(step for step in prepare['steps'] if step.get('id') == 'sources')
     source['env'].update(EXPECTED_REF='${{ matrix.reference }}', EXPECTED_SOURCE_BRANCH='${{ matrix.source_branch }}')
     source['run'] = '''set -euo pipefail
-python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" --susfs false
+python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" --susfs true
 python3 - <<'PY'
 import os
 from pathlib import Path

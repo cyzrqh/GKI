@@ -94,7 +94,8 @@ class ManagerPrebuildTest(unittest.TestCase):
         self.assertEqual([row['variant'] for row in matrix['include']], ['FinaSU'])
 
     def test_backfill_ignores_only_confirmed_missing_stable_release(self):
-        def resolve(root, variant, tier):
+        def resolve(root, variant, tier, *, susfs):
+            self.assertTrue(susfs)
             if variant == 'BakaSU' and tier == STABLE:
                 raise NoStableRelease('no formal release')
             return {'ksu_ref': ref(MANAGERS.index(variant) + (10 if tier == STABLE else 1)),

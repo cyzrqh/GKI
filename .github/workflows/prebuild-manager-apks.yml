@@ -520,7 +520,7 @@ jobs:
         EXPECTED_SOURCE_BRANCH: ${{ matrix.source_branch }}
       run: |
         set -euo pipefail
-        python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" --susfs false
+        python3 tools/resolve_build_sources.py --variant "$KSU_VARIANT" --tier "$KSU_TIER" --susfs true
         python3 - <<'PY'
         import os
         from pathlib import Path

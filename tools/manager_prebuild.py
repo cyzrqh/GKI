@@ -62,7 +62,7 @@ def current_channels(root: Path) -> ChannelSources:
         selected = {}
         for tier in CHANNELS:
             try:
-                item = resolve_sources(root, variant, tier)
+                item = resolve_sources(root, variant, tier, susfs=True)
             except NoStableRelease:
                 if tier != STABLE:
                     raise

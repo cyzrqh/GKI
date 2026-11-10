@@ -124,6 +124,63 @@ def function_source(text: str, name: str) -> str:
     return text[start:end]
 
 
+def verify_native_inode_sid_path(source: Path, core: str, hide: str, kbuild: str) -> None:
+    """Preserve the selected native initialization and live SID parsing."""
+    def official(relative: str) -> bytes:
+        result = subprocess.run(['git', '-C', str(source), 'show', 'HEAD:kernel/' + relative],
+                                capture_output=True, timeout=30)
+        if result.returncode:
+            raise ValueError('Cannot inspect native Kow SELinux source: ' + relative)
+        return result.stdout
+
+    original = function_source(official('core/init.c').decode('utf-8'), 'kernelsu_init')
+    if 'ksu_selinux_inode_init' not in original:
+        if 'ksu_selinux_inode_init' in core:
+            raise ValueError('Kow must not call the newer upstream-only SELinux inode initializer')
+        return
+
+    lifecycle = re.compile(r'\bksu_init_symbol_resolver\(\);\s*ret\s*=\s*ksu_selinux_inode_init\(\);'
+                           r'\s*if\s*\(ret\)\s*\{\s*put_cred\(ksu_cred\);\s*ksu_cred\s*=\s*NULL;'
+                           r'\s*return\s+ret;\s*\}')
+    native_init = strip_comments_and_literals(original)
+    current_init = strip_comments_and_literals(function_source(core, 'kernelsu_init'))
+    matched = lifecycle.search(current_init)
+    if (len(lifecycle.findall(native_init)) != 1 or matched is None
+            or current_init.count('ksu_selinux_inode_init(') != 1
+            or current_init.find('susfs_init();', matched.end()) < 0):
+        raise ValueError('Kow native SELinux inode initialization and credential cleanup must survive SUSFS')
+    for relative in ('infra/btf_parser.c', 'infra/btf_parser.h', 'selinux/inode.c'):
+        path = source / 'kernel' / relative
+        if (not path.is_file() or path.is_symlink() or path.read_bytes() != official(relative)):
+            raise ValueError('Kow native SELinux inode source changed: ' + relative)
+        if relative.endswith('.c'):
+            rule = 'kernelsu-objs += ' + relative.removesuffix('.c') + '.o'
+            if kbuild.splitlines().count(rule) != 1:
+                raise ValueError('Kow native SELinux inode source must stay linked: ' + relative)
+
+    original_hide = official('feature/selinux_hide.c').decode('utf-8')
+    for function in ('backup_string_to_context_struct', 'security_context_to_sid_live'):
+        if function_source(hide, function) != function_source(original_hide, function):
+            raise ValueError('Kow native live SID implementation changed: ' + function)
+    # The official kernel-side SUSFS hook checks the current attribute, app UID
+    # and feature state before calling here. In the handler itself, retain the
+    # live parse, -EAGAIN fallback and all native SELinux errors.
+    native_setprocattr = function_source(original_hide, 'my_setprocattr')
+    changes = (
+        ('    if (likely(current_uid().val < 10000)) {\n        goto call_orig;\n    }\n\n'
+         '    if (strcmp(name, "current")) {\n        goto call_orig;\n    }\n\n', ''),
+        ('\ncall_orig:\n    return ((setprocattr_fn)selinux_setprocattr_hook.original)(name, value, size);\n', ''),
+        ('error2 = security_context_to_sid_with_policy(', 'error2 = __security_context_to_sid_with_policy('),
+    )
+    expected = native_setprocattr
+    for before, after in changes:
+        if expected.count(before) != 1:
+            raise ValueError('Kow native setprocattr entry path needs review')
+        expected = expected.replace(before, after, 1)
+    if function_source(hide, 'my_setprocattr') != expected:
+        raise ValueError('Kow native setprocattr live SID and fallback validation changed')
+
+
 def verify_kow_port(source: Path) -> None:
     def read(name):
         path = source / 'kernel' / name
@@ -159,11 +216,11 @@ def verify_kow_port(source: Path) -> None:
     for call in ('susfs_init();', 'ksu_feature_init();', 'ksu_avc_spoof_init();', 'ksu_avc_spoof_exit();'):
         if core.count(call) != 1:
             raise ValueError('Kow native lifecycle callback is missing or duplicated: ' + call)
-    if 'ksu_selinux_inode_init' in core:
-        raise ValueError('Kow must not call the newer upstream-only SELinux inode initializer')
-    if 'kernelsu-objs += extras.o' not in read('Kbuild'):
+    kbuild = read('Kbuild')
+    if 'kernelsu-objs += extras.o' not in kbuild:
         raise ValueError('Kow AVC implementation is not linked')
     hide = read('feature/selinux_hide.c')
+    verify_native_inode_sid_path(source, core, hide, kbuild)
     verify_selinux_view(hide, read('selinux/rules.c'))
     verify_policy_helpers(hide)
     header = read('supercall/supercall.h')

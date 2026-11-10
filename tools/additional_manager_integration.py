@@ -273,6 +273,13 @@ def apply_next_port(source: Path, *, name: str = 'next-susfs23') -> None:
             from ensure_official_init_compat import ensure_official_init_compat
             ensure_official_init_compat(source)
         verify_native_policy_generation(source)
+
+    if name == 'kow-susfs23':
+        from kow_susfs_compat import apply_reviewed_kow_port
+        if apply_reviewed_kow_port(source):
+            verify()
+            return
+
     def call(repo, *args):
         return subprocess.run(['git', '-C', str(repo), '-c', 'core.autocrlf=false',
                                '-c', 'merge.conflictStyle=diff3', *args],

@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
-from susfs_setprocattr_compat import resolved_text
+from susfs_setprocattr_compat import OLD_DECLARATIONS, LIVE_DECLARATION, resolved_text
 
 
 # Reduced setprocattr bodies from the selected Next dev 0c9c4438a6 and the
@@ -63,6 +63,29 @@ OLD_PORT = PREFIX + r'''    /* Obtain a SID for the context, if one was specifie
         }
     }
 ''' + SUFFIX
+LIVE_CALL = '''        error = security_context_to_sid_live(value, size, &sid);
+        if (error == -EAGAIN) {
+            // stale type mark, use the dual parse
+            error2 = security_context_to_sid_with_policy(backup_sepolicy, value, size, &tmp_sid, SECSID_NULL,
+                                                         GFP_KERNEL, &sid, &error);
+            if (error2 || error)
+                return error2 ?: error;
+        } else if (error) {
+            return error;
+        }
+'''
+DECL_ANCHOR = 'static write_op_fn *selinux_write_op;\n'
+DECL_NEXT = 'static write_op_fn *context_write, *access_write;\n\n'
+LIVE_DECLARATIONS = OLD_DECLARATIONS.replace('static void security_compute_av_user_with_policy(',
+                                            LIVE_DECLARATION + 'static void security_compute_av_user_with_policy(')
+LIVE_BASE = DECL_ANCHOR + OLD_DECLARATIONS + DECL_NEXT + BASE
+LIVE_OLD_PORT = DECL_ANCHOR + DECL_NEXT + OLD_PORT
+LIVE_OFFICIAL = DECL_ANCHOR + LIVE_DECLARATIONS + DECL_NEXT + BASE.replace(
+    '''        error2 = security_context_to_sid_with_policy(backup_sepolicy, value, size, &tmp_sid, SECSID_NULL, GFP_KERNEL,
+                                                     &sid, &error);
+        if (error2 || error)
+            return error2 ?: error;
+''', LIVE_CALL)
 
 
 @unittest.skipUnless(shutil.which('git'), 'Git is required to generate a real diff3 conflict')
@@ -102,6 +125,23 @@ class SetprocattrPortTests(unittest.TestCase):
         ported = resolved_text(merged, OFFICIAL, reverse=False)
         reverse = self.conflict(ported, OLD_PORT, BASE).replace('return 0;', 'return -1;')
         self.assertIsNone(resolved_text(reverse, OFFICIAL, reverse=True))
+
+    def test_live_sid_parser_and_newline_check_survive_forward_and_reverse(self):
+        conflict = self.conflict(LIVE_OFFICIAL, LIVE_BASE, LIVE_OLD_PORT)
+        ported = resolved_text(conflict, LIVE_OFFICIAL, reverse=False)
+        self.assertIsNotNone(ported)
+        self.assertEqual(1, ported.count(LIVE_DECLARATION))
+        self.assertIn('error = security_context_to_sid_live(value, size, &sid);', ported)
+        self.assertIn('if (error == -EAGAIN)', ported)
+        self.assertIn('error2 = __security_context_to_sid_with_policy(', ported)
+        self.assertLess(ported.index('return -EINVAL;'), ported.index('error = security_context_to_sid_live('))
+        reverse = self.conflict(ported, LIVE_OLD_PORT, LIVE_BASE)
+        self.assertEqual(LIVE_OFFICIAL, resolved_text(reverse, LIVE_OFFICIAL, reverse=True))
+
+    def test_live_sid_parser_with_different_fallback_does_not_apply(self):
+        unknown = LIVE_OFFICIAL.replace('error == -EAGAIN', 'error == -ENOENT')
+        conflict = self.conflict(unknown, LIVE_BASE, LIVE_OLD_PORT)
+        self.assertIsNone(resolved_text(conflict, unknown, reverse=False))
 
 
 if __name__ == '__main__':

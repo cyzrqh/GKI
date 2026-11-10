@@ -14,3 +14,5 @@ tests/fixtures/oplus-susfs66/namespace-header.c -whitespace
 tests/fixtures/oplus-vendor-locking/*.source -whitespace
 # Reviewed Git merge preimages retain their exact official bytes.
 tools/patches/sukisu-susfs23-base/*.source -whitespace
+# Preserve literal context whitespace in the reviewed KowSU unified diff.
+tools/patches/kow-susfs23-inode.patch -whitespace

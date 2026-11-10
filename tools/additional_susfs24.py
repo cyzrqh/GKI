@@ -138,8 +138,9 @@ def priority_dispatch(text: str) -> str:
                               r'\1[ \t]+return 0;\n')
         if PRIORITY_CASE in body:
             found = list(existing.finditer(body))
-            if (len(found) != 1 or body.count(PRIORITY_CASE) != 1
-                    or not begin <= compact.index(PRIORITY_CASE) < end):
+            case = 'case' + PRIORITY_CASE + ':'
+            if (len(found) != 1 or compact.count(case) != 1
+                    or not begin <= compact.index(case) < end):
                 raise ValueError('Review the native SUSFS priority UID command')
             match = found[0]
             before = body[:match.start()].rstrip().splitlines()[-1]
@@ -156,11 +157,27 @@ def priority_dispatch(text: str) -> str:
     return inside(text, 'ksu_handle_sys_reboot', edit)
 
 
-def priority_observer(text: str) -> str:
+def priority_observer(text: str, *, native_fina_guard: bool = False) -> str:
     if '#include <linux/susfs.h>' not in text:
         anchor = '#include <linux/version.h>\n'
         text = once(text, anchor, anchor + guard('#include <linux/susfs.h>'), 'priority observer header')
+    scan = '    track_throne(false);\n'
+    exiting = 'if (current->flags & PF_EXITING)\n        return;'
     if PRIORITY_REFRESH in text:
+        if native_fina_guard:
+            callback = function_source(text, 'ksu_track_throne_tw_func')
+            # FinaSU already performs this refresh after the safe deferred
+            # scan. Keep its additional command-availability condition.
+            existing = re.search(
+                r'(?m)^#if defined\(CONFIG_KSU_SUSFS\) && defined\(CONFIG_KSU_SUSFS_PRIORITY_UID_FILTER\)'
+                r' &&[ \t]+(?:\\\n[ \t]+)?defined\(CMD_SUSFS_SET_PRIORITY_UID_FILTER\)\n'
+                r'    susfs_parse_priority_app_strings\(\);\n#endif\n', callback)
+            if existing:
+                if (text.count(PRIORITY_REFRESH) != 1 or callback.count(scan) != 1
+                        or callback.count(exiting) != 1 or callback.index(exiting) >= callback.index(scan)
+                        or existing.start() != callback.index(scan) + len(scan)):
+                    raise ValueError('The native FinaSU priority UID refresh must follow the safe deferred scan')
+                return text
         old = re.compile(r'(?m)^#ifdef CONFIG_KSU_SUSFS(?:_PRIORITY_UID_FILTER)?\n'
                          r'(?:[ \t]*//[^\n]*\n)?[ \t]*susfs_parse_priority_app_strings\(\);\n'
                          r'#endif[^\n]*\n')
@@ -175,10 +192,9 @@ def priority_observer(text: str) -> str:
             raise ValueError('Review the existing native SUSFS priority refresh context')
 
     def refresh(body: str) -> str:
-        if 'if (current->flags & PF_EXITING)\n        return;' not in body:
+        if exiting not in body:
             raise ValueError('The priority UID refresh must run in the native safe task callback')
-        anchor = '    track_throne(false);\n'
-        return once(body, anchor, anchor + guard('    ' + PRIORITY_REFRESH, PRIORITY_GUARD),
+        return once(body, scan, scan + guard('    ' + PRIORITY_REFRESH, PRIORITY_GUARD),
                     'priority observer callback')
 
     return inside(text, 'ksu_track_throne_tw_func', refresh)
@@ -282,7 +298,7 @@ def complete(source: Path, dependency: Path, variant: str) -> None:
     observer = kernel / 'manager/pkg_observer.c'
     dispatch = kernel / ('extension/susfs.c' if variant == 'FinaSU' else 'supercall/dispatch.c')
     policy = kernel / 'selinux/sepolicy.c'
-    updates = {kconfig: text, observer: priority_observer(read(observer, source)),
+    updates = {kconfig: text, observer: priority_observer(read(observer, source), native_fina_guard=variant == 'FinaSU'),
                dispatch: priority_dispatch(read(dispatch, source)), policy: policy_hooks(read(policy, source))}
     if variant == 'KernelSU-Next' and 'config KSU_THRONE_TRACKER_ALWAYS_THREADED\n' in text:
         tracker = kernel / 'manager/throne_tracker.c'

@@ -9,10 +9,15 @@ jobs:
     name: Linux 预检与进程退出竞争复验
     runs-on: ubuntu-24.04
     timeout-minutes: 8
+    env:
+      KSU_VARIANT: KernelSU-Next
     steps:
     - uses: actions/checkout@v6
       with:
         persist-credentials: false
+    - name: 恢复待合入的正式工作流用于可复现检查
+      run: git show 6e2deaa64db4ae75ae6b3a337553986e76d6d2f5:.github/workflows/oplus-full-feature-matrix.yml
+        > .github/workflows/oplus-full-feature-matrix.yml
     - name: 运行原始欧加真预检
       run: 'set -euo pipefail
 

@@ -144,8 +144,8 @@ class SelectedGkiReleaseTests(unittest.TestCase):
         self.assert_original_assets()
         title = (self.output / 'title.txt').read_text(encoding='utf-8')
         self.assertEqual('Android · SukiSU 40922 正式版\u2028'
-            + '\u00a0' * 17 + 'BakaSU 35252 最新测试版\u2028'
-            + '\u00a0' * 17 + 'KernelSU-Next 45003 开发版', title)
+            + '\u2007' * 8 + 'BakaSU 35252 最新测试版\u2028'
+            + '\u2007' * 8 + 'KernelSU-Next 45003 开发版', title)
         body = (self.output / 'release.md').read_text(encoding='utf-8')
         self.assertTrue(body.startswith('# Android 联合构建结果\n'))
         for variant in COMBINED_MANAGERS:
@@ -369,10 +369,13 @@ class SelectedOplusReleaseTests(unittest.TestCase):
         body = (self.output / 'release.md').read_text(encoding='utf-8')
         self.assertTrue(body.startswith('# OnePlus 联合构建结果\n'))
         self.assertEqual(len(self.variants) - 1, title.count('\u2028'))
+        self.assertTrue(all(line.startswith('\u2007' * 8 + '\u200a')
+                            for line in title.split('\u2028')[1:]))
         for variant in self.variants:
             code, _, label = TIERS[variant]
             self.assertIn(variant + ' ' + code + ' ' + label, title)
-        self.assertIn('6.1.57-android14-11-test', body)
+        self.assertNotIn('适用构建范围', body)
+        self.assertNotIn('仅证明产物及编译配置配套', body)
         self.assertIn('SUSFS', body)
         self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
 

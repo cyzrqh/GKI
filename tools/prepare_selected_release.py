@@ -34,7 +34,9 @@ def combined_release_title(managers: list[dict], *, platform: str) -> str:
             for manager in managers]
     # Ordinary newlines collapse in GitHub's title links. A Unicode line
     # separator also preserves one manager per line in the release sidebar.
-    return prefix + ('\u2028' + '\u00a0' * 17).join(rows)
+    # Figure spaces follow numeral widths in both normal and selected links.
+    indent = '\u2007' * 8 + ('\u200a' if platform == 'OnePlus' else '')
+    return prefix + ('\u2028' + indent).join(rows)
 
 
 @contextmanager

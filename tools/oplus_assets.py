@@ -645,13 +645,7 @@ def collect(source: Path, output: Path, matrix: dict, variants: str) -> dict:
         else:
             values = {feature_label(row['features'].get(field)) for row in records}
         lines.append('| ' + label + ' | ' + ', '.join(sorted(values)).replace('|', '\\|') + ' |')
-    lines += ['', '## 适用构建范围', '', '| 平台 | 完整内核 | 原生 release | 系统源码依据 |', '|---|---|---|---|']
-    for row in sorted(records, key=lambda item: (catalog.order(item['profile']), item['ksu_variant'])):
-        profile = row['profile']
-        platform = catalog.platform_family(profile['platform'])
-        lines.append('| ' + platform + ' | ' + profile['kernel'] + ' | `' + row['kernel_release']
-                     + '` | ' + profile['system'].replace('|', '\\|') + ' |')
-    lines += ['', '仅证明产物及编译配置配套；同内核版本不代表所有机型或固件均可通刷。', '']
+    lines.append('')
     (output / 'summary.md').write_text('\n'.join(lines), encoding='utf-8', newline='\n')
     (output / 'title.txt').write_text(title, encoding='utf-8')
     return {'count': len(records), 'managers': sorted(managers), 'files': hashes}

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from contextlib import contextmanager
+import html
 import json
 import os
 from pathlib import Path
@@ -25,6 +26,14 @@ from resolve_manager_selection import active_managers, validate_receipt
 SUFFIXES = {'SukiSU': 'SUKISU', 'BakaSU': 'BAKASU', 'KernelSU-Next': 'KERNELSU_NEXT',
             'KernelSU': 'KERNELSU', 'KowSU': 'KOWSU', 'FinaSU': 'FINASU'}
 OPERATIONS = ('编译内核', '仅编译管理器安装包')
+
+
+def combined_release_summary(managers: list[dict], *, platform: str) -> str:
+    """Show each manager below the short title using normal body text."""
+    prefix = platform + ' · '
+    rows = [html.escape(release_title(manager, platform=platform).removeprefix(prefix))
+            for manager in managers]
+    return '<p>' + html.escape(prefix) + ('<br>\n' + '&nbsp;' * 17).join(rows) + '</p>'
 
 
 @contextmanager
@@ -256,9 +265,9 @@ def prepare(source: Path, output: Path, *, selection: str, platform: str, operat
             (assets / 'SHA256SUMS.txt').write_text(''.join(merged[name][1] + '  ' + name + '\n'
                 for name in sorted(merged, key=natural_key)), encoding='utf-8', newline='\n')
             label = 'Android' if platform == 'gki' else 'OnePlus'
-            title = label + ' · ' + ' / '.join(release_title(manager, platform=label)
-                .removeprefix(label + ' · ') for _, manager, _, _ in records)
-            sections = ['# ' + label + ' 联合构建结果', '']
+            title = label + ' · 联合发行'
+            summary = combined_release_summary([manager for _, manager, _, _ in records], platform=label)
+            sections = [summary, '', '# ' + label + ' 联合构建结果', '']
             for variant, _, notes, _ in records:
                 sections += ['## ' + variant, '', '\n'.join('##' + line if line.startswith('#') else line
                             for line in notes.splitlines()), '']

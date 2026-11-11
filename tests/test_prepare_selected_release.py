@@ -369,7 +369,7 @@ class SelectedOplusReleaseTests(unittest.TestCase):
         body = (self.output / 'release.md').read_text(encoding='utf-8')
         self.assertTrue(body.startswith('# OnePlus 联合构建结果\n'))
         self.assertEqual(len(self.variants) - 1, title.count('\u2028'))
-        self.assertTrue(all(line.startswith('\u2007' * 8 + '\u200a')
+        self.assertTrue(all(line.startswith('\u2007' * 8 + '\u200a\u2060')
                             for line in title.split('\u2028')[1:]))
         for variant in self.variants:
             code, _, label = TIERS[variant]

@@ -618,7 +618,11 @@ class OPlusGitTransportTests(unittest.TestCase):
             child = int(marker.read_text())
             state = Path('/proc') / str(child) / 'stat'
             for _ in range(100):
-                if not state.exists() or state.read_text().split()[2] == 'Z':
+                try:
+                    status = state.read_text()
+                except (FileNotFoundError, ProcessLookupError):
+                    break
+                if status.rpartition(') ')[2].partition(' ')[0] == 'Z':
                     break
                 adapter.time.sleep(0.01)
             else:

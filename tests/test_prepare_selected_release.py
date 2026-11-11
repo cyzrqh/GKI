@@ -143,14 +143,14 @@ class SelectedGkiReleaseTests(unittest.TestCase):
         self.assertEqual(set(COMBINED_MANAGERS), set(result['managers']))
         self.assert_original_assets()
         title = (self.output / 'title.txt').read_text(encoding='utf-8')
-        self.assertEqual('Android · 联合发行', title)
+        self.assertEqual('Android · SukiSU 40922 正式版\u2028'
+            + '\u00a0' * 17 + 'BakaSU 35252 最新测试版\u2028'
+            + '\u00a0' * 17 + 'KernelSU-Next 45003 开发版', title)
         body = (self.output / 'release.md').read_text(encoding='utf-8')
-        self.assertTrue(body.startswith('<p>Android · SukiSU 40922 正式版<br>\n'
-            + '&nbsp;' * 17 + 'BakaSU 35252 最新测试版<br>\n'
-            + '&nbsp;' * 17 + 'KernelSU-Next 45003 开发版</p>\n'))
+        self.assertTrue(body.startswith('# Android 联合构建结果\n'))
         for variant in COMBINED_MANAGERS:
             code, _, label = TIERS[variant]
-            self.assertIn(variant + ' ' + code + ' ' + label, body)
+            self.assertIn(variant + ' ' + code + ' ' + label, title)
             self.assertIn(variant, body)
             self.assertIn(manager_profile(variant)['package'], body)
         self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
@@ -365,14 +365,13 @@ class SelectedOplusReleaseTests(unittest.TestCase):
         self.assertEqual({name: hashlib.sha256(raw).hexdigest() for name, raw in self.originals.items()},
                          checksums(self.output / 'assets/SHA256SUMS.txt'))
         title = (self.output / 'title.txt').read_text(encoding='utf-8')
-        self.assertEqual('OnePlus · 联合发行', title)
+        self.assertTrue(title.startswith('OnePlus · '), title)
         body = (self.output / 'release.md').read_text(encoding='utf-8')
-        details = body.partition('</p>')[0]
-        self.assertTrue(details.startswith('<p>OnePlus · '))
-        self.assertEqual(len(self.variants) - 1, details.count('<br>'))
+        self.assertTrue(body.startswith('# OnePlus 联合构建结果\n'))
+        self.assertEqual(len(self.variants) - 1, title.count('\u2028'))
         for variant in self.variants:
             code, _, label = TIERS[variant]
-            self.assertIn(variant + ' ' + code + ' ' + label, details)
+            self.assertIn(variant + ' ' + code + ' ' + label, title)
         self.assertIn('6.1.57-android14-11-test', body)
         self.assertIn('SUSFS', body)
         self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
@@ -496,16 +495,16 @@ class SelectedAdditionalGkiReleaseTests(unittest.TestCase):
         self.assertEqual(list(SECOND_MANAGERS), result['managers'])
         fixture.assert_original_assets()
         title = (fixture.output / 'title.txt').read_text(encoding='utf-8')
-        self.assertEqual('Android · 联合发行', title)
-        details = (fixture.output / 'release.md').read_text(encoding='utf-8').partition('</p>')[0]
-        self.assertTrue(details.startswith('<p>Android · '))
-        self.assertEqual(2, details.count('<br>'))
+        self.assertTrue(title.startswith('Android · '), title)
+        self.assertEqual(2, title.count('\u2028'))
+        self.assertTrue((fixture.output / 'release.md').read_text(encoding='utf-8')
+                        .startswith('# Android 联合构建结果\n'))
         for variant in SECOND_MANAGERS:
             code, _, tier = TIERS[variant]
-            self.assertIn(variant + ' ' + code + ' ' + tier, details)
+            self.assertIn(variant + ' ' + code + ' ' + tier, title)
             self.assertIsNotNone(fixture.inputs[variant]['metadata'])
         for variant in COMBINED_MANAGERS:
-            self.assertNotIn(variant, details)
+            self.assertNotIn(variant, title)
         self.assertEqual('preexisting value', os.environ['GKI_MANAGER_METADATA'])
 
     def test_second_group_requires_every_catalog_to_be_complete(self):

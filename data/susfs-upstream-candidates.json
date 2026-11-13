@@ -14,8 +14,8 @@
       "version": "v2.4.0"
     },
     "android14-6.1": {
-      "build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-      "ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+      "build_tree_sha256": "52069c024c2f0aec825366d85f0ac88eb52838fbcab8b381dacbfb3497f759a6",
+      "ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
       "version": "v2.4.0"
     },
     "android15-6.6": {
@@ -47,10 +47,10 @@
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
@@ -84,10 +84,10 @@
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
@@ -121,10 +121,10 @@
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
@@ -158,10 +158,10 @@
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
@@ -195,10 +195,10 @@
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
@@ -232,10 +232,10 @@
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
+        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",

@@ -4,28 +4,28 @@
   "policy": "same-build-tree-v1",
   "candidates": {
     "android12-5.10": {
-      "build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-      "ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+      "build_tree_sha256": "e5a51175b956a9449cd9a095980e91437901cead8301eb68210f3cec1406571d",
+      "ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
       "version": "v2.4.0"
     },
     "android13-5.15": {
-      "build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-      "ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+      "build_tree_sha256": "60301d0a77f3dbe58d94f6de06aecdae31c9c83a9bc8834adff8c616c861e2e5",
+      "ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
       "version": "v2.4.0"
     },
     "android14-6.1": {
-      "build_tree_sha256": "52069c024c2f0aec825366d85f0ac88eb52838fbcab8b381dacbfb3497f759a6",
-      "ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+      "build_tree_sha256": "ba733a52f581dea958923910078c15671ec4dc32b373697ecfe265b2923d444a",
+      "ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
       "version": "v2.4.0"
     },
     "android15-6.6": {
-      "build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-      "ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+      "build_tree_sha256": "1339232a4536250c6357541fe6ce74fda69daaa07da964852fb99dd07c940655",
+      "ref": "f98f08223bbf469cc0a1542166383d253557fc32",
       "version": "v2.4.0"
     },
     "android16-6.12": {
-      "build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-      "ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+      "build_tree_sha256": "813c493e718b94dd46049aa5857c9b6f7cc99f382dc8c372d5d787465bb96a64",
+      "ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
       "version": "v2.4.0"
     }
   },
@@ -33,223 +33,223 @@
     "SukiSU": {
       "android12-5.10": {
         "selected_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
-        "candidate_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "candidate_ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
         "selected_build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android13-5.15": {
         "selected_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
-        "candidate_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "candidate_ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
         "selected_build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+        "candidate_ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
         "status": "pending_adaptation",
         "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
-        "candidate_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "candidate_ref": "f98f08223bbf469cc0a1542166383d253557fc32",
         "selected_build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android16-6.12": {
         "selected_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
-        "candidate_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+        "candidate_ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
         "selected_build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       }
     },
     "KernelSU-Next": {
       "android12-5.10": {
         "selected_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
-        "candidate_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "candidate_ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
         "selected_build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android13-5.15": {
         "selected_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
-        "candidate_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "candidate_ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
         "selected_build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+        "candidate_ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
         "status": "pending_adaptation",
         "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
-        "candidate_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "candidate_ref": "f98f08223bbf469cc0a1542166383d253557fc32",
         "selected_build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android16-6.12": {
         "selected_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
-        "candidate_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+        "candidate_ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
         "selected_build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       }
     },
     "KernelSU": {
       "android12-5.10": {
         "selected_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
-        "candidate_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "candidate_ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
         "selected_build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android13-5.15": {
         "selected_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
-        "candidate_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "candidate_ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
         "selected_build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+        "candidate_ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
         "status": "pending_adaptation",
         "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
-        "candidate_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "candidate_ref": "f98f08223bbf469cc0a1542166383d253557fc32",
         "selected_build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android16-6.12": {
         "selected_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
-        "candidate_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+        "candidate_ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
         "selected_build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       }
     },
     "KowSU": {
       "android12-5.10": {
         "selected_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
-        "candidate_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "candidate_ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
         "selected_build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android13-5.15": {
         "selected_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
-        "candidate_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "candidate_ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
         "selected_build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+        "candidate_ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
         "status": "pending_adaptation",
         "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
-        "candidate_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "candidate_ref": "f98f08223bbf469cc0a1542166383d253557fc32",
         "selected_build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android16-6.12": {
         "selected_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
-        "candidate_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+        "candidate_ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
         "selected_build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       }
     },
     "BakaSU": {
       "android12-5.10": {
         "selected_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
-        "candidate_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "candidate_ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
         "selected_build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android13-5.15": {
         "selected_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
-        "candidate_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "candidate_ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
         "selected_build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+        "candidate_ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
         "status": "pending_adaptation",
         "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
-        "candidate_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "candidate_ref": "f98f08223bbf469cc0a1542166383d253557fc32",
         "selected_build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android16-6.12": {
         "selected_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
-        "candidate_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+        "candidate_ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
         "selected_build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       }
     },
     "FinaSU": {
       "android12-5.10": {
         "selected_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
-        "candidate_ref": "5436438b5cc77f146e04f71070da153dabe17a9d",
+        "candidate_ref": "784ac9e6fd49bb02499b5b60c57ccc9d0c680204",
         "selected_build_tree_sha256": "77be2b08a713fc2d8c3745a81b2672e25992d39f1daaed2c1c4e1404d5eb7384",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android13-5.15": {
         "selected_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
-        "candidate_ref": "fe943d15ec6a1891f7a360bf210589bdffe4e318",
+        "candidate_ref": "c1d1da42b74771944207ec45aaceff9c57e84985",
         "selected_build_tree_sha256": "ff20795a35976ed415c5abfbb829f803d070b8792f1d856059d7195afeb14c86",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android14-6.1": {
         "selected_ref": "69b8e734920b8f9ed885ab8d112969719698e242",
-        "candidate_ref": "342943dbef8a1e996354fd94be4a98f4d556f3df",
+        "candidate_ref": "f76b81f2a6bf98e4029cc0c823c054edbec29803",
         "selected_build_tree_sha256": "09a72c27e979cfa87b62b63f359c39a433ea80f49aeb75885c508d3d69253a81",
         "status": "pending_adaptation",
         "reason": "build-tree-changed"
       },
       "android15-6.6": {
         "selected_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
-        "candidate_ref": "ec03d0c73b821afa1d5037d6d493216f59744fcb",
+        "candidate_ref": "f98f08223bbf469cc0a1542166383d253557fc32",
         "selected_build_tree_sha256": "e75b36bb018d5a665b5021c1a7504eb17d8e3c91e732a0acd581235dc1d2d9d0",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       },
       "android16-6.12": {
         "selected_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
-        "candidate_ref": "395a8c0c88d348e9fe7c14f66a456fde4653287c",
+        "candidate_ref": "9b0b13f069673b9b07b713a5c66977de4d62b175",
         "selected_build_tree_sha256": "78be72318f0a2aecfa81150495b467c8961d1bd3fb19b99623661851547b6c57",
-        "status": "current",
-        "reason": "selected"
+        "status": "pending_adaptation",
+        "reason": "build-tree-changed"
       }
     }
   }

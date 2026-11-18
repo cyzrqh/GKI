@@ -13,7 +13,7 @@
     },
     "BakaSU": {
       "Latest(最新)": {
-        "reference": "548d1dda060ca198823d8808804d01f5209ef4a9",
+        "reference": "7b65bde0710b5e7c6f755545cb15a4abd417f3a8",
         "source_branch": "main"
       }
     },
@@ -45,11 +45,11 @@
     },
     "FinaSU": {
       "Stable(标准)": {
-        "reference": "6cc294cc530eed32a10ff4d841af83c1bc0c2dc4",
-        "source_branch": "v1.6.2"
+        "reference": "ff0e34f1d9d5694ab7b4f1e318a77c781d65cb41",
+        "source_branch": "v1.6.4"
       },
       "Latest(最新)": {
-        "reference": "6cc294cc530eed32a10ff4d841af83c1bc0c2dc4",
+        "reference": "ff0e34f1d9d5694ab7b4f1e318a77c781d65cb41",
         "source_branch": "master"
       }
     }

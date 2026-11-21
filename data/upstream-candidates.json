@@ -19,7 +19,7 @@
     },
     "kernelsu": {
       "branch": "main",
-      "head": "ff70c90d6de46b80b79d0c74d360d85611797b27",
+      "head": "2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4",
       "release": {
         "commit": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
         "tag": "v3.3.1"
@@ -27,7 +27,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "aa235b99574b5b349cdb4980bcb98fd58e6abb28",
+      "head": "32e25d58fc1a187e1abe7278904c31571235fc83",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -35,7 +35,7 @@
     },
     "kowsu": {
       "branch": "master",
-      "head": "d4873310a2738c4c5726a804ed58f1b473799a92",
+      "head": "44758e199257bb973aa6ca5b3a393c1b21694408",
       "release": null
     },
     "sukisu_branch": "main",
@@ -132,11 +132,11 @@
       "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/9b0b13f069673b9b07b713a5c66977de4d62b175"
     },
     {
-      "candidate": "aa235b99574b5b349cdb4980bcb98fd58e6abb28",
+      "candidate": "32e25d58fc1a187e1abe7278904c31571235fc83",
       "current": "",
       "ref": "dev",
       "source": "KernelSU-Next",
-      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/aa235b99574b5b349cdb4980bcb98fd58e6abb28"
+      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/32e25d58fc1a187e1abe7278904c31571235fc83"
     },
     {
       "candidate": "4c706b5938665866ebe16944a481a7b91e3396af",
@@ -146,11 +146,11 @@
       "url": "https://github.com/KernelSU-Next/KernelSU-Next/releases/tag/v3.4.2"
     },
     {
-      "candidate": "ff70c90d6de46b80b79d0c74d360d85611797b27",
+      "candidate": "2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4",
       "current": "",
       "ref": "main",
       "source": "KernelSU",
-      "url": "https://github.com/tiann/KernelSU/commit/ff70c90d6de46b80b79d0c74d360d85611797b27"
+      "url": "https://github.com/tiann/KernelSU/commit/2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4"
     },
     {
       "candidate": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
@@ -160,11 +160,11 @@
       "url": "https://github.com/tiann/KernelSU/releases/tag/v3.3.1"
     },
     {
-      "candidate": "d4873310a2738c4c5726a804ed58f1b473799a92",
+      "candidate": "44758e199257bb973aa6ca5b3a393c1b21694408",
       "current": "",
       "ref": "master",
       "source": "KowSU",
-      "url": "https://github.com/KOWX712/KernelSU/commit/d4873310a2738c4c5726a804ed58f1b473799a92"
+      "url": "https://github.com/KOWX712/KernelSU/commit/44758e199257bb973aa6ca5b3a393c1b21694408"
     },
     {
       "candidate": "f96445f966a2c3f4c1257938acf0449757be8a04",
@@ -202,7 +202,7 @@
     },
     "kernelsu": {
       "branch": "main",
-      "head": "ff70c90d6de46b80b79d0c74d360d85611797b27",
+      "head": "2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4",
       "release": {
         "commit": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
         "tag": "v3.3.1"
@@ -210,7 +210,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "aa235b99574b5b349cdb4980bcb98fd58e6abb28",
+      "head": "32e25d58fc1a187e1abe7278904c31571235fc83",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -218,7 +218,7 @@
     },
     "kowsu": {
       "branch": "master",
-      "head": "d4873310a2738c4c5726a804ed58f1b473799a92",
+      "head": "44758e199257bb973aa6ca5b3a393c1b21694408",
       "release": null
     },
     "schema_version": 1,

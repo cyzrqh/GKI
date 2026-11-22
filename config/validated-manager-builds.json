@@ -45,11 +45,11 @@
     },
     "FinaSU": {
       "Stable(标准)": {
-        "reference": "f96445f966a2c3f4c1257938acf0449757be8a04",
-        "source_branch": "v1.6.5"
+        "reference": "a85c03ab6be57fd1a81a6d345eb5aa8275652b42",
+        "source_branch": "v1.7.0"
       },
       "Latest(最新)": {
-        "reference": "f96445f966a2c3f4c1257938acf0449757be8a04",
+        "reference": "a85c03ab6be57fd1a81a6d345eb5aa8275652b42",
         "source_branch": "master"
       }
     }

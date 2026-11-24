@@ -2,7 +2,7 @@
   "acknowledged_heads": {
     "bakasu": {
       "branch": "main",
-      "head": "2734e0bc155759955880f5fb99be640fc5b92156",
+      "head": "57b2db6076f439cfd489f14576444e8f0f2f0a25",
       "prerelease": {
         "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
         "tag": "v4.2.0-rc3"
@@ -27,7 +27,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "32e25d58fc1a187e1abe7278904c31571235fc83",
+      "head": "896f45a78c0806cfd585c4e14e6989f867b143d7",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -83,11 +83,11 @@
       "url": "https://github.com/SukiSU-Nova/SukiSU-Nova/releases/tag/v3.0.0"
     },
     {
-      "candidate": "2734e0bc155759955880f5fb99be640fc5b92156",
+      "candidate": "57b2db6076f439cfd489f14576444e8f0f2f0a25",
       "current": "",
       "ref": "main",
       "source": "BakaSU",
-      "url": "https://github.com/Baka-SU/BakaSU/commit/2734e0bc155759955880f5fb99be640fc5b92156"
+      "url": "https://github.com/Baka-SU/BakaSU/commit/57b2db6076f439cfd489f14576444e8f0f2f0a25"
     },
     {
       "candidate": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
@@ -132,11 +132,11 @@
       "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/9b0b13f069673b9b07b713a5c66977de4d62b175"
     },
     {
-      "candidate": "32e25d58fc1a187e1abe7278904c31571235fc83",
+      "candidate": "896f45a78c0806cfd585c4e14e6989f867b143d7",
       "current": "",
       "ref": "dev",
       "source": "KernelSU-Next",
-      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/32e25d58fc1a187e1abe7278904c31571235fc83"
+      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/896f45a78c0806cfd585c4e14e6989f867b143d7"
     },
     {
       "candidate": "4c706b5938665866ebe16944a481a7b91e3396af",
@@ -185,7 +185,7 @@
   "sources": {
     "bakasu": {
       "branch": "main",
-      "head": "2734e0bc155759955880f5fb99be640fc5b92156",
+      "head": "57b2db6076f439cfd489f14576444e8f0f2f0a25",
       "prerelease": {
         "commit": "239e1e8871b8fcd51a6e5b3002e0ba522fdd99fb",
         "tag": "v4.2.0-rc3"
@@ -210,7 +210,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "32e25d58fc1a187e1abe7278904c31571235fc83",
+      "head": "896f45a78c0806cfd585c4e14e6989f867b143d7",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"

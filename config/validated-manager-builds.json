@@ -13,7 +13,7 @@
     },
     "BakaSU": {
       "Latest(最新)": {
-        "reference": "7b65bde0710b5e7c6f755545cb15a4abd417f3a8",
+        "reference": "57b2db6076f439cfd489f14576444e8f0f2f0a25",
         "source_branch": "main"
       }
     },
@@ -23,7 +23,7 @@
         "source_branch": "v3.4.2"
       },
       "Latest(最新)": {
-        "reference": "3987e4d5de21348050b923e7d7a6540ddc2d5c8c",
+        "reference": "3660779ea2e2fe1adb27616d8aad9ffaad717501",
         "source_branch": "dev"
       }
     },

@@ -19,7 +19,7 @@
     },
     "kernelsu": {
       "branch": "main",
-      "head": "2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4",
+      "head": "cfc60f8d9a29a5e7a5d458e04b8810af6123f72b",
       "release": {
         "commit": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
         "tag": "v3.3.1"
@@ -27,7 +27,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "896f45a78c0806cfd585c4e14e6989f867b143d7",
+      "head": "3660779ea2e2fe1adb27616d8aad9ffaad717501",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"
@@ -132,11 +132,11 @@
       "url": "https://gitlab.com/simonpunk/susfs4ksu/-/commit/9b0b13f069673b9b07b713a5c66977de4d62b175"
     },
     {
-      "candidate": "896f45a78c0806cfd585c4e14e6989f867b143d7",
+      "candidate": "3660779ea2e2fe1adb27616d8aad9ffaad717501",
       "current": "",
       "ref": "dev",
       "source": "KernelSU-Next",
-      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/896f45a78c0806cfd585c4e14e6989f867b143d7"
+      "url": "https://github.com/KernelSU-Next/KernelSU-Next/commit/3660779ea2e2fe1adb27616d8aad9ffaad717501"
     },
     {
       "candidate": "4c706b5938665866ebe16944a481a7b91e3396af",
@@ -146,11 +146,11 @@
       "url": "https://github.com/KernelSU-Next/KernelSU-Next/releases/tag/v3.4.2"
     },
     {
-      "candidate": "2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4",
+      "candidate": "cfc60f8d9a29a5e7a5d458e04b8810af6123f72b",
       "current": "",
       "ref": "main",
       "source": "KernelSU",
-      "url": "https://github.com/tiann/KernelSU/commit/2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4"
+      "url": "https://github.com/tiann/KernelSU/commit/cfc60f8d9a29a5e7a5d458e04b8810af6123f72b"
     },
     {
       "candidate": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
@@ -202,7 +202,7 @@
     },
     "kernelsu": {
       "branch": "main",
-      "head": "2a60b2893b8d0d885d1ceff2287d8ad854f0e0f4",
+      "head": "cfc60f8d9a29a5e7a5d458e04b8810af6123f72b",
       "release": {
         "commit": "0c0fdb960178fa12d80d6cbcfdcb6ad8be6a865d",
         "tag": "v3.3.1"
@@ -210,7 +210,7 @@
     },
     "kernelsu-next": {
       "branch": "dev",
-      "head": "896f45a78c0806cfd585c4e14e6989f867b143d7",
+      "head": "3660779ea2e2fe1adb27616d8aad9ffaad717501",
       "release": {
         "commit": "4c706b5938665866ebe16944a481a7b91e3396af",
         "tag": "v3.4.2"

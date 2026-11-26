@@ -128,6 +128,11 @@ def check_source(repository: Path, variant: str, reference: str, count: int, *,
                     inputs_cache[identity] = manager_inputs(source, fetch_pins(source, susfs24_pins))
                 checked24 = verify_inputs(source, reference, variant, inputs_cache[identity])
             if variant == 'SukiSU':
+                from manager_variants import manager_source_package, SUKISU_NOVA_PACKAGE
+                native_package = manager_source_package(variant, source)
+                if native_package == SUKISU_NOVA_PACKAGE:
+                    from sukisu_builtzygisk_source import verify_source
+                    verify_source(source)
                 from prepare_manager_icons import prepare_manager_icons
                 prepare_manager_icons(source)
                 from apply_susfs23 import apply_reviewed_port, PATCH_PATH
@@ -138,6 +143,8 @@ def check_source(repository: Path, variant: str, reference: str, count: int, *,
                 checks = ['KPM 原生接口保留',
                           '管理器图标依赖及 Kotlin 模块索引', 'KPM 原生页面授权门禁',
                           '管理器/内核版本公式一致']
+                if native_package == SUKISU_NOVA_PACKAGE:
+                    checks.append('BuiltZygisk 官方依赖地址与固定提交')
                 if legacy_susfs:
                     checks.append('SUSFS 2.3 完整接入及原生生命周期')
             elif variant == 'BakaSU':

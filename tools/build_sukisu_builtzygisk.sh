@@ -2,27 +2,16 @@
 # Build the pinned native assets shipped with the official Nova manager.
 set -euo pipefail
 source_dir="$1"
+build_tools="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 submodule_path=external/BuiltZygisk
 submodule_dir="$source_dir/$submodule_path"
-source_url="$(git -C "$source_dir" config --blob HEAD:.gitmodules --get-all submodule.external/BuiltZygisk.url)"
-case "$source_url" in
-  https://github.com/SukiSU-Nova/BuiltZygisk|https://git.zako.shirkneko.top:20004/shirkneko/BuiltZygisk.git) ;;
-  *) echo 'Unexpected official Nova BuiltZygisk repository.' >&2; exit 1 ;;
-esac
-if ! git -C "$source_dir" diff --quiet HEAD -- .gitmodules; then
-  echo 'The Nova BuiltZygisk dependency declarations differ from the fixed source.' >&2
-  exit 1
-fi
-tree_entry="$(git -C "$source_dir" ls-tree --format='%(objectmode) %(objectname)' HEAD -- "$submodule_path")"
-read -r mode revision <<< "$tree_entry"
-if [ "$mode" != 160000 ] || [[ ! "$revision" =~ ^[0-9a-f]{40}$ ]]; then
-  echo 'The Nova source must pin its BuiltZygisk submodule.' >&2
-  exit 1
-fi
+dependency_identity="$(python3 "$build_tools/sukisu_builtzygisk_source.py" "$source_dir")"
+read -r source_url revision <<< "$dependency_identity"
 
 export GIT_TERMINAL_PROMPT=0
 git_https=(git -c protocol.allow=never -c protocol.https.allow=always)
-timeout 300 "${git_https[@]}" -C "$source_dir" submodule update --init -- "$submodule_path"
+timeout 300 "${git_https[@]}" -c "submodule.$submodule_path.url=$source_url" \
+  -C "$source_dir" submodule update --init -- "$submodule_path"
 if [ "$(git -C "$submodule_dir" rev-parse HEAD)" != "$revision" ]; then
   echo 'The BuiltZygisk checkout differs from its Nova source pin.' >&2
   exit 1

@@ -3,12 +3,15 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 
 
 ROOT = Path(__file__).resolve().parents[1]
 OFFICIAL_URLS = ('https://github.com/SukiSU-Nova/BuiltZygisk',
+                 'https://github.com/SukiSU-Nova/BuiltZygisk.git',
+                 'https://git.zako.shirkneko.top:20004/shirkneko/BuiltZygisk',
                  'https://git.zako.shirkneko.top:20004/shirkneko/BuiltZygisk.git')
 PIN = 'dfe0b4d2cac3d91a72880b073c3f1d95bc8953d4'
 SUBMODULE = 'external/BuiltZygisk'
@@ -19,20 +22,7 @@ class NovaBuiltZygiskSourceTests(unittest.TestCase):
         git = shutil.which('git')
         if not git:
             self.skipTest('Git is required for the selected-source dependency fixture')
-        if os.name == 'nt':
-            git_root = Path(git).parent.parent
-            shell = git_root / 'usr/bin/sh.exe'
-            if not shell.is_file():
-                self.skipTest('Git Bash is required for the native dependency gate')
-            path = os.pathsep.join((str(git_root / 'usr/bin'), str(git_root / 'ucrt64/bin'),
-                                    os.environ.get('PATH', '')))
-            self.shell = str(shell)
-        else:
-            self.shell = shutil.which('bash')
-            path = os.environ.get('PATH', '')
-            if not self.shell:
-                self.skipTest('Bash is required for the native dependency gate')
-        self.environment = {**os.environ, 'PATH': path, 'BASH_ENV': '', 'GIT_TERMINAL_PROMPT': '0'}
+        self.environment = {**os.environ, 'GIT_TERMINAL_PROMPT': '0'}
         self.git_executable = git
         temporary = tempfile.TemporaryDirectory(prefix='.builtzygisk-gate-', dir=ROOT / 'tests')
         self.addCleanup(temporary.cleanup)
@@ -46,10 +36,6 @@ class NovaBuiltZygiskSourceTests(unittest.TestCase):
         self.git('add', '.gitmodules')
         self.git('update-index', '--add', '--cacheinfo', '160000,' + PIN + ',' + SUBMODULE)
         self.commit()
-        script = (ROOT / 'tools/build_sukisu_builtzygisk.sh').read_text(encoding='utf-8')
-        boundary = '\nexport GIT_TERMINAL_PROMPT=0\n'
-        self.assertEqual(1, script.count(boundary))
-        self.guard = script.split(boundary, 1)[0] + boundary + 'printf "%s\\n" "$revision"\n'
 
     def git(self, *arguments, input=None):
         result = subprocess.run([self.git_executable, '-C', str(self.source), *arguments],
@@ -67,11 +53,11 @@ class NovaBuiltZygiskSourceTests(unittest.TestCase):
         self.git('commit', '-q', '--allow-empty', '-m', 'selected official source fixture')
 
     def run_gate(self):
-        return subprocess.run([self.shell, '-c', self.guard, 'builtzygisk-gate', self.source.as_posix()],
+        return subprocess.run([sys.executable, str(ROOT / 'tools/sukisu_builtzygisk_source.py'), str(self.source)],
                               capture_output=True, text=True, encoding='utf-8', env=self.environment,
                               timeout=15)
 
-    def test_both_official_transports_preserve_the_same_pinned_revision(self):
+    def test_both_official_transports_with_and_without_git_preserve_the_pin(self):
         for url in OFFICIAL_URLS:
             with self.subTest(url=url):
                 self.write_url(url)
@@ -79,7 +65,7 @@ class NovaBuiltZygiskSourceTests(unittest.TestCase):
                 self.commit()
                 result = self.run_gate()
                 self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-                self.assertEqual(PIN, result.stdout.strip())
+                self.assertEqual(url + ' ' + PIN, result.stdout.strip())
 
     def test_third_party_or_duplicate_urls_are_not_accepted(self):
         for url, duplicate in (('https://example.invalid/third-party/BuiltZygisk.git', None),
@@ -125,6 +111,30 @@ class NovaBuiltZygiskSourceTests(unittest.TestCase):
                 self.assertNotEqual(0, result.returncode)
                 self.assertIn('must pin its BuiltZygisk submodule', result.stderr)
                 self.assertNotIn(PIN, result.stdout)
+
+    def test_committed_path_changes_and_credential_bearing_urls_are_rejected(self):
+        for url in ('https://user:password@github.com/SukiSU-Nova/BuiltZygisk.git',
+                    'https://github.com/SukiSU-Nova/BuiltZygisk.git?ref=main'):
+            with self.subTest(url=url):
+                self.write_url(url)
+                self.git('add', '.gitmodules')
+                self.commit()
+                self.assertNotEqual(0, self.run_gate().returncode)
+        self.write_url(OFFICIAL_URLS[1])
+        self.modules.write_text(self.modules.read_text(encoding='utf-8').replace(
+            'path = external/BuiltZygisk', 'path = external/Other'), encoding='utf-8', newline='\n')
+        self.git('add', '.gitmodules')
+        self.commit()
+        result = self.run_gate()
+        self.assertNotEqual(0, result.returncode)
+        self.assertIn('dependency path requires review', result.stderr)
+
+    def test_builder_runs_the_shared_guard_before_network_or_build(self):
+        script = (ROOT / 'tools/build_sukisu_builtzygisk.sh').read_text(encoding='utf-8')
+        guard = 'dependency_identity="$(python3 "$build_tools/sukisu_builtzygisk_source.py" "$source_dir")"'
+        self.assertIn(guard, script)
+        self.assertLess(script.index(guard), script.index('submodule update --init'))
+        self.assertIn('-c "submodule.$submodule_path.url=$source_url"', script)
 
 
 if __name__ == '__main__':

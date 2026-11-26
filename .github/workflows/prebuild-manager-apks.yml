@@ -33,6 +33,7 @@ run-name: 自动预编译管理器 APK
     - tools/build_sukisu_builtzygisk.sh
     - tools/build_sukisu_manager.sh
     - tools/checkout_ksu_snapshot.py
+    - tools/sukisu_builtzygisk_source.py
     - tools/fetch_official_manager_source.py
     - tools/configure_bakasu_kpm_ui.py
     - tools/configure_bakasu_manager_notice.py

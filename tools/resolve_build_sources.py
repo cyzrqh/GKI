@@ -23,10 +23,12 @@ REPOSITORIES = {
     "KowSU": "KOWX712/KernelSU",
     "FinaSU": "LyraVoid/FinaSU",
 }
-# GitHub keeps the numeric repository ID across renames. Keep the historical
-# source name in build receipts while querying the renamed repository directly.
+# Retain the historical GitHub identity for existing receipts and snapshots.
+# Live SukiSU channels and public Git transport use the current official host.
 SUKISU_REPOSITORY_ID = 957055748
 SUKISU_CURRENT_NAME = "SukiSU-Nova/SukiSU-Nova"
+SUKISU_OFFICIAL_ORIGIN = 'https://git.zako.shirkneko.top:20004'
+SUKISU_OFFICIAL_REPOSITORY = 'shirkneko/SukiSU'
 TIER_ALIASES = {
     "正式版": "Stable(标准)", "最新版": "Latest(最新)",
     # Preserve older workflow_dispatch payloads without exposing these labels
@@ -46,6 +48,19 @@ class NoStableRelease(SourceResolutionError):
 
 def github_transport_repository(repository: str) -> str:
     return SUKISU_CURRENT_NAME if repository == REPOSITORIES['SukiSU'] else repository
+
+
+def source_repository_web(repository: str) -> str:
+    """Return the public source location, retaining historical receipt identities."""
+    if repository not in REPOSITORIES.values():
+        raise SourceResolutionError('Manager source repository is not allowlisted')
+    if repository == REPOSITORIES['SukiSU']:
+        return SUKISU_OFFICIAL_ORIGIN + '/' + SUKISU_OFFICIAL_REPOSITORY
+    return 'https://github.com/' + repository
+
+
+def source_repository_url(repository: str) -> str:
+    return source_repository_web(repository) + '.git'
 
 
 def validate_ref(value: str, *, empty: bool = False) -> str:
@@ -83,12 +98,15 @@ def github_repository_api(repository: str) -> str:
     if repository not in REPOSITORIES.values():
         raise SourceResolutionError("KernelSU repository is not allowlisted")
     if repository == REPOSITORIES['SukiSU']:
-        return f"https://api.github.com/repositories/{SUKISU_REPOSITORY_ID}"
+        return SUKISU_OFFICIAL_ORIGIN + '/api/v1/repos/' + SUKISU_OFFICIAL_REPOSITORY
     return f"https://api.github.com/repos/{repository}"
 
 
 def github_json(repository: str, resource: str = "", *, missing: bool = False) -> dict | None:
-    """Read an allowlisted official repository API without following redirects."""
+    """Read official source metadata; the historical name also covers Forgejo."""
+    if repository == REPOSITORIES['SukiSU']:
+        from sukisu_official_source import official_json
+        return official_json(resource, missing=missing)
     base_url = github_repository_api(repository)
     if resource and (not resource.startswith('/') or any(char in resource for char in ('\r', '\n', '#'))):
         raise SourceResolutionError("Invalid official GitHub API resource")
@@ -119,9 +137,6 @@ def github_json(repository: str, resource: str = "", *, missing: bool = False) -
         raise SourceResolutionError("GitHub source lookup failed") from error
     if not isinstance(document, dict):
         raise SourceResolutionError("Official GitHub source lookup did not return an object")
-    if not resource and repository == REPOSITORIES['SukiSU']:
-        if type(document.get('id')) is not int or document['id'] != SUKISU_REPOSITORY_ID:
-            raise SourceResolutionError('Official SukiSU repository ID does not match the pinned source')
     return document
 
 
@@ -209,7 +224,9 @@ def official_repository_identity(document, repository: str) -> bool:
     if not isinstance(document, dict):
         return False
     if repository == REPOSITORIES['SukiSU'] and 'id' in document:
-        return type(document['id']) is int and document['id'] == SUKISU_REPOSITORY_ID
+        return (type(document['id']) is int and
+                (document['id'] == SUKISU_REPOSITORY_ID or
+                 (document['id'] == 3 and document.get('full_name') == SUKISU_OFFICIAL_REPOSITORY)))
     names = [repository.casefold()]
     if repository == REPOSITORIES['SukiSU']:
         names.append(SUKISU_CURRENT_NAME.casefold())

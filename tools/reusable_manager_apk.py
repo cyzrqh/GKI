@@ -34,6 +34,7 @@ RECIPE_INPUTS = (
     'tools/build_fina_manager.py', 'tools/build_manager_extras.sh',
     'tools/build_manager_extras_container.sh', 'tools/build_manager_native.sh',
     'tools/build_sukisu_builtzygisk.sh', 'tools/build_sukisu_manager.sh', 'tools/checkout_ksu_snapshot.py',
+    'tools/fetch_official_manager_source.py',
     'tools/configure_bakasu_kpm_ui.py', 'tools/configure_bakasu_manager_notice.py',
     'tools/configure_sukisu_kpm_ui.py', 'tools/embedded_build_metadata.py',
     'tools/generate_workflow.py', 'tools/kpm_theme.py', 'tools/manager_full_native.py',

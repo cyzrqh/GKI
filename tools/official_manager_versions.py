@@ -14,7 +14,7 @@ import time
 
 from manager_variants import MANAGERS, manager_profile, public_manager_selection
 from prepare_manager_lkm import LkmError, native_version_code
-from resolve_build_sources import github_transport_repository
+from resolve_build_sources import source_repository_url
 from snapshot_ksu_source import SnapshotError, git, temporary_directory
 
 
@@ -74,7 +74,7 @@ def _repository(root: Path, variant: str, deadline: float) -> Path:
         raise SnapshotError('Manager history cache identity or full-history state is invalid')
     (target / 'config').write_text(
         '[core]\n\trepositoryformatversion = 0\n\tbare = true\n'
-        '[remote "origin"]\n\turl = https://github.com/' + github_transport_repository(repository) + '.git\n'
+        '[remote "origin"]\n\turl = ' + source_repository_url(repository) + '\n'
         '\tpromisor = true\n\tpartialclonefilter = blob:none\n', encoding='utf-8')
     if _call(target, deadline, 'rev-parse', '--is-bare-repository') != 'true':
         raise SnapshotError('Manager history cache is not bare')

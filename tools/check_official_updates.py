@@ -19,7 +19,7 @@ import uuid
 
 from pin_build_dependencies import CompatibilityError, load_profile
 from resolve_build_sources import (NoRedirect as GitHubNoRedirect, NoStableRelease, SourceResolutionError,
-                                   github_commit, github_json, github_transport_repository, validate_ref)
+                                   github_commit, github_json, source_repository_web, validate_ref)
 from shared_susfs_source import OFFICIAL as SUSFS_GIT_URL
 from snapshot_ksu_source import GitCommandError, SnapshotError, git
 from susfs_sync_transport import retry_delay
@@ -432,7 +432,7 @@ def acknowledged(root: Path) -> dict | None:
 
 def changes(current: dict, snapshot: dict) -> list[dict[str, str]]:
     selected = []
-    suki_url = 'https://github.com/' + github_transport_repository(SUKISU)
+    suki_url = source_repository_web(SUKISU)
     suki = snapshot['sukisu']
     if suki['head'] != current['sukisu']:
         selected.append({'source': 'SukiSU', 'ref': suki['branch'], 'current': current['sukisu'], 'candidate': suki['head'],

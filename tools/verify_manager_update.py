@@ -20,7 +20,7 @@ from check_official_updates import validate_snapshot
 from manager_variants import MANAGERS, manager_profile
 from official_manager_versions import NETWORK, _gradle_version
 from prepare_manager_lkm import native_version_code
-from resolve_build_sources import github_transport_repository
+from resolve_build_sources import source_repository_url
 from snapshot_ksu_source import git, temporary_directory, SnapshotError
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -72,7 +72,7 @@ def source_repository(cache: Path, variant: str) -> Path:
             'objects/info/alternates', 'objects/info/http-alternates')):
         raise ManagerUpdateError('Manager compatibility cache must contain complete independent history')
     (target / 'config').write_text('[core]\n\trepositoryformatversion = 0\n\tbare = true\n'
-        '[remote "origin"]\n\turl = https://github.com/' + github_transport_repository(repository) + '.git\n',
+        '[remote "origin"]\n\turl = ' + source_repository_url(repository) + '\n',
         encoding='utf-8', newline='\n')
     if git(target, 'rev-parse', '--is-bare-repository') != 'true':
         raise ManagerUpdateError('Manager compatibility cache must be bare')
@@ -113,7 +113,7 @@ def check_source(repository: Path, variant: str, reference: str, count: int, *,
         source = temporary / 'KernelSU'
         git(temporary, 'clone', '--quiet', '--shared', '--no-checkout', str(repository), str(source))
         git(source, 'checkout', '--quiet', '--detach', reference)
-        git(source, 'remote', 'set-url', 'origin', 'https://github.com/' + manager_profile(variant)['repository'] + '.git')
+        git(source, 'remote', 'set-url', 'origin', source_repository_url(manager_profile(variant)['repository']))
         code = native_version_code(source, count, variant=variant)
         gradle = (source / 'manager/build.gradle.kts').read_text('utf-8')
         if _gradle_version(gradle, count, variant) != code:

@@ -76,7 +76,8 @@ def prebuild_workflow(base: dict) -> dict:
             'on': {'workflow_dispatch': {},
                    'workflow_run': {'workflows': [UPDATER_NAME], 'types': ['completed'], 'branches': ['main']},
                    'push': {'branches': ['main'], 'paths': list(dict.fromkeys(
-                       [OUTPUT, *RECIPE_INPUTS, *RECIPE_PATTERNS]))}},
+                       [OUTPUT, 'tools/resolve_build_sources.py', 'tools/sukisu_official_source.py',
+                        *RECIPE_INPUTS, *RECIPE_PATTERNS]))}},
             'permissions': {'contents': 'read', 'actions': 'write'},
             'concurrency': {'group': 'gki-official-manager-apk-prebuild', 'cancel-in-progress': False},
             'jobs': {'check-upstream': discovery, **create_jobs(base), 'record-manager-prebuild': record_job()}}

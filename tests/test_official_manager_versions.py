@@ -16,6 +16,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 import official_manager_versions as versions
 import snapshot_ksu_source as snapshot
+from manager_variants import manager_profile
+from resolve_build_sources import source_repository_url
 
 SUKI_KBUILD = '''VERSION_BASE := 40000
 VERSION_OFFSET := 2815
@@ -89,8 +91,7 @@ class OfficialManagerVersionTests(unittest.TestCase):
         self.assertLessEqual(kwargs['timeout'], 45)
         rewrites = []
         for variant, path in self.upstreams.items():
-            repository = 'SukiSU-Nova/SukiSU-Nova' if variant == 'SukiSU' else 'Baka-SU/BakaSU'
-            url = 'https://github.com/' + repository + '.git'
+            url = source_repository_url(manager_profile(variant)['repository'])
             rewrites += ['-c', 'url.' + path.as_uri() + '.insteadOf=' + url]
         return snapshot.git(directory, *rewrites, *args, **kwargs)
 

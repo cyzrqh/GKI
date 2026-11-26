@@ -14,6 +14,7 @@ from snapshot_ksu_source import (BUNDLE_NAME, MANIFEST_NAME, MAX_BUNDLE_SIZE,
                                  expected_commit, file_digest, git, source_identity,
                                  temporary_directory)
 from manager_variants import MANAGERS, manager_profile
+from resolve_build_sources import source_repository_url
 
 
 def read_manifest(directory: Path, reference: str, *, variant: str = 'SukiSU') -> dict:
@@ -77,7 +78,7 @@ def checkout_snapshot(directory: Path, output: Path, reference: str, *, variant:
         git(prepared, "fsck", "--connectivity-only", "--no-dangling", timeout=300)
         # Point origin at the public repository only after fully offline restore.
         # No subsequent fetch is needed or performed by this tool.
-        git(prepared, "remote", "set-url", "origin", f"https://github.com/{manifest['repository']}.git")
+        git(prepared, "remote", "set-url", "origin", source_repository_url(manifest['repository']))
         if variant == 'BakaSU':
             from restore_bakasu_kpm import restore_bakasu_kpm
             try:

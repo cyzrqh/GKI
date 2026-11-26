@@ -19,7 +19,7 @@ from manager_variants import MANAGERS
 KSU = 'c' * 40
 NEW_KSU = 'd' * 40
 REPO = 'SukiSU-Ultra/SukiSU-Ultra'
-REPO_API = 'https://api.github.com/repositories/957055748'
+REPO_API = 'https://api.github.com/repos/Baka-SU/BakaSU'
 BAKA_REPO = 'Baka-SU/BakaSU'
 PROFILE = {'schema_version': 1, 'sukisu_susfs': {
     'ksu_commits': [KSU], 'tiers': ['Stable(标准)', 'Dev(开发)'],
@@ -404,7 +404,7 @@ class GitHubSourceLookupTests(unittest.TestCase):
         _, opener = self.api_response(NEW_KSU.upper())
         with patch.dict(os.environ, {'GH_TOKEN': 'private-token', 'GITHUB_TOKEN': 'other-token'}):
             with patch.object(sources, 'build_opener', return_value=opener) as build:
-                self.assertEqual(sources.github_commit(REPO, 'feature/manager'), NEW_KSU)
+                self.assertEqual(sources.github_commit(BAKA_REPO, 'feature/manager'), NEW_KSU)
         request, = opener.open.call_args.args
         self.assertEqual(request.full_url, REPO_API + '/commits/feature%2Fmanager')
         self.assertEqual(request.get_method(), 'GET')
@@ -412,23 +412,24 @@ class GitHubSourceLookupTests(unittest.TestCase):
         self.assertIsInstance(build.call_args.args[0], sources.NoRedirect)
 
     def test_sukisu_metadata_uses_the_pinned_identity_after_a_rename(self):
+        import sukisu_official_source as official
         response, opener = self.api_response()
-        response.geturl.return_value = REPO_API
-        body = {'id': 957055748, 'full_name': 'SukiSU-Nova/SukiSU-Nova', 'default_branch': 'main'}
-        with patch.object(sources, 'build_opener', return_value=opener):
+        response.geturl.return_value = official.API
+        body = {'id': 3, 'full_name': 'shirkneko/SukiSU', 'default_branch': 'main'}
+        with patch.object(official, 'build_opener', return_value=opener):
             response.read.return_value = json.dumps(body).encode()
             self.assertEqual(sources.default_branch(REPO), 'main')
-            self.assertEqual(opener.open.call_args.args[0].full_url, REPO_API)
+            self.assertEqual(opener.open.call_args.args[0].full_url, official.API)
             body['id'] = 1
             response.read.return_value = json.dumps(body).encode()
-            with self.assertRaisesRegex(sources.SourceResolutionError, 'repository ID'):
+            with self.assertRaisesRegex(sources.SourceResolutionError, 'repository identity'):
                 sources.default_branch(REPO)
 
     def test_no_token_means_no_authorization_header(self):
         _, opener = self.api_response()
         with patch.dict(os.environ, {'GH_TOKEN': '', 'GITHUB_TOKEN': ''}):
             with patch.object(sources, 'build_opener', return_value=opener):
-                sources.github_commit(REPO, 'feature/manager')
+                sources.github_commit(BAKA_REPO, 'feature/manager')
         self.assertIsNone(opener.open.call_args.args[0].get_header('Authorization'))
 
     def test_redirect_handler_rejects_every_destination(self):
@@ -442,7 +443,7 @@ class GitHubSourceLookupTests(unittest.TestCase):
             response.geturl.return_value = url
             with self.subTest(url=url), patch.object(sources, 'build_opener', return_value=opener):
                 with self.assertRaisesRegex(sources.SourceResolutionError, 'unexpected URL'):
-                    sources.github_commit(REPO, 'feature/manager')
+                    sources.github_commit(BAKA_REPO, 'feature/manager')
             response.read.assert_not_called()
 
     def test_invalid_api_results_and_errors_do_not_expose_token(self):
@@ -451,11 +452,11 @@ class GitHubSourceLookupTests(unittest.TestCase):
             response.read.return_value = json.dumps(document).encode()
             with self.subTest(document=document), patch.object(sources, 'build_opener', return_value=opener):
                 with self.assertRaises(sources.SourceResolutionError):
-                    sources.github_commit(REPO, 'feature/manager')
+                    sources.github_commit(BAKA_REPO, 'feature/manager')
         with patch.object(sources, 'build_opener') as build:
             build.return_value.open.side_effect = HTTPError('https://secret-url', 403, 'private-token', {}, None)
             with self.assertRaises(sources.SourceResolutionError) as raised:
-                sources.github_commit(REPO, 'feature/manager')
+                sources.github_commit(BAKA_REPO, 'feature/manager')
         self.assertNotIn('private-token', str(raised.exception))
         self.assertNotIn('secret-url', str(raised.exception))
 
@@ -465,7 +466,7 @@ class GitHubSourceLookupTests(unittest.TestCase):
                 sources.github_commit('attacker/KernelSU', 'main')
             with patch.dict(os.environ, {'GH_TOKEN': 'token\nInjected: header'}):
                 with self.assertRaises(sources.SourceResolutionError):
-                    sources.github_commit(REPO, 'main')
+                    sources.github_commit(BAKA_REPO, 'main')
         build.assert_not_called()
 
 

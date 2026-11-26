@@ -179,9 +179,11 @@ def check_official_source(source: Path, variant: str = 'SukiSU') -> None:
     # header is intentionally left local. Also reject credential-bearing URLs.
     urls = git(source, "remote", "get-url", "--all", "origin").splitlines()
     repository = manager_profile(variant)['repository']
-    from resolve_build_sources import github_transport_repository
+    from resolve_build_sources import github_transport_repository, source_repository_url
     allowed = {base + name + suffix for name in (repository, github_transport_repository(repository))
                for base in ('https://github.com/', 'git@github.com:') for suffix in ('', '.git')}
+    current = source_repository_url(repository)
+    allowed.update((current, current.removesuffix('.git')))
     if not urls or any(url not in allowed for url in urls):
         raise SnapshotError("SukiSU source origin must be the official public repository without URL credentials")
     if git(source, "status", "--porcelain", "--untracked-files=all"):

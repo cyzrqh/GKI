@@ -807,10 +807,16 @@ with open(os.environ['GITHUB_OUTPUT'],'a') as output:
 PY
 '''},
             {'name': '仅下载一次官方管理器源码', 'uses': 'actions/checkout@v6',
-             'if': MANAGER_IF,
-             'with': {'repository': "${{ inputs.kernelsu_variant == 'SukiSU' && 'SukiSU-Nova/SukiSU-Nova' || steps.sources.outputs.ksu_repo }}",
+             'if': MANAGER_IF + " && inputs.kernelsu_variant != 'SukiSU'",
+             'with': {'repository': '${{ steps.sources.outputs.ksu_repo }}',
                       'ref': '${{ steps.sources.outputs.ksu_ref }}',
                       'path': 'ksu-snapshot-source', 'fetch-depth': 0, 'persist-credentials': False}},
+            {'name': '从官方主站下载固定 SukiSU 源码',
+             'if': MANAGER_IF + " && inputs.kernelsu_variant == 'SukiSU'",
+             'env': {'KSU_REF': '${{ steps.sources.outputs.ksu_ref }}'},
+             'run': '''python3 tools/fetch_official_manager_source.py --variant "$KSU_VARIANT" \\
+  --ref "$KSU_REF" --output "$GITHUB_WORKSPACE/ksu-snapshot-source"
+'''},
             {'name': '核对固定源码的管理器包名并读取公开证书', 'id': 'certificate', 'if': PREPARE_IF + ' && ' + ALL_IF,
              'env': {'SUKISU_APK_KEYSTORE': '${{ secrets.SUKISU_APK_KEYSTORE }}',
                      'SUKISU_APK_PASSWORD': '${{ secrets.SUKISU_APK_PASSWORD }}'},

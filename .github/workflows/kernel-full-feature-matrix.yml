@@ -517,13 +517,22 @@ jobs:
       uses: actions/checkout@v6
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((matrix.variant
         == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
-        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU'))
+        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU')) && matrix.variant != 'SukiSU'
       with:
-        repository: ${{ matrix.variant == 'SukiSU' && 'SukiSU-Nova/SukiSU-Nova' || steps.sources.outputs.ksu_repo }}
+        repository: ${{ steps.sources.outputs.ksu_repo }}
         ref: ${{ steps.sources.outputs.ksu_ref }}
         path: ksu-snapshot-source
         fetch-depth: 0
         persist-credentials: false
+    - name: 从官方主站下载固定 SukiSU-Nova 源码
+      if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((matrix.variant
+        == 'SukiSU' || matrix.variant == 'BakaSU') || (matrix.variant == 'KernelSU-Next' || matrix.variant == 'KernelSU' ||
+        matrix.variant == 'KowSU' || matrix.variant == 'FinaSU')) && matrix.variant == 'SukiSU'
+      env:
+        KSU_REF: ${{ steps.sources.outputs.ksu_ref }}
+      run: |
+        python3 tools/fetch_official_manager_source.py --variant "$KSU_VARIANT" \
+          --ref "$KSU_REF" --output "$GITHUB_WORKSPACE/ksu-snapshot-source"
     - name: 核对固定源码的管理器包名并读取公开证书
       id: certificate
       if: github.event_name == 'workflow_dispatch' && (inputs.operation == '编译内核' || inputs.operation == '仅编译管理器安装包') && ((matrix.variant
